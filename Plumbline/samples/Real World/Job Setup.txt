@@ -1,0 +1,37 @@
+Real World - job folder setup
+===============================
+Created      2026-10-04 04:16
+Root         /home/user/Plumbline/samples/Real World
+Project file Real World.plb
+Folder style Standard survey job
+Coordinate system  EPSG:6584 NAD83(2011) / Texas North Central (USft)
+
+Layout
+------
+  Field Data/
+  Field Book/
+  Control/
+  Drawings/
+  Surfaces/
+  Imagery/
+  Reports/
+
+Conventions this job follows
+----------------------------
+  * Field Data is never edited in place - the collector's download is the record.
+  * Field Data/ is yours to name - one folder per download (Week 1, Stage 2, a date).
+    Crew folders are named from the point-number blocks:
+      Control    1 - 999            (shared by every crew)
+      Boundary   1,000 - 9,999
+      General    10,000 and up
+      Crew N owns N00-N99, N,000-N,999, N0,000-N9,999 ... at every magnitude,
+      so crew 7 shoots 7,001-7,999 and 70,001-79,999 but never 6,xxx or 8,xxx.
+  * Coordinates are rounded half-up on output; nothing is truncated.
+  * Distances on the ground are adjusted by SAF (surface adjustment factor,
+    ground over grid), scaled from the projection origin per TXDOT practice.
+
+Notes
+-----
+Built from real field data by plumbline.fieldwork.sample_real.
+Field Data/ holds the download split by crew; Source/ holds the files
+exactly as they arrived.

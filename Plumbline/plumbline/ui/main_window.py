@@ -1,0 +1,1748 @@
+"""The main window: menus, toolbars, docks, status bar and all the workflows that tie the pieces together."""
+from __future__ import annotations
+
+import math
+import os
+import threading
+import traceback
+from pathlib import Path
+
+import numpy as np
+from PySide6.QtCore import QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDockWidget, QFileDialog, QFormLayout,
+                               QHBoxLayout, QVBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
+                               QPushButton, QSizePolicy, QSpinBox, QToolBar, QToolButton, QWidget)
+
+from .. import __version__, plugins
+from ..core import audit as AUD
+from ..core import crs as C
+from ..core import imagery as IM
+from ..core import maps
+from ..core import reference as REF
+from ..core import units as U
+from ..core.model import ImageryLayer, Polyline, Surface
+from ..core.project import Project
+from ..core.qa import run_checks
+from ..core.settings import settings, user_dir
+from ..core.surface import (apply_contours, build_tin, compute_contour_data, gather_surface_inputs, surface_signature)
+from ..io import f2f, kml_io, reports
+from . import icons, theme
+from .app_state import AppState
+from .canvas import CanvasView
+from .crs_dialog import CRSDialog
+from .depthview import DepthPanel
+from .check_dock import CheckFieldworkDock
+from .dialogs import (AboutDialog, FeatureCodesDialog, HelpDialog, PluginsDialog, QADialog, ReportViewer, SettingsDialog,
+                      TransformDialog, TraverseDialog, WelcomeDialog)
+from .docks import ConsoleDock, LayersDock, MessagesDock, PointsDock, PropertiesDock, SurfacesDock
+from .groups_dock import GroupsDock
+from .export_dialogs import export_dxf, export_gis, export_kml, export_landxml, export_points_csv
+from .f2f_dialog import ConvertFieldToFinishDialog
+from .import_export import (IMPORT_FILTER, POINTS_FILTER, ImportPlan, Importer, ReferenceFolderDialog,
+                            apply_import, describe_folder_import)
+from .imagery_ui import AddImageryDialog, ImageryDock, _acc_text
+from .new_project import NewProjectDialog
+from .surface_dialogs import ContourDialog, ProfileDialog, SurfaceDialog, VolumeDialog, build_report_text
+from .tools import (ArcTool, DepthLineTool, DrawPolylineTool, MeasureTool, MoveTool, PanTool, PointTool,
+                    SelectTool, TextTool, ZoomWindowTool, parse_coordinate)
+from .view3d import SceneProvider, View3DPanel
+from .widgets import FormDialog, confirm, dspin, error_box, info_box, ispin, run_blocking
+
+
+class ParamDialog(FormDialog):
+    """Auto-built input dialog for a plugin command's Param list."""
+
+    def __init__(self, cmd, parent=None):
+        super().__init__(parent, cmd.name, cmd.description, "Run", 420)
+        self.cmd = cmd
+        self.w = {}
+        for p in cmd.params:
+            lbl = p.label or p.name
+            if p.type is bool:
+                w = QCheckBox()
+                w.setChecked(bool(p.default))
+            elif p.type is int:
+                w = ispin(int(p.default or 0), int(p.minimum if p.minimum is not None else -10 ** 9),
+                          int(p.maximum if p.maximum is not None else 10 ** 9))
+            elif p.type is float:
+                w = dspin(float(p.default or 0.0), p.minimum if p.minimum is not None else -1e12,
+                          p.maximum if p.maximum is not None else 1e12, 4, 1.0)
+            elif p.choices:
+                w = QComboBox()
+                w.addItems([str(c) for c in p.choices])
+                w.setCurrentText(str(p.default))
+            else:
+                w = QLineEdit("" if p.default is None else str(p.default))
+            self.w[p.name] = (p, w)
+            self.form.addRow(lbl + ":", w)
+
+    def values(self) -> dict:
+        out = {}
+        for name, (p, w) in self.w.items():
+            if p.type is bool:
+                out[name] = w.isChecked()
+            elif p.type in (int, float):
+                out[name] = w.value()
+            elif isinstance(w, QComboBox):
+                out[name] = w.currentText()
+            else:
+                out[name] = w.text()
+        return out
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, project: Project | None = None, open_path: str | None = None, welcome: bool = False):
+        super().__init__()
+        self.state = AppState(project)
+        self.setWindowIcon(icons.app_icon())
+        self.resize(1480, 920)
+        self._icon_actions: list = []
+        s = settings()
+        theme.apply_theme(QApplication.instance(), s.get("theme"))
+        C.set_proj_network(bool(s.get("proj_network")))
+
+        self.canvas = CanvasView(self.state)
+        self.setCentralWidget(self.canvas)
+        self.importer = Importer(self)
+        self._build_tools()
+        self._build_docks()
+        self._build_actions()
+        self._build_menus()
+        self._build_toolbars()
+        self._build_statusbar()
+        self._wire()
+        self.rebuild_plugins_menu(load=True)
+        # Pan is the tool a surveyor starts in: it is the only one that cannot change data,
+        # and Esc comes back to it from anywhere (change order, item 8).
+        self.set_tool("pan")
+        self.update_title()
+        self.state.log(f"Plumbline {__version__} ready.", "info")
+        if open_path:
+            self.open_project_path(open_path)
+        elif welcome and s.get("show_welcome", True):
+            QTimer.singleShot(150, self.show_welcome)
+
+    # ================================================================== construction
+    def _build_tools(self):
+        c = self.canvas
+        self.tools = {"select": SelectTool(c), "pan": PanTool(c),
+                      "polyline": DrawPolylineTool(c), "arc": ArcTool(c), "point": PointTool(c),
+                      "text": TextTool(c), "measure": MeasureTool(c), "area": MeasureTool(c, area=True), "move": MoveTool(c),
+                      "zoom_window": ZoomWindowTool(c),
+                      "depth_line": DepthLineTool(c, on_pick=self._depth_line_picked)}
+
+    def _dock(self, title, widget, area, name):
+        d = QDockWidget(title, self)
+        d.setObjectName(name)
+        d.setWidget(widget)
+        d.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable | QDockWidget.DockWidgetClosable)
+        self.addDockWidget(area, d)
+        return d
+
+    def _build_docks(self):
+        st, cv = self.state, self.canvas
+        self.layers = LayersDock(st)
+        self.groups = GroupsDock(st)
+        self.surfaces = SurfacesDock(st)
+        self.imagery = ImageryDock(st, cv)
+        self.props = PropertiesDock(st)
+        self.points = PointsDock(st)
+        self.messages = MessagesDock(st)
+        self.console = ConsoleDock(st, cv)
+        # the field-data checks: its own dock, next to the point list, opened from View > Panels
+        self.check = CheckFieldworkDock(st, job_root=self._job_folder,
+                                        on_convert=self.convert_field_to_finish)
+        self.d_layers = self._dock("Layers", self.layers, Qt.LeftDockWidgetArea, "layers")
+        self.d_surf = self._dock("Surfaces", self.surfaces, Qt.LeftDockWidgetArea, "surfaces")
+        self.d_groups = self._dock("Groups", self.groups, Qt.LeftDockWidgetArea, "groups")
+        self.d_img = self._dock("Imagery", self.imagery, Qt.LeftDockWidgetArea, "imagery")
+        self.d_props = self._dock("Properties", self.props, Qt.RightDockWidgetArea, "props")
+        self.d_pts = self._dock("Points", self.points, Qt.BottomDockWidgetArea, "points")
+        self.d_msg = self._dock("Messages", self.messages, Qt.BottomDockWidgetArea, "messages")
+        self.d_con = self._dock("Python Console", self.console, Qt.BottomDockWidgetArea, "console")
+        self.d_check = self._dock("Check Fieldwork", self.check, Qt.BottomDockWidgetArea, "check")
+        self.tabifyDockWidget(self.d_layers, self.d_surf)
+        self.tabifyDockWidget(self.d_surf, self.d_img)
+        self.d_layers.raise_()
+        self.tabifyDockWidget(self.d_pts, self.d_msg)
+        self.tabifyDockWidget(self.d_msg, self.d_con)
+        self.tabifyDockWidget(self.d_con, self.d_check)
+        self.d_pts.raise_()
+        self.resizeDocks([self.d_layers, self.d_props], [350, 270], Qt.Horizontal)
+        self.resizeDocks([self.d_pts], [210], Qt.Vertical)
+        self.d_con.hide()
+        # the 3D view and the depth view: docked next to the plan the first time they are opened (see _toggle_view_dock)
+        self.scene_provider = SceneProvider(st)
+        self.view3d = View3DPanel(st, self.scene_provider)
+        self.depth = DepthPanel(st, self.scene_provider, cv)
+        self.d_3d = self._dock("3D View", self.view3d, Qt.RightDockWidgetArea, "view3d")
+        self.d_depth = self._dock("Depth View", self.depth, Qt.RightDockWidgetArea, "depthview")
+        self.d_3d.hide()
+        self.d_depth.hide()
+        self.depth.pick_line_requested.connect(lambda: self.set_tool("depth_line"))
+        self.depth.view.changed.connect(cv.update)
+
+    def _act(self, text, slot=None, shortcut=None, icon=None, checkable=False, tip=None, checked=False):
+        a = QAction(text, self)
+        if icon:
+            a.setIcon(icons.icon(icon))
+            self._icon_actions.append((a, icon))
+        if shortcut:
+            a.setShortcut(QKeySequence(shortcut))
+        a.setCheckable(checkable)
+        if checkable:
+            a.setChecked(checked)
+        if tip:
+            a.setToolTip(tip if not shortcut else f"{tip} ({QKeySequence(shortcut).toString()})")
+            a.setStatusTip(tip)
+        if slot:
+            (a.toggled if checkable else a.triggered).connect(slot)
+        return a
+
+    def _build_actions(self):
+        A = self._act
+        # ---- file
+        self.a_new = A("&New Project...", self.new_project, "Ctrl+N", "new", tip="New project")
+        self.a_open = A("&Open Project...", self.open_project, "Ctrl+O", "open", tip="Open a project")
+        self.a_sample = A("Open Synthetic &Sample (A Computer-Generated Lot)", self.open_sample,
+          tip="A clean synthetic site - the right sample for learning the drawing tools")
+        self.a_sample_real = A("Open &Real World Sample (A Real Reduced Job)", self.open_sample_real,
+                tip="A real download: 3 crews, 3,773 points, real duplicate numbers "
+                                   "and the office's own feature codes")
+        self.a_save = A("&Save", self.save, "Ctrl+S", "save", tip="Save project")
+        self.a_saveas = A("Save &As...", self.save_as, "Ctrl+Shift+S")
+        self.a_import = A("&Import...", self.import_dialog, "Ctrl+I", "import", tip="Import points / LandXML / DXF / GIS / KML")
+        self.a_exp_dxf = A("&DXF...", lambda: export_dxf(self))
+        self.a_exp_lx = A("&LandXML...", lambda: export_landxml(self))
+        self.a_exp_gis = A("&GIS (GeoPackage / Shapefile / GeoJSON)...", lambda: export_gis(self))
+        self.a_exp_kml = A("&Google Earth (KML / KMZ)...", self._export_kml)
+        self.a_exp_csv = A("&Points (Text / CSV)...", lambda: export_points_csv(self))
+        self.a_exp_png = A("Drawing as &Image (PNG)...", self.export_png)
+        self.a_quit = A("E&xit", self.close, "Ctrl+Q")
+        # ---- edit
+        self.a_undo = A("&Undo", self.undo, "Ctrl+Z", "undo")
+        self.a_redo = A("&Redo", self.redo, "Ctrl+Y", "redo")
+        self.a_selall = A("Select &All", self.select_all, "Ctrl+A")
+        self.a_delete = A("&Delete", self.delete_selection, "Delete", "trash", tip="Delete the selection")
+        self.a_find = A("&Find Point...", self.find_point, "Ctrl+F", "search")
+        self.a_transform = A("&Translate / Rotate / Scale...", self.transform_dialog, icon="move")
+        self.a_settings = A("&Settings...", self.settings_dialog, icon="settings")
+        # ---- view
+        self.a_ext = A("Zoom &Extents", self.state.zoom_extents, "Ctrl+0", "zoom_extents", tip="Zoom to everything")
+        self.a_zsel = A("Zoom to &Selection", self.zoom_selection, icon="zoom_selected")
+        self.a_zin = A("Zoom &In", lambda: self.canvas.zoom_at(self.canvas.width() / 2, self.canvas.height() / 2, 1.5))
+        self.a_zout = A("Zoom &Out", lambda: self.canvas.zoom_at(self.canvas.width() / 2, self.canvas.height() / 2, 1 / 1.5))
+        o = self.canvas.opts
+        self.view_toggles = {}
+        for key, text, default in (("show_points", "Points", o.show_points), ("show_numbers", "Point Numbers", o.show_numbers),
+                                   ("show_elev", "Point Elevations", o.show_elev), ("show_desc", "Point Descriptions", o.show_desc),
+                                   ("show_lines", "Linework", o.show_lines), ("show_text", "Text", o.show_text),
+                                   ("show_imagery", "Imagery", o.show_imagery),
+                                   ("show_grid", "Coordinate Grid", o.show_grid), ("show_scalebar", "Scale Bar", o.show_scalebar)):
+            a = A(text, lambda on, k=key: self.canvas.set_option(k, bool(on)), checkable=True, checked=default)
+            self.view_toggles[key] = a
+        self.a_snap = A("Object &Snap", self._snap_toggle, "F3", "snap", checkable=True, checked=True, tip="Toggle snapping")
+        self.snap_acts = {}
+        for key, text in (("point", "Survey Points"), ("node", "Vertices"), ("mid", "Midpoints"), ("nearest", "Nearest on Line")):
+            self.snap_acts[key] = A(text, lambda on, k=key: self._snap_mode(k, on), checkable=True, checked=True)
+        self.a_theme = A("Toggle &Dark / Light", self.toggle_theme, icon="sun")
+        self.a_3d = A("&3D View", lambda on: self._toggle_view_dock(self.d_3d, self.d_depth, on), "Ctrl+3", "orbit", checkable=True,
+                      tip="Orbit around the surface, points and linework in 3D")
+        self.a_depth = A("&Depth View", lambda on: self._toggle_view_dock(self.d_depth, self.d_3d, on), "Ctrl+4", "section", checkable=True,
+          tip="A side-on view you can rotate to any bearing")
+        # ---- tools
+        self.tool_group = QActionGroup(self)
+        self.tool_acts = {}
+        for key, text, icon, tip, sc in (("pan", "Pan", "pan", "Drag the view - the default tool, and Esc comes back here", None),
+                                         ("select", "Select", "select", "Select objects", "S"),
+                                         ("polyline", "Polyline", "polyline", "Draw a polyline", "L"),
+                                         ("arc", "Arc (3 Point)", "arc", "Draw an arc through three points", "A"),
+                                         ("point", "Survey Point", "point", "Place survey points", "P"),
+                                         ("text", "Text", "text", "Place text", "T"),
+                                         ("measure", "Distance / Bearing", "measure", "Measure distances and bearings", "M"),
+                                         ("area", "Area", "area", "Measure an area", None),
+                                         ("move", "Move", "move", "Move the selection", None),
+                                         ("zoom_window", "Zoom Window", "zoom_window", "Zoom to a window", "Z"),
+                                         ("depth_line", "Depth Line", "section_line", "Pick the line the depth view looks across", None)):
+            a = A(text, lambda on, k=key: on and self.set_tool(k), sc, icon, checkable=True, tip=tip)
+            self.tool_group.addAction(a)
+            self.tool_acts[key] = a
+        # ---- survey
+        self.a_qa = A("&Data Quality Check...", self.qa_dialog, icon="warning")
+        self.a_codes = A("Apply &Feature Codes to All Points", self.apply_codes, icon="tag")
+        self.a_linework = A("Process &Linework", self.process_linework, icon="polyline")
+        self.a_f2f = A("Convert Field Book...", self.convert_field_to_finish, icon="tag",)
+        self.a_fieldbook = A("Field Book...", self.convert_fieldbook, icon="layers",
+                       tip="Read a Carlson Field-to-Finish code table (the office's own codes, layers and symbols) into this job's feature codes")
+        self.a_codetable = A("Feature Code &Table...", self.codes_dialog)
+        self.a_cogo = A("&COGO — Traverse and Inverse...", self.cogo_dialog, icon="inverse")
+        # ---- surface
+        self.a_sf_new = A("&Create Surface...", lambda: self.create_surface(None), icon="surface")
+        self.a_sf_edit = A("&Edit / Rebuild Surface...", self.edit_surface)
+        self.a_sf_ctr = A("Create C&ontours...", self.contours_for_active, icon="contour")
+        self.a_sf_vol = A("&Volumes...", self.volumes, icon="volume")
+        self.a_sf_prof = A("&Profile of Selected Polyline...", self.profile_active, icon="profile")
+        self.a_sf_rep = A("Surface &Report...", self.report_surface_active, icon="report")
+        # ---- imagery
+        self.a_img_add = A("&Add Imagery...", self.add_imagery, icon="image")
+        self.a_img_ge_in = A("Import &Google Earth Pins...", self.import_ge_pins)
+        self.a_gmaps = A("Open View Center in &Google Maps (Satellite)", lambda: self.open_google_maps(True), "Ctrl+Shift+M", "pin",
+          tip="Open the middle of the plan view in Google Maps, satellite layer")
+        self.a_gmaps_map = A("Open View Center in Google Maps (Street &Map)", lambda: self.open_google_maps(False))
+        self.a_gmaps_copy = A("Copy Google Maps &Link for View Center", lambda: self.open_google_maps(True, copy_only=True))
+        # ---- coordinates
+        self.a_crs = A("&Project Coordinate System...", self.crs_dialog, icon="globe", tip="Coordinate system manager")
+        self.a_calc = A("Coordinate &Calculator...", lambda: self.crs_dialog(calculator=True))
+        # ---- reports
+        self.a_r_pts = A("&Point List", self.report_points, icon="table")
+        self.a_r_lines = A("&Line and Curve Table (Selected Polylines)", self.report_polylines)
+        self.a_r_qa = A("&Data Quality", self.report_qa)
+        self.a_r_audit = A("&Point(s) Audit...", self.report_audit,
+                           icon="table",
+            tip="The job's field points against the state they were imported in: "
+                               "what is missing, what was added, what moved, what changed")
+        self.a_r_crs = A("&Coordinate System", self.report_crs)
+        # ---- the field-data half of the program.  It opens from Survey now: there is no Tools
+        #      menu any more - a folder and a window are not tools.
+        self.a_fw_manager = A("&Fieldwork Manager...", self.open_fieldwork,
+               tip="Reduce raw field data: duplicate checks, description parsing, renumbering")
+        self.a_fw_import = A("Import &Cleaned Field Data...", self.import_fieldwork,
+              tip="Bring a consolidated .fwk into this project through the field-data checks")
+        self.a_ref_file = A("Import Points from &File...", self.import_points_file,
+             tip="A CSV of stake-out, control or other reference coordinates.  "
+                                "One layer per role, and the points stay out of the fieldwork list.")
+        self.a_file_crs = A("File &Coordinate Systems...", self.file_crs_dialog,
+             tip="What coordinate system each imported file's numbers were taken to be "
+                                "in - and how to change it afterwards (relabel, reproject, or the "
+                                "ground/grid SAF).")
+        self.a_ref_folder = A("Import Points from F&older...", self.import_points_folder,
+               tip="Every point file in a folder, as one import.  The default is this "
+                                  "job's field data; choose a reference role for somebody else's "
+                                  "control or stake-out list.  The folder is recorded on the job, so "
+                                  "the next file dialog starts there.")
+        # ---- the job folder, under File where the project lives
+        # One entry for the folder the job lives in (change order, item 12): open it, open
+        # another one, create a new job folder, or hand it to the desktop's file manager.
+        self.a_project_folder = A("&Project Folder...", self.project_folder_dialog, icon="open",
+                   tip="The folder this job lives in: open it, open another, or create a "
+                                      "new job folder.  One place, because the project file and the "
+                                      "Field Data folder belong to the same job.")
+        self.a_job_select = self.a_project_folder        # compatibility alias
+        # ---- help
+        self.a_help = A("&Quick Start", lambda: HelpDialog(self).exec(), "F1")
+        self.a_licence = A("&Licence Agreement...", self.show_licence)
+
+        self.a_about = A("&About Plumbline", lambda: AboutDialog(self).exec())
+
+    def _build_menus(self):
+        mb = self.menuBar()
+        m = mb.addMenu("&File")
+        m.addActions([self.a_new, self.a_open])
+        m_samp = m.addMenu("Open Sa&mple Project")
+        m_samp.addActions([self.a_sample, self.a_sample_real])
+        self.m_recent = m.addMenu("Open &Recent")
+        self.m_recent.aboutToShow.connect(self._fill_recent)
+        m.addSeparator()
+        m.addActions([self.a_save, self.a_saveas])
+        m.addSeparator()
+        m.addAction(self.a_project_folder)
+        m.addSeparator()
+        m.addAction(self.a_import)
+        me = m.addMenu("&Export")
+        me.addActions([self.a_exp_dxf, self.a_exp_lx, self.a_exp_gis, self.a_exp_kml, self.a_exp_csv])
+        self.m_export = me
+        m.addAction(self.a_exp_png)
+        m.addSeparator()
+        m.addAction(self.a_quit)
+        m = mb.addMenu("&Edit")
+        m.addActions([self.a_undo, self.a_redo])
+        m.addSeparator()
+        m.addActions([self.a_selall, self.a_delete, self.a_find])
+        m.addSeparator()
+        m.addActions([self.a_transform, self.a_settings])
+        m = mb.addMenu("&View")
+        m.addActions([self.a_ext, self.a_zsel, self.a_zin, self.a_zout, self.tool_acts["zoom_window"]])
+        m.addSeparator()
+        m.addActions([self.a_3d, self.a_depth, self.tool_acts["depth_line"]])
+        m.addSeparator()
+        mv = m.addMenu("&Show")
+        mv.addActions(list(self.view_toggles.values()))
+        ms = m.addMenu("S&nap")
+        ms.addAction(self.a_snap)
+        ms.addSeparator()
+        ms.addActions(list(self.snap_acts.values()))
+        m.addAction(self.a_theme)
+        m.addSeparator()
+        md = m.addMenu("&Panels")
+        for d in (self.d_layers, self.d_surf, self.d_img, self.d_props, self.d_pts, self.d_msg, self.d_con,
+                  self.d_check):
+            md.addAction(d.toggleViewAction())
+        md.addSeparator()
+        md.addMenu(self.points.col_menu)          # the point list's own columns live here too
+        m = mb.addMenu("&Draw")
+        for k in ("select", "polyline", "arc", "point", "text", "measure", "area", "move"):
+            m.addAction(self.tool_acts[k])
+        m = mb.addMenu("&Survey")
+        # the field-data half of the program opens from here
+        m.addActions([self.a_fw_manager, self.a_fw_import])
+        m.addSeparator()
+        m.addActions([self.a_ref_file, self.a_ref_folder])
+        m.addSeparator()
+        m.addAction(self.a_file_crs)
+        m.addSeparator()
+        m.addActions([self.a_qa, self.a_codes, self.a_linework, self.a_f2f])
+        m.addSeparator()
+        m.addActions([self.a_cogo, self.a_transform])
+        m = mb.addMenu("S&urface")
+        m.addActions([self.a_sf_new, self.a_sf_edit, self.a_sf_ctr, self.a_sf_vol, self.a_sf_prof, self.a_sf_rep])
+        m = mb.addMenu("&Imagery")
+        m.addAction(self.a_img_add)
+        m.addSeparator()
+        m.addActions([self.a_img_ge_in, self.a_exp_kml])
+        m.addSeparator()
+        m.addActions([self.a_gmaps, self.a_gmaps_map, self.a_gmaps_copy])
+        m = mb.addMenu("&Coordinates")
+        m.addActions([self.a_crs, self.a_calc])
+        m = mb.addMenu("&Reports")
+        m.addActions([self.a_r_pts, self.a_r_lines, self.a_r_qa, self.a_r_audit, self.a_r_crs, self.a_sf_rep])
+        # (there is no Tools menu: its four items were a folder, a window and two imports, and
+        #  each of those now sits in the menu it belongs to - File and Survey)
+        self.m_plugins = mb.addMenu("&Plugins")
+        m = mb.addMenu("&Help")
+        m.addActions([self.a_help, self.a_licence, self.a_about])
+
+    def _build_toolbars(self):
+        def tb_left(title, name):
+            t = QToolBar(title, self)
+            t.setObjectName(name)
+            t.setIconSize(QSize(20, 20))
+            t.setMovable(False)
+            self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, t)
+            return t
+
+        def tb_bottom(name):
+            t = QToolBar(name, self)
+            t.setObjectName(name)
+            t.setIconSize(QSize(20, 20))
+            t.setMovable(False)
+            self.addToolBar(Qt.BottomToolBarArea, t)
+            return t
+
+        # LEFT toolbar: File + Drawing tools + Survey + Imagery + 3d/depth
+        t = tb_left("File", "tb_file")
+        t.addActions([self.a_new, self.a_open, self.a_save, self.a_import])
+        t.addSeparator()
+        t.addActions([self.a_undo, self.a_redo])
+
+        t = tb_left("Draw Tools", "tb_draw_tools")
+        for k in ("select", "polyline", "arc", "point", "text", "measure", "area", "move"):
+            t.addAction(self.tool_acts[k])
+        t.addSeparator()
+        t.addActions([self.tool_acts["zoom_window"], self.a_ext, self.a_zsel])
+        t.addSeparator()
+        t.addAction(self.a_snap)
+
+        t = tb_left("Survey", "tb_survey")
+        t.addActions([self.a_crs, self.a_qa, self.a_linework, self.a_sf_new, self.a_sf_ctr, self.a_sf_vol, self.a_sf_prof])
+        t.addSeparator()
+        t.addActions([self.a_img_add, self.a_gmaps])
+        t.addSeparator()
+        t.addActions([self.a_3d, self.a_depth])
+
+        # BOTTOM toolbar with tabs for draw controls and survey controls
+        b = tb_bottom("tb_bottom")
+        # Create a stacked widget for tabs
+        from PySide6.QtWidgets import QStackedWidget, QWidget
+        self.bottom_tabs = QStackedWidget()
+        b.addWidget(self.bottom_tabs)
+
+        # Tab 1: Draw controls
+        draw_widget = QWidget()
+        draw_layout = QVBoxLayout(draw_widget)
+        draw_layout.addWidget(QLabel(" Layer: "))
+        self.cmb_layer = QComboBox()
+        self.cmb_layer.setMinimumWidth(190)
+        self.cmb_layer.setToolTip("Layer new objects are drawn on")
+        draw_layout.addWidget(self.cmb_layer)
+        draw_layout.addWidget(QLabel("   Point description: "))
+        self.ed_desc = QLineEdit()
+        self.ed_desc.setPlaceholderText("e.g. EP  or  TREE 18")
+        self.ed_desc.setMaximumWidth(150)
+        draw_layout.addWidget(self.ed_desc)
+        draw_layout.addWidget(QLabel("   New points are: "))
+        self.cmb_ptrole = QComboBox()
+        self.cmb_ptrole.setMinimumWidth(180)
+        self.cmb_ptrole.setToolTip("What the point tool drops.\n\n"
+                                   "Reference points (stake-out / control / other) go on their own layer with their own\n"
+                                   "point numbers, and are kept out of the fieldwork list and the data-quality checks.")
+        self.cmb_ptrole.addItem("Field data (the fieldwork list)", "")
+        for role in REF.ROLES:
+            self.cmb_ptrole.addItem(f"{REF.ROLE_LABELS[role]} (reference)", role)
+        draw_layout.addWidget(self.cmb_ptrole)
+        draw_layout.addWidget(QLabel("   Command: "))
+        self.ed_cmd = QLineEdit()
+        self.ed_cmd.setPlaceholderText("N,E   @dN,dE   @dist<bearing   or a point number  - then Enter")
+        self.ed_cmd.setMinimumWidth(360)
+        draw_layout.addWidget(self.ed_cmd)
+        self.bottom_tabs.addWidget(draw_widget)
+
+        # Tab 2: Survey tools (could be minimal or empty for now)
+        survey_widget = QWidget()
+        survey_layout = QVBoxLayout(survey_widget)
+        survey_layout.addWidget(QLabel("Survey tools placeholder"))
+        self.bottom_tabs.addWidget(survey_widget)
+
+        # Set the default tab
+        self.bottom_tabs.setCurrentIndex(0)
+
+        # Also add the old tb_survey actions to the bottom toolbar's second tab
+        # or keep them in the left toolbar
+        # For now, just note they're in the left toolbar
+
+        # Note: the old tb_draw is no longer needed as its controls are in the bottom tab 1
+        # The old tb_survey is also moved to the left toolbar
+
+    def _build_statusbar(self):
+        sb = self.statusBar()
+        self.lbl_hint = QLabel("")
+        self.lbl_hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.lbl_hint.setMinimumWidth(120)
+        sb.addWidget(self.lbl_hint, 1)
+        self.lbl_coord = QLabel("")
+        self.lbl_coord.setMinimumWidth(330)
+        self.lbl_coord.setFont(theme.mono_font())
+        self.lbl_ll = QLabel("")
+        self.lbl_ll.setFont(theme.mono_font())
+        self.lbl_crs = QPushButton("")
+        self.lbl_crs.setFlat(True)
+        self.lbl_crs.clicked.connect(self.crs_dialog)
+        self.lbl_crs.setToolTip("Click to open the coordinate system manager")
+        self.lbl_tiles = QLabel("")
+        for w in (self.lbl_tiles, self.lbl_coord, self.lbl_ll, self.lbl_crs):
+            sb.addPermanentWidget(w)
+
+    def _wire(self):
+        st, cv = self.state, self.canvas
+        st.dirty_changed.connect(lambda d: self.update_title())
+        st.project_replaced.connect(self._project_replaced)
+        st.undo_changed.connect(self._undo_state)
+        st.changed.connect(lambda k: self._refresh_layer_combo())
+        cv.cursor_moved.connect(self._cursor)
+        cv.hint_changed.connect(self._hint)
+        cv.escape_pressed.connect(self._escape)
+        cv.files_dropped.connect(self._files_dropped)
+        self.layers.current_changed.connect(self._current_layer)
+        self.cmb_layer.activated.connect(lambda i: self.layers.set_current(self.cmb_layer.currentText()))
+        self.ed_desc.textChanged.connect(lambda t: setattr(self.canvas, "point_desc", t.strip()))
+        self.cmb_ptrole.currentIndexChanged.connect(
+            lambda i: setattr(self.canvas, "point_role", self.cmb_ptrole.currentData() or ""))
+        self.ed_cmd.returnPressed.connect(self._command_entered)
+        self.surfaces.new_requested.connect(lambda: self.create_surface(None))
+        self.surfaces.edit_requested.connect(lambda i: self.create_surface(self.state.project.surfaces.get(i)))
+        self.surfaces.contours_requested.connect(self.contours_for)
+        self.surfaces.volumes_requested.connect(self.volumes)
+        self.surfaces.profile_requested.connect(self.profile_for)
+        self.surfaces.report_requested.connect(self.report_surface)
+        self.surfaces.delete_requested.connect(self.delete_surface)
+        self.d_3d.visibilityChanged.connect(lambda vis: self._view_visibility(self.a_3d, self.d_3d, vis))
+        self.d_depth.visibilityChanged.connect(lambda vis: self._view_visibility(self.a_depth, self.d_depth, vis))
+        self.imagery.add_requested.connect(self.add_imagery)
+        self.imagery.ge_import_requested.connect(self.import_ge_pins)
+        self.imagery.ge_export_requested.connect(self._export_kml)
+        self._tile_timer = QTimer(self)
+        self._tile_timer.timeout.connect(self._tile_status)
+        self._tile_timer.start(400)
+        self._refresh_layer_combo()
+        self._undo_state()
+        self._project_replaced()
+
+    # ================================================================== housekeeping
+    def update_title(self):
+        pr = self.state.project
+        self.setWindowTitle(f"{pr.name}{' *' if self.state.dirty else ''} — Plumbline")
+
+    def _hint(self, text: str):
+        self.lbl_hint.setText(text)
+        self.lbl_hint.setToolTip(text)
+
+    def _undo_state(self):
+        st = self.state
+        self.a_undo.setEnabled(bool(st.undo_stack))
+        self.a_redo.setEnabled(bool(st.redo_stack))
+        self.a_undo.setText(f"&Undo {st.undo_stack[-1][0]}" if st.undo_stack else "&Undo")
+        self.a_redo.setText(f"&Redo {st.redo_stack[-1][0]}" if st.redo_stack else "&Redo")
+
+    def _project_replaced(self):
+        self.set_tool("pan")
+        self.layers.current = "0"
+        self.canvas.current_layer = "0"
+        self._refresh_layer_combo()
+        self.update_title()
+        crs = self.state.project.crs
+        self._crs_label()
+        self.lbl_ll.setVisible(not crs.is_local)
+
+    def _refresh_layer_combo(self):
+        pr = self.state.project
+        self.cmb_layer.blockSignals(True)
+        self.cmb_layer.clear()
+        names = sorted(pr.layers, key=lambda n: (n != "0", n))
+        self.cmb_layer.addItems(names)
+        self.cmb_layer.setCurrentText(self.canvas.current_layer if self.canvas.current_layer in pr.layers else "0")
+        self.cmb_layer.blockSignals(False)
+        self._crs_label()
+        self.lbl_ll.setVisible(not pr.crs.is_local)
+
+    def _crs_label(self):
+        crs = self.state.project.crs
+        short = "UNASSIGNED (no CRS)" if crs.is_local else crs.authority
+        if crs.ground.enabled:
+            short += " (ground)"
+        if crs.is_local:
+            self.lbl_crs.setStyleSheet("color: #e0a030; font-weight: 600;")   # amber = needs attention
+        else:
+            self.lbl_crs.setStyleSheet("")
+        self.lbl_crs.setText(short + f"  [{U.LABEL.get(crs.unit, crs.unit)}]")
+        self.lbl_crs.setToolTip(crs.label + "\nClick to open the coordinate system manager")
+
+    def _current_layer(self, name):
+        self.canvas.current_layer = name
+        self._refresh_layer_combo()
+
+    def _cursor(self, x, y, z):
+        pr = self.state.project
+        ne = settings().get("coord_order") == "NE"
+        a = f"N {y:>14,.3f}   E {x:>14,.3f}" if ne else f"X {x:>14,.3f}   Y {y:>14,.3f}"
+        if math.isfinite(z):
+            a += f"   Z {z:>9,.3f}"
+        self.lbl_coord.setText(a)
+        if not pr.crs.is_local:
+            try:
+                lon, lat = pr.crs.to_lonlat(x, y)
+                self.lbl_ll.setText(f"{float(lat):.6f}, {float(lon):.6f}")
+            except Exception:
+                self.lbl_ll.setText("")
+
+    def _tile_status(self):
+        n = self.canvas.imagery.pending
+        self.lbl_tiles.setText(f"loading {n} tile(s)... " if n else "")
+
+    def _files_dropped(self, files):
+        for f in files:
+            self.importer.import_path(f)
+
+    def maybe_save(self) -> bool:
+        if not self.state.dirty:
+            return True
+        m = QMessageBox(self)
+        m.setWindowTitle("Unsaved Changes")
+        m.setText(f"Save changes to '{self.state.project.name}' before continuing?")
+        b_save = m.addButton("Save", QMessageBox.AcceptRole)
+        m.addButton("Discard", QMessageBox.DestructiveRole)
+        b_cancel = m.addButton("Cancel", QMessageBox.RejectRole)
+        m.exec()
+        if m.clickedButton() is b_cancel:
+            return False
+        if m.clickedButton() is b_save:
+            return self.save()
+        return True
+
+    def closeEvent(self, ev):
+        if not self.maybe_save():
+            ev.ignore()
+            return
+        self.state.tiles.shutdown()
+        super().closeEvent(ev)
+
+    # ================================================================== tools
+    def set_tool(self, name: str):
+        tool = self.tools[name]
+        if self.canvas.tool is not tool:
+            self.canvas.set_tool(tool)
+        a = self.tool_acts.get(name)
+        if a is not None and not a.isChecked():
+            a.blockSignals(True)
+            a.setChecked(True)
+            a.blockSignals(False)
+
+    def _escape(self):
+        """Escape: put down whatever is being picked, then hand the view back to Pan.
+
+        Done once or twice, the second Esc matters - after a tool is cancelled the drawing is
+        in a known state, and the next thing a surveyor does is usually look somewhere else.
+        """
+        tool = self.canvas.tool
+        if tool is not None and tool.name != "pan":
+            try:
+                tool.cancel()
+            except Exception:
+                pass
+            self.set_tool("pan")
+            self.state.log("Tool released - Pan.  Drag to move the view.", "info")
+        else:
+            self.set_tool("pan")
+
+    def _command_entered(self):
+        text = self.ed_cmd.text().strip()
+        tool = self.canvas.tool
+        if not text or tool is None:
+            return
+        pr = self.state.project
+        try:
+            ref = tool.last_point()
+            x, y = parse_coordinate(text, pr, ref, settings().get("coord_order"))
+        except ValueError as ex:
+            self.lbl_hint.setText(str(ex))
+            return
+        if tool.name in ("select", "zoom_window", "text"):
+            self.state.center_on(x, y)
+        else:
+            tool.enter_coordinate(x, y)
+        self.ed_cmd.clear()
+        self.canvas.setFocus()
+
+    def _snap_toggle(self, on):
+        self.canvas.snap_enabled = bool(on)
+        self.canvas.update()
+
+    def _snap_mode(self, key, on):
+        (self.canvas.snap_modes.add if on else self.canvas.snap_modes.discard)(key)
+
+    def toggle_theme(self):
+        s = settings()
+        new = "light" if theme.current() == "dark" else "dark"
+        s.set("theme", new)
+        self._apply_theme()
+
+    def _apply_theme(self):
+        theme.apply_theme(QApplication.instance(), settings().get("theme"))
+        icons.clear_cache()
+        for a, name in self._icon_actions:
+            a.setIcon(icons.icon(name))
+        self.canvas.renderer.invalidate()
+        self.canvas.renderer._sd.clear()
+        self.canvas.invalidate()
+        self.layers.refresh()
+        self.scene_provider.invalidate()
+
+    # ================================================================== 3D view, depth view, Google Maps
+    def _toggle_view_dock(self, dock: QDockWidget, other: QDockWidget, on: bool):
+        """Show / hide the 3D or depth view.  The first time one opens it becomes a tab beside Properties, so it gets the
+        whole height of the right-hand column; drag its tab out (or onto the plan) to see it next to another panel."""
+        if on:
+            first = not getattr(dock, "_placed", False)
+            if first:
+                dock._placed = True
+                self.tabifyDockWidget(self.d_props, dock)
+            dock.show()
+            dock.raise_()
+            if first:                                          # sizes only stick once the dock is on screen
+                QTimer.singleShot(0, lambda: self.resizeDocks([dock], [520], Qt.Horizontal))
+        else:
+            dock.hide()
+
+    def _view_visibility(self, act: QAction, dock: QDockWidget, visible: bool):
+        """Keep the toolbar button (and the depth view's slab on the plan) in step with its dock.  `visible` comes from the
+        dock's own signal: it is False for a tab that is hidden behind another one, which isVisible() would not tell us."""
+        if act.isChecked() != visible:
+            act.blockSignals(True)
+            act.setChecked(visible)
+            act.blockSignals(False)
+        if dock is self.d_depth:
+            ov = self.depth.view.paint_plan_overlay
+            if visible and ov not in self.canvas.view_overlays:
+                self.canvas.view_overlays.append(ov)
+            elif not visible and ov in self.canvas.view_overlays:
+                self.canvas.view_overlays.remove(ov)
+            self.canvas.update()
+
+    def _depth_line_picked(self, a, b):
+        self.depth.view.set_line(a, b)
+        if not self.a_depth.isChecked():
+            self.a_depth.setChecked(True)
+        self.set_tool("select")
+        self.state.log(f"Depth view looks across the line you picked ({self.depth.view.spec.azimuth:.1f} deg).", "info")
+
+    def open_google_maps(self, satellite: bool = True, copy_only: bool = False):
+        """Open the center of the plan view in Google Maps (or just copy the link)."""
+        pr, v = self.state.project, self.canvas.view
+        try:
+            url, lat, lon, zoom = maps.maps_link_for_view(pr, v.cx, v.cy, v.scale, satellite)
+        except C.LocalCRSError:
+            info_box(self, "Google Maps", "This project uses a local coordinate system, so the view has no real-world location.\n\n"
+                                          "Assign a coordinate system first (Coordinates > Project Coordinate System).")
+            return
+        except Exception as ex:
+            error_box(self, "Google Maps", f"Could not turn the view center into a latitude / longitude:\n{ex}")
+            return
+        kind = "satellite" if satellite else "street map"
+        if copy_only:
+            QApplication.clipboard().setText(url)
+            self.state.log(f"Google Maps link copied ({kind}, {lat:.6f}, {lon:.6f}): {url}", "ok")
+        elif QDesktopServices.openUrl(QUrl(url)):
+            self.state.log(f"Opened Google Maps ({kind}) at {lat:.6f}, {lon:.6f}, zoom {zoom:.1f}: {url}", "ok")
+        else:
+            QApplication.clipboard().setText(url)
+            self.state.log(f"Could not start a web browser. The Google Maps link ({lat:.6f}, {lon:.6f}) is on the clipboard: {url}", "warn")
+
+    # ================================================================== file
+    def new_project(self):
+        if not self.maybe_save():
+            return
+        dlg = NewProjectDialog(self, job_hint=self._job_hint() or str(Path.cwd()))
+        if not dlg.exec():
+            return
+        name = dlg.project_name
+        if dlg.setup_job:
+            # Create the job folder first, with the cancelable progress dialog.  If the
+            # user cancels, nothing was created and nothing was opened - no half-made job.
+            from .job_setup import run_job_setup
+            creation = run_job_setup(self, dlg.setup_parent_folder, name, dlg.setup_template,
+                                     dlg.setup_weeks, dlg.crs.label, crs_record=dlg.crs.to_dict())
+            if creation is None:
+                self.state.log("Job folder setup cancelled", "warn")
+                return
+            self._open(str(creation.paths.project_file))
+            self.state.log(f"Created job folder {creation.paths.root} - {creation.summary}", "ok")
+            return
+        self.state.new_project(name, dlg.crs)
+        self.state.log(f"New project '{name}' - {dlg.crs.label}", "ok")
+
+    # ------------------------------------------------------------------ field data / job folder
+    def open_fieldwork(self):
+        """Survey > Fieldwork Manager - the field-data window, pointed at this job."""
+        from .fieldwork_window import open_fieldwork_manager
+        win = open_fieldwork_manager(self)
+        if win is not None:
+            self.state.log("Opened the Fieldwork Manager window", "ok")
+
+    def import_points_file(self):
+        """Survey > Import Points from File - a CSV of stake-out, control or other coordinates.
+
+        The import dialog asks what the points are; stake-out is the default, because a CSV that
+        lands on the office desk is usually somebody else's coordinates rather than this job's own
+        shots.  Chosen a role, the points go on that role's layer with their own numbering and stay
+        out of the fieldwork list and the data-quality checks.
+        """
+        p, _ = QFileDialog.getOpenFileName(self, "Import Points from File", self._job_hint(), POINTS_FILTER)
+        if p:
+            self.importer.import_path(p)
+
+    def import_points_folder(self):
+        """Survey > Import Points from Folder - one reference role for every point file in a folder.
+
+        One dialog for the folder: the role is chosen once, every readable file is imported, and
+        the folder is recorded on the job (Project > job metadata) so the Fieldwork Manager and
+        the file dialogs start there next time.
+        """
+        folder = QFileDialog.getExistingDirectory(self, "Import Points from Folder",
+                                                  self._job_hint() or str(Path.home()))
+        if not folder:
+            return
+        dlg = ReferenceFolderDialog(self.state, Path(folder), self)
+        if not dlg.exec():
+            return
+        role = dlg.role()
+        # Get selected files from the dialog
+        selected = dlg.selected_files()
+        tally = self.importer.import_reference_folder(folder, role, dlg.chk_sub.isChecked(), selected_files=selected)
+        if not tally["points"]:
+            error_box(self, "Import Points from Folder",
+                      f"No points were read from {Path(folder).name}."
+                      + (f"\n\n{tally['failed']} file(s) were skipped - the message log names them "
+                         f"and says why." if tally["failed"] else ""))
+            return
+        self.state.log((f"Reference import: {describe_folder_import(tally)} on layer "
+                        f"{REF.layer_for(role)}, from {folder}") if role else
+                       (f"Field data import: {describe_folder_import(tally)} - joins the fieldwork "
+                        f"list - from {folder}"), "ok")
+        if tally["failed"]:
+            info_box(self, "Import Points from Folder",
+                     f"{tally['points']:,} point(s) came in from {tally['files']} file(s).\n\n"
+                     f"{tally['failed']} file(s) could not be read and were skipped; the message log "
+                     f"names them and says why.  Nothing was guessed - check those files and import "
+                     f"them one at a time if they matter.")
+
+    def import_fieldwork(self):
+        """Survey > Import Cleaned Field Data - a .fwk straight into this project."""
+        from .fieldwork_window import FieldworkBridge, SendToPlumblineDialog
+        p, _ = QFileDialog.getOpenFileName(self, "Import Cleaned Field Data", self._job_hint(),
+                                           "Field data (*.fwk *.csv *.txt);;All files (*)")
+        if not p:
+            return
+        bridge = FieldworkBridge(self)
+        rows = None
+        try:
+            from ..fieldwork import bridge as FB
+            rows, info = FB.read_point_file(p)
+        except Exception as ex:
+            error_box(self, "Import Field Data", f"{Path(p).name} could not be read:\n{ex}")
+            return
+        if not rows:
+            error_box(self, "Import Field Data", f"{Path(p).name} has no usable points in it.")
+            return
+        pr = self.state.project
+        existing = {pt.number for pt in pr.points.values()}
+        incoming = {str(r[FB.PTNUM]).strip() for r in rows if FB.row_is_usable(r)}
+        dupes = len(incoming & existing)
+        dlg = SendToPlumblineDialog(self, n_points=len(incoming), n_dupes=dupes,
+                                    source=Path(p).name, job_name=pr.name,
+                                    has_codes=False)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            result = FB.apply_rows_to_project(pr, rows, dup_policy=dlg.policy)
+        except Exception as ex:
+            error_box(self, "Import Field Data", f"The import failed:\n{ex}", traceback.format_exc())
+            return
+        bridge.last_result = result
+        self.state.log(f"Imported {result.get('points', 0):,} field points from {Path(p).name}", "ok")
+        changed = getattr(self.state, "project_changed", None)
+        if callable(changed):
+            changed()
+
+    def file_crs_dialog(self):
+        """Survey > File Coordinate Systems (change order, item 6)."""
+        from .filecrs_dialog import FileCoordinateSystemsDialog
+        FileCoordinateSystemsDialog(self.state, self).exec()
+
+    def new_job_folder(self):
+        """Create a job folder on its own - reached from Project Folder... > Create a new job folder.
+
+        (This used to be its own menu entry, File > New Job Folder.  It is the same folder setup
+        File > New Project offers, so it lives in one place now - see project_folder_dialog.)
+        """
+        from .job_setup import JobSetupPanel, run_job_setup
+        from .widgets import FormDialog
+
+        class _Dlg(FormDialog):
+            def validate(self):
+                return panel.validate()
+
+        dlg = _Dlg(self, "New Job Folder",
+                   intro="Creates the folder tree, an empty field book and control list, and a project "
+                         "file with no coordinate system assigned yet.")
+        name_edit = QLineEdit("New Job")
+        dlg.form.addRow("Job name:", name_edit)
+        panel = JobSetupPanel(dlg, self._job_hint())
+        dlg.root.insertWidget(2, panel)
+        if not dlg.exec():
+            return
+        creation = run_job_setup(self, panel.parent_folder, name_edit.text().strip() or "New Job",
+                                 panel.template, panel.weeks, self.state.project.crs.label,
+                                 crs_record=self.state.project.crs.to_dict())
+        if creation is not None:
+            self.state.log(f"Created job folder {creation.paths.root}", "ok")
+
+    def _job_folder(self) -> Path | None:
+        """The job folder: the one chosen with File > Select Job Folder, else the project's own.
+
+        The job folder is normally simply the folder the project file lives in.  It is a
+        separate idea only because a job can have a download sitting in it *before* there is a
+        project - that is the case Select Job Folder exists for.
+        """
+        chosen = getattr(self, "_job_root_choice", None)
+        if chosen is not None and Path(chosen).is_dir():
+            return Path(chosen)
+        pr = self.state.project
+        p = getattr(pr, "path", None)
+        if p and Path(p).parent.is_dir():
+            return Path(p).parent
+        return None
+
+    def project_folder_dialog(self):
+        """File > Project Folder... - one entry for the folder this job lives in.
+
+        There used to be two: *Select Job Folder* (point at a folder) and *New Job Folder* (make
+        one).  Same decision, two doors, and a project file that could end up somewhere other than
+        its job - so the two are one dialog now (change order, item 12), and it can open the
+        folder that is already in use, open another one, or create a new job folder inside any
+        folder (the current directory by default).
+        """
+        from .project_folder import ProjectFolderDialog
+        dlg = ProjectFolderDialog(self, current=self._job_folder())
+        if not dlg.exec():
+            return
+        if dlg.chosen:
+            self._job_root_choice = Path(dlg.chosen)
+            self.state.log(f"Project folder: {dlg.chosen}.  The Fieldwork Manager and the file "
+                           f"dialogs start here.", "ok")
+        if dlg.open_project:
+            self.open_project_path(dlg.open_project)
+
+    def select_job_folder(self):
+        """Select Job Folder - kept as the call the rest of the program makes internally.
+
+        The menu entry that used to point here (File > Select Job Folder) is now File > Project
+        Folder..., because the two folder entries were the same decision asked twice.
+
+        Whatever is chosen here is what the Fieldwork Manager and its file hints start from, and
+        if the folder holds a project file it is offered for opening.  Choosing the folder that is
+        already in use does the other useful thing with the same click: it opens the folder in the
+        desktop's file manager.
+        """
+        current = self._job_folder()
+        folder = QFileDialog.getExistingDirectory(self, "Select Job Folder",
+                                                  str(current) if current else str(Path.home()))
+        if not folder:
+            return
+        folder = Path(folder)
+        if current is not None and folder.resolve() == Path(current).resolve():
+            self.open_job_folder(folder)
+            return
+        projects = sorted(folder.glob("*.plb"))
+        if projects and confirm(self, "Select Job Folder",
+                                f"{folder.name} holds {projects[0].name}.\n\nOpen that project?",
+                                "Open"):
+            self.open_project_path(projects[0])
+            return
+        self._job_root_choice = folder
+        self.state.log(f"Job folder: {folder}.  The Fieldwork Manager and the file dialogs start here.",
+                       "ok")
+
+    def open_job_folder(self, folder=None):
+        """Hand the job folder to the desktop (File > Select Job Folder does this when the folder
+        is already the one in use)."""
+        folder = Path(folder) if folder else self._job_folder()
+        if folder is None or not Path(folder).is_dir():
+            QMessageBox.information(self, "Job Folder",
+                                    "This project has not been saved yet, so it has no job folder.\n\n"
+                                    "Use File > Save As to put it somewhere, or File > Select Job "
+                                    "Folder to point at a folder that already holds the job.")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def _job_hint(self) -> str:
+        """Where the file dialogs start: the job folder, else the folder the data came from.
+
+        A project that has not been saved yet has no job folder, but it does know where its
+        points came from - an import from a folder records that folder on the job - and that is
+        the folder the next dialog should open in.
+        """
+        folder = self._job_folder()
+        if folder is None:
+            data = self.state.project.settings.get("data_folder")
+            if data and Path(data).is_dir():
+                return str(data)
+        return str(folder) if folder else ""
+
+    def open_project(self):
+        if not self.maybe_save():
+            return
+        p, _ = QFileDialog.getOpenFileName(self, "Open Project", "", "Plumbline project (*.plb);;All files (*)")
+        if p:
+            self._open(p)
+
+    def open_project_path(self, path: str):
+        if self.maybe_save():
+            self._open(path)
+
+    def _open(self, path):
+        try:
+            self.state.open_project(path)
+        except Exception as ex:
+            error_box(self, "Open Project", f"Could not open {Path(path).name}:\n{ex}", traceback.format_exc())
+            return
+        self.state.log(f"Opened {path}", "ok")
+
+    def open_sample(self):
+        if not self.maybe_save():
+            return
+        from ..sample import make_sample_project
+        self.state.set_project(make_sample_project(), dirty=False)
+        self.state.log("Sample project loaded - a SYNTHETIC site (not a real survey). Try Data Quality, Contours, Volumes and Imagery.", "ok")
+
+    def open_sample_real(self):
+        """File > Open Sample Project > Real World - a real reduced survey, in its job folder.
+
+        It opens the built sample *in place* rather than copying it: the job folder, the field
+        data and the report are the point of this sample, and the Fieldwork Manager window will
+        point straight at them.
+        """
+        if not self.maybe_save():
+            return
+        from ..fieldwork.sample_real import find_sample_dir, repo_root
+        folder = find_sample_dir()
+        if folder is None:
+            info_box(self, "Real World Sample",
+                     "The Real World sample is not built in this copy of Plumbline.\n\n"
+                     "It is made from a real field download that ships with the source:\n"
+                     f"    {repo_root() / 'samples' / 'Real World' / 'Source'}\n\n"
+                     "Build it once from a terminal:\n"
+                     "    python -m plumbline sample-real\n\n"
+                     "…or open any consolidated .fwk with Survey > Import Cleaned Field Data.")
+            return
+        project = next(iter(sorted(folder.glob("*.plb"))), None)
+        if project is None:
+            error_box(self, "Real World Sample", f"No project file in {folder}.")
+            return
+        self._open(str(project))
+        self.state.log(f"Real World sample - a real reduced job from {folder}. "
+                       "Try Survey > Fieldwork Manager: it opens the same job's field data.", "ok")
+
+    def show_welcome(self):
+        dlg = WelcomeDialog(self)
+        dlg.exec()
+        c = dlg.choice
+        if c == "new":
+            self.new_project()
+        elif c == "open":
+            self.open_project()
+        elif c == "sample":
+            self.open_sample()
+        elif c == "sample_real":
+            self.open_sample_real()
+        elif c.startswith("recent:"):
+            self.open_project_path(c[7:])
+
+    def _fill_recent(self):
+        self.m_recent.clear()
+        rec = [p for p in settings().get("recent_files") if Path(p).exists()]
+        for p in rec:
+            self.m_recent.addAction(Path(p).name, lambda p=p: self.open_project_path(p)).setToolTip(p)
+        if not rec:
+            self.m_recent.addAction("(none)").setEnabled(False)
+
+    def save(self) -> bool:
+        pr = self.state.project
+        if not pr.path:
+            return self.save_as()
+        try:
+            self.state.save_project()
+        except Exception as ex:
+            error_box(self, "Save", str(ex), traceback.format_exc())
+            return False
+        self.state.log(f"Saved {pr.path}", "ok")
+        self.update_title()
+        return True
+
+    def save_as(self) -> bool:
+        pr = self.state.project
+        start = pr.path or f"{pr.name}.plb"
+        p, _ = QFileDialog.getSaveFileName(self, "Save project as", start, "Plumbline project (*.plb)")
+        if not p:
+            return False
+        if not p.lower().endswith(".plb"):
+            p += ".plb"
+        try:
+            if pr.name in ("Untitled", ""):
+                pr.name = Path(p).stem
+            self.state.save_project(p)
+        except Exception as ex:
+            error_box(self, "Save", str(ex), traceback.format_exc())
+            return False
+        self.state.log(f"Saved {p}", "ok")
+        self.update_title()
+        return True
+
+    def import_dialog(self):
+        paths, _ = QFileDialog.getOpenFileNames(self, "Import", "", IMPORT_FILTER + self._plugin_import_filter())
+        for p in paths:
+            self.importer.import_path(p)
+
+    def _plugin_import_filter(self):
+        extra = "".join(f";;{i.name}" for i in plugins.registry.importers)
+        return extra
+
+    def export_png(self):
+        p, _ = QFileDialog.getSaveFileName(self, "Save drawing as image", f"{self.state.project.name}.png", "PNG image (*.png)")
+        if p:
+            img = self.canvas.render_image(2400)
+            img.save(p)
+            self.state.log(f"Image written: {p} ({img.width()} x {img.height()})", "ok")
+
+    def _export_kml(self):
+        export_kml(self)
+
+    # ================================================================== edit
+    def undo(self):
+        lbl = self.state.undo()
+        if lbl:
+            self.state.log(f"Undid: {lbl}", "info")
+
+    def redo(self):
+        lbl = self.state.redo()
+        if lbl:
+            self.state.log(f"Redid: {lbl}", "info")
+
+    def select_all(self):
+        pr = self.state.project
+        vis = {n for n, l in pr.layers.items() if l.visible and not l.locked}
+        self.state.select([i for i, p in pr.points.items() if p.layer in vis], [i for i, e in pr.entities.items() if e.layer in vis])
+
+    def delete_selection(self):
+        st = self.state
+        if not (st.sel_points or st.sel_entities):
+            return
+        n = len(st.sel_points) + len(st.sel_entities)
+        if n > 500 and not confirm(self, "Delete", f"Delete {n:,} objects?", "Delete"):
+            return
+        pts, ents = list(st.sel_points), list(st.sel_entities)
+        with st.edit(f"Delete {n} object(s)"):
+            st.project.remove_points(pts)
+            st.project.remove_entities(ents)
+        st.log(f"Deleted {n:,} object(s). Ctrl+Z undoes.", "info")
+
+    def find_point(self):
+        text, ok = QInputDialog.getText(self, "Find point", "Point number, or part of a description / layer:")
+        text = text.strip()
+        if not ok or not text:
+            return
+        pr = self.state.project
+        exact = pr.point_by_number(text)
+        if exact:
+            self.state.select(points=[exact.id])
+            self.state.center_on(exact.x, exact.y)
+            return
+        t = text.lower()
+        hits = [p for p in pr.points.values() if t in p.desc.lower() or t in p.layer.lower() or t in p.number.lower()]
+        if not hits:
+            self.state.log(f"Nothing matches '{text}'.", "warn")
+            return
+        self.state.select(points=[p.id for p in hits])
+        xs, ys = [p.x for p in hits], [p.y for p in hits]
+        self.state.zoom_to_bbox((min(xs) - 5, min(ys) - 5, max(xs) + 5, max(ys) + 5))
+        self.state.log(f"{len(hits)} point(s) match '{text}'.", "info")
+
+    def zoom_selection(self):
+        bb = self.state.selection_bbox()
+        if bb:
+            self.state.zoom_to_bbox(bb)
+
+    def transform_dialog(self):
+        dlg = TransformDialog(self.state, self)
+        if dlg.exec():
+            st = dlg.apply()
+            self.state.log(f"Transformed {st['points']:,} points, {st['entities']:,} objects, {st['surfaces']} surfaces.", "ok")
+            self.state.zoom_extents()
+
+    def show_licence(self):
+        """Help > Licence Agreement - read what you accepted, any time."""
+        from .licence_dialog import show_licence as _show
+        _show(self)
+
+    def settings_dialog(self):
+        dlg = SettingsDialog(self)
+        if dlg.exec():
+            dlg.apply()
+            self._apply_theme()
+            self.points.reload()
+            self.props.refresh()
+            self.canvas.opts.point_px = float(settings().get("point_size_px"))
+            self.canvas.opts.label_px = float(settings().get("label_px"))
+            self.canvas.invalidate()
+
+    # ================================================================== survey
+    def qa_dialog(self):
+        QADialog(self.state, self).exec()
+
+    def codes_dialog(self):
+        FeatureCodesDialog(self.state, self).exec()
+
+    def convert_field_to_finish(self):
+        """Survey > Convert Field Book: an office code table becomes this job's codes.
+
+        Carlson's own layout is the default and asks nothing; Custom points at the columns and
+        ticks the rows by hand (ui/f2f_dialog.py).  The file is remembered on the job, so the next
+        conversion - the office publishes a new standard every winter - opens in the right folder.
+        """
+        pr = self.state.project
+        start = pr.settings.get("f2f_path") or os.path.dirname(pr.path or "") or ""
+        path, _ = QFileDialog.getOpenFileName(self, "Convert Field to Finish", start,
+                                              "Code Table (*.csv *.txt);;All Files (*)")
+        if not path:
+            return
+        try:
+            table = f2f.read(path)
+        except Exception as ex:
+            error_box(self, "Convert Field Book", str(ex))
+            return
+        dlg = ConvertFieldToFinishDialog(table, pr, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        mapping, only, mode = dlg.choices()
+        try:
+            new_codes, stats = f2f.convert(table, mapping, only=only,
+                                           existing=pr.codes if mode == "merge" else None)
+        except Exception as ex:
+            error_box(self, "Convert Field Book", str(ex), traceback.format_exc())
+            return
+        with self.state.edit("Convert Field Book"):
+            pr.codes = new_codes
+            pr.settings["f2f_path"] = str(path)
+        self.state.log(f"Field to Finish: {f2f.describe_stats(stats)} "
+                       f"({os.path.basename(path)}; {mapping.found_by}) "
+                       f"- Apply Feature Codes redraws the points with them.",
+                       "warn" if stats["unknown_entity_types"] else "ok")
+
+
+    def convert_fieldbook(self):
+        """Survey > Field Book: select or convert a field book file.
+        
+        Shows available field books in the job folder or offers to create a new one.
+        """
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        from plumbline.fieldwork.bridge import fieldbooks_in
+        from plumbline.core.project import Project
+        
+        job_root = self.state.project.path
+        fieldbooks = fieldbooks_in(job_root)
+        
+        if fieldbooks:
+            QMessageBox.information(self, "Field Book",
+                f"Field book(s) found in job folder\n\n"
+                f"Count: {len(fieldbooks)}")
+            if fieldbooks:
+                fb_path = fieldbooks[0].path if hasattr(fieldbooks[0], 'path') else fieldbooks[0]
+                if isinstance(fb_path, str):
+                    fb_path = Path(fb_path)
+                if fb_path.exists():
+                    self._show_fieldbook(fb_path)
+        else:
+            fname, ok = QFileDialog.getSaveFileName(self, "Create Field Book",
+                str(self.state.project.path / "Field Book" / "New Job.fwb"),
+                "Field Book (*.fwb)")
+            if fname and ok:
+                try:
+                    from plumbline.fieldwork.bridge import write_fieldbook_from_f2f
+                    from plumbline.fieldwork import io_carlson as IC
+                    headers = ["Code", "Description", "Symbol", "Layer", "Entity Type", "Category"]
+                    write_fieldbook_from_f2f(None, Path(fname), name="", commands=["ST", "PC", "PT", "END", "X", "-", "/"])
+                    QMessageBox.information(self, "Field Book",
+                        f"Field book created at {Path(fname).name}")
+                except Exception as e:
+                    QMessageBox.warning(self, "Field Book Error",
+                        f"Could not create field book: {e}")
+
+    def _show_fieldbook(self, fb_path):
+        """Show a fieldbook file in the UI."""
+        from plumbline.fieldwork.bridge import read_fwb_file
+        from plumbline.fieldwork.io_carlson import IC
+        from plumbline.core.project import Project
+        
+        try:
+            headers, rows = read_fwb_file(Path(fb_path))
+            QMessageBox.information(self, "Field Book",
+                f"Field book: {Path(fb_path).name}\n\n"
+                f"Rows: {len(rows) if rows else 0}\n"
+                f"Headers: {', '.join(headers) if headers else 'none'}")
+        except Exception as e:
+            QMessageBox.warning(self, "Field Book Error",
+                f"Could not read field book: {e}")
+    def apply_codes(self):
+        with self.state.edit("Apply feature codes"):
+            r = self.state.project.apply_codes_to_points()
+        msg = f"Feature codes applied: {r['matched']:,} point(s) matched."
+        if r["unknown"]:
+            top = ", ".join(f"{k} ({v})" for k, v in sorted(r["unknown"].items(), key=lambda kv: -kv[1])[:6])
+            msg += f" Unknown codes: {top}."
+        self.state.log(msg, "ok" if not r["unknown"] else "warn")
+
+    def process_linework(self):
+        with self.state.edit("Process linework"):
+            r = self.state.project.process_linework()
+        self.state.log(f"Linework: {r['strings']} string(s) created" + (f", {r['replaced']} previous replaced" if r["replaced"] else "") + ".", "ok")
+
+    def cogo_dialog(self):
+        TraverseDialog(self.state, self).exec()
+
+    # ================================================================== coordinates
+    def crs_dialog(self, calculator: bool = False):
+        dlg = CRSDialog(self.state, self)
+        if calculator:
+            dlg.tabs.setCurrentIndex(4)
+        if not dlg.exec() or dlg.result_crs is None:
+            return
+        new, mode = dlg.result_crs, dlg.result_mode
+        pr = self.state.project
+        old = pr.crs
+        try:
+            if mode == "reproject" and not old.is_local:
+                QApplication.setOverrideCursor(Qt.BusyCursor)
+                try:
+                    with self.state.edit("Reproject project"):
+                        pr.reproject(new, new.strategy)
+                finally:
+                    QApplication.restoreOverrideCursor()
+                self.state.log(f"Coordinates converted to {new.label}.", "ok")
+            else:
+                with self.state.edit("Assign coordinate system"):
+                    pr.assign_crs(new)
+                self.state.log(f"Coordinate system assigned: {new.label} (no coordinates were changed).", "ok")
+        except Exception as ex:
+            error_box(self, "Coordinate system", str(ex), traceback.format_exc())
+            return
+        self.imagery_clear_geo()
+        self._refresh_layer_combo()
+        self.state.zoom_extents()
+
+    def imagery_clear_geo(self):
+        self.canvas.imagery._geo.clear()
+        self.canvas.invalidate()
+
+    # ================================================================== surfaces
+    def create_surface(self, existing: Surface | None):
+        pr = self.state.project
+        dlg = SurfaceDialog(self.state, existing, self)
+        if existing:
+            dlg.ed_name.setEnabled(False)
+        if not dlg.exec():
+            return
+        params, name = dlg.params(), dlg.ed_name.text().strip()
+        pts, breaks, bounds, holes = gather_surface_inputs(pr, params)
+        if len(pts) < 3:
+            error_box(self, "Surface", f"Only {len(pts)} usable point(s) with elevations - a surface needs at least 3.")
+            return
+        me = params.get("max_edge") or None
+        try:
+            tin, rep = run_blocking(self, f"Building surface '{name}' ({len(pts):,} points) ...", build_tin, pts, breaks, bounds, holes, me)
+        except RuntimeError as ex:
+            error_box(self, "Surface", "The surface could not be built.", str(ex))
+            return
+        sig = surface_signature(pts, breaks, bounds, holes, me)
+        rd = rep.to_dict()
+        rd["sig"] = sig
+        with self.state.edit("Rebuild surface" if existing else "Create surface"):
+            if existing is not None:
+                s = pr.surfaces[existing.id]
+                s.set_geometry(tin.pts, tin.tris)
+                s._tin = tin
+                s.params, s.report, s.stale = dict(params), rd, False
+            else:
+                s = Surface(0, name, tin.pts, tin.tris, dict(params), report=rd)
+                s._tin = tin
+                pr.add_surface(s)
+        self.state.active_surface_id = s.id
+        self.state.log(f"Surface '{s.name}' built:\n" + build_report_text(rd, pr.h_unit), "warn" if (rep.warnings or rep.n_unenforced) else "ok")
+        if not existing:
+            self.d_surf.raise_()
+            self.state.zoom_extents()
+        self.canvas.prepare_surface_locator(s, tin)        # build the point locator for the elevation readout
+
+    def edit_surface(self):
+        s = self.state.active_surface()
+        if s is None:
+            self.create_surface(None)
+        else:
+            self.create_surface(s)
+
+    def delete_surface(self, sid: int):
+        s = self.state.project.surfaces.get(sid)
+        if s is None or not confirm(self, "Delete surface", f"Delete surface '{s.name}' and its contours?", "Delete"):
+            return
+        with self.state.edit("Delete surface"):
+            self.state.project.remove_derived(f"contours:{s.name}")
+            del self.state.project.surfaces[sid]
+        self.state.active_surface_id = next(iter(self.state.project.surfaces), None)
+
+    def contours_for_active(self):
+        s = self.state.active_surface()
+        if s is None:
+            error_box(self, "Contours", "Create a surface first.")
+            return
+        self.contours_for(s.id)
+
+    def contours_for(self, sid: int):
+        pr = self.state.project
+        s = pr.surfaces.get(sid)
+        if s is None:
+            return
+        dlg = ContourDialog(self.state, s, self)
+        if not dlg.exec():
+            return
+        v = dlg.values()
+        try:
+            data = run_blocking(self, "Tracing contours ...", compute_contour_data, s, v["interval"], v["base"], v["smooth"])
+        except RuntimeError as ex:
+            error_box(self, "Contours", "Contouring failed.", str(ex))
+            return
+        with self.state.edit("Create contours"):
+            r = apply_contours(pr, s, data, v["interval"], v["index_every"], v["base"], v["labels"], v["text_height"], v["min_length"])
+            pr.settings.update({"contour_interval": v["interval"], "index_every": v["index_every"], "contour_base": v["base"],
+                                "contour_smooth": v["smooth"], "contour_labels": v["labels"], "text_height": v["text_height"]})
+        self.state.log(f"Contours for '{s.name}': {r['lines']:,} lines, {r['labels']:,} labels ({r['levels']} levels, {r['min']:.2f} to {r['max']:.2f}).", "ok")
+
+    def volumes(self):
+        if not self.state.project.surfaces:
+            error_box(self, "Volumes", "Create a surface first (Surface menu).")
+            return
+        VolumeDialog(self.state, self).exec()
+
+    def _selected_polyline(self):
+        pr = self.state.project
+        for i in self.state.sel_entities:
+            e = pr.entities.get(i)
+            if isinstance(e, Polyline):
+                return e
+        return None
+
+    def profile_active(self):
+        s = self.state.active_surface()
+        if s is None:
+            error_box(self, "Profile", "Create a surface first.")
+            return
+        self.profile_for(s.id)
+
+    def profile_for(self, sid: int):
+        s = self.state.project.surfaces.get(sid)
+        e = self._selected_polyline()
+        if s is None:
+            return
+        if e is None:
+            info_box(self, "Profile", "Select a polyline in the drawing first (or draw one with the Polyline tool) - it becomes the profile line.")
+            return
+        ProfileDialog(self.state, s, e, self).exec()
+
+    def report_surface_active(self):
+        s = self.state.active_surface()
+        if s is None:
+            error_box(self, "Report", "Create a surface first.")
+            return
+        self.report_surface(s.id)
+
+    def report_surface(self, sid: int):
+        s = self.state.project.surfaces.get(sid)
+        if s:
+            ReportViewer(self, reports.surface_report(self.state.project, s)).exec()
+
+    # ================================================================== imagery
+    def _unique_layer_name(self, base: str) -> str:
+        names = {l.name for l in self.state.project.imagery.values()}
+        n, k = base, 2
+        while n in names:
+            n = f"{base} ({k})"
+            k += 1
+        return n
+
+    def create_imagery_layer(self, spec: dict):
+        pr = self.state.project
+        with self.state.edit("Add imagery", kinds=("imagery",)):
+            lid = pr.new_id()
+            pr.imagery[lid] = ImageryLayer(lid, self._unique_layer_name(spec["name"]), spec["kind"], dict(spec["source"]), True, 1.0, (0.0, 0.0))
+        self.canvas.opts.show_imagery = True
+        self.view_toggles["show_imagery"].setChecked(True)
+        self.d_img.show()
+        self.d_img.raise_()
+        if pr.extents() is None:
+            self._default_view_for_crs()
+        self.state.log(f"Imagery layer added: {spec['name']}", "ok")
+
+    def _default_view_for_crs(self):
+        crs = self.state.project.crs
+        try:
+            aou = crs.crs.area_of_use
+            if aou is not None:
+                lon, lat = (aou.west + aou.east) / 2, (aou.south + aou.north) / 2
+                x, y = crs.from_lonlat(lon, lat)
+                self.state.center_on(float(x), float(y), 0.02 / U.M_PER_UNIT[crs.unit] * 5)
+        except Exception:
+            pass
+
+    def add_imagery(self):
+        dlg = AddImageryDialog(self.state, self)
+        if dlg.exec() and dlg.layer_spec:
+            self.create_imagery_layer(dlg.layer_spec)
+
+    def add_imagery_file(self, path: str) -> bool:
+        try:
+            r = run_blocking(self, "Reading image ...", IM.read_georeferenced_image, path)
+        except RuntimeError as ex:
+            error_box(self, "Imagery", str(ex).strip().splitlines()[-1], str(ex))
+            return False
+        self.create_imagery_layer({"kind": "file", "name": Path(path).stem,
+                                   "source": {"path": path, "corners": [list(c) for c in r["corners"]], "crs": r["crs"], "attribution": ""}})
+        return True
+
+    def add_kml_overlay(self, o: dict) -> bool:
+        corners = IM.kml_overlay_corners(o["north"], o["south"], o["east"], o["west"], o.get("rotation", 0.0))
+        self.create_imagery_layer({"kind": "file", "name": o.get("name", "Overlay"),
+                                   "source": {"path": o["file"], "corners": [list(c) for c in corners], "crs": "EPSG:4326", "attribution": ""}})
+        return True
+
+
+
+    def _datum_note(self) -> str:
+        crs = self.state.project.crs
+        if crs.is_local:
+            return ""
+        s = crs.strategy
+        try:
+            if s == "none":
+                return "No datum shift applied (NAD83 and WGS84 positions treated as identical)"
+            ops = C.list_operations(crs, 4326)
+            b = ops[0]
+            name = b.name.replace(" (with axis order normalized for visualization)", "")
+            if b.accuracy is None:
+                acc = "unknown accuracy"
+            else:
+                acc = f"stated accuracy {b.accuracy:g} m" + (" - no shift grids, so this is only a rough approximation" if b.accuracy >= 1 else "")
+            return f"{'Automatic' if s == 'auto' else s}: {name} ({acc})"
+        except Exception:
+            return s
+
+
+    def import_ge_pins(self):
+        """Imagery > Import Google Earth Pins - the pins come in as reference points.
+
+        A pin is a coordinate somebody drew on the imagery, so it arrives the way every other
+        outside coordinate does: on the OTHER reference layer, with the pin's own name as its
+        number, kept out of the fieldwork list and out of the data-quality checks.  Comparing a pin
+        with the point it was dropped on is a measurement, not a report - select the two and use
+        Draw > Measure.  Re-importing the same file updates the pins rather than doubling them.
+        """
+        pr = self.state.project
+        if pr.crs.is_local:
+            error_box(self, "Google Earth pins", "Assign a project coordinate system first.")
+            return
+        p, _ = QFileDialog.getOpenFileName(self, "Google Earth pins", self._job_hint(), "KML / KMZ (*.kml *.kmz)")
+        if not p:
+            return
+        try:
+            batch = kml_io.read_kml(p, cache_dir=user_dir())
+        except Exception as ex:
+            error_box(self, "Google Earth pins", f"That file could not be read as KML/KMZ:\n{ex}", traceback.format_exc())
+            return
+        if not batch.points:
+            error_box(self, "Google Earth pins", "No placemarks with points were found in that file.")
+            return
+        strat = pr.settings.get("kml_strategy") or "none"
+        for pin in batch.points:                      # read_kml works in lon/lat - same datum handling as the export
+            x, y = pr.crs.from_lonlat(pin.x, pin.y, source=4326, strategy=strat)
+            pin.x, pin.y = float(x), float(y)
+        plan = ImportPlan(dup_policy="overwrite", reference_role="other")
+        stats = apply_import(self.state, batch, plan, f"Google Earth pins ({Path(p).name})", p)
+        done = (f"{stats['overwritten']:,} updated" if stats.get("overwritten")
+                else "measure between a pin and its point if you want the offset")
+        self.state.log(f"{stats['points']:,} Google Earth pin(s) came in as reference points on layer "
+                       f"{REF.layer_for('other')} - {done}.", "ok")
+        self.d_img.show()
+        self.d_img.raise_()
+        self.imagery.refresh()
+        self.state.zoom_extents()
+
+    # ================================================================== reports
+    def _show(self, rep):
+        ReportViewer(self, rep).exec()
+
+    def report_points(self):
+        ids = set(self.state.sel_points) or None
+        self._show(reports.points_report(self.state.project, ids, "Point List" + (" (selected)" if ids else "")))
+
+    def report_polylines(self):
+        pr = self.state.project
+        ids = {i for i in self.state.sel_entities if isinstance(pr.entities.get(i), Polyline)}
+        if not ids:
+            info_box(self, "Line and Curve Table", "Select one or more polylines first.")
+            return
+        self._show(reports.polyline_report(pr, ids))
+
+    def report_qa(self):
+        pr = self.state.project
+        self._show(reports.qa_report(pr, run_checks(pr)))
+
+    def report_audit(self):
+        """The Point(s) Audit: this job's field points against the state they were imported in.
+
+        The comparison itself is :mod:`plumbline.core.audit`; the run is logged, because a report
+        nobody can find again is a report nobody read, and the counts are the answer to the
+        question the item was asked.
+        """
+        pr = self.state.project
+        a = AUD.compare(pr)
+        self.state.log(f"Point(s) Audit: {a.summary_line()}", "warn" if not a.clean else "ok")
+        self._show(reports.point_audit_report(pr, a))
+
+    def report_crs(self):
+        self._show(reports.crs_report(self.state.project, self._datum_note()))
+
+    # ================================================================== plugins
+    def rebuild_plugins_menu(self, load: bool = False):
+        if load:
+            plugins.load_plugins()
+        m = self.m_plugins
+        m.clear()
+        self._plugin_actions = []
+        tree: dict = {}
+        for cmd in plugins.registry.commands:
+            parts = [p for p in cmd.menu.split("/") if p] if cmd.menu else []
+            node = m
+            for part in parts:
+                sub = next((a.menu() for a in node.actions() if a.menu() and a.text() == part), None)
+                node = sub or node.addMenu(part)
+            act = QAction(cmd.name, self)
+            act.setStatusTip(cmd.description)
+            if cmd.shortcut:
+                act.setShortcut(QKeySequence(cmd.shortcut))
+            act.triggered.connect(lambda _=False, c=cmd: self.run_plugin_command(c))
+            node.addAction(act)
+            self._plugin_actions.append(act)
+        # exporters join the File > Export menu (rebuilt each time)
+        for a in getattr(self, "_plugin_export_actions", []):
+            self.m_export.removeAction(a)
+        self._plugin_export_actions = []
+        for spec in plugins.registry.exporters:
+            a = QAction(f"{spec.name} (plugin)...", self)
+            a.triggered.connect(lambda _=False, sp=spec: self.run_plugin_exporter(sp))
+            self.m_export.addAction(a)
+            self._plugin_export_actions.append(a)
+        if plugins.registry.commands:
+            m.addSeparator()
+        m.addAction("Run &Script...", self.run_script)
+        m.addAction("Python &Console", lambda: (self.d_con.show(), self.d_con.raise_()))
+        m.addSeparator()
+        m.addAction("&Plugin Manager...", lambda: PluginsDialog(self, lambda: self.rebuild_plugins_menu(load=True)).exec())
+        m.addAction("&Open Plugin Folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(plugins.plugin_dir()))))
+        m.addAction("&Reload Plugins", lambda: (self.rebuild_plugins_menu(load=True), self.state.log("Plugins reloaded.", "info")))
+        if plugins.registry.errors:
+            self.state.log(f"{len(plugins.registry.errors)} plugin file(s) failed to load - see Plugins > Plugin Manager.", "warn")
+
+    def _api(self):
+        return plugins.PluginAPI(self.state.project, self.state, log=lambda s: self.state.log(s, "info"),
+                                 ask=lambda p, d: QInputDialog.getText(self, "Plumbline", p, text=d)[0] or None,
+                                 message=lambda t, m: info_box(self, t, m))
+
+    def run_plugin_command(self, cmd):
+        values = None
+        if cmd.params:
+            dlg = ParamDialog(cmd, self)
+            if not dlg.exec():
+                return
+            values = dlg.values()
+        api = self._api()
+        try:
+            with self.state.edit(cmd.name, discard_if_unchanged=True):
+                plugins.run_command(cmd, api, values)
+        except Exception as ex:
+            error_box(self, cmd.name, f"The command failed and its changes were rolled back:\n{ex}", traceback.format_exc())
+            self.state.log(f"Plugin command '{cmd.name}' failed: {ex}", "error")
+
+    def run_plugin_exporter(self, spec):
+        p, _ = QFileDialog.getSaveFileName(self, spec.name, f"{self.state.project.name}{spec.extension}", f"*{spec.extension}")
+        if not p:
+            return
+        try:
+            spec.func(self.state.project, p, self._api())
+            self.state.log(f"{spec.name}: wrote {p}", "ok")
+        except Exception as ex:
+            error_box(self, spec.name, str(ex), traceback.format_exc())
+
+    def run_script(self):
+        p, _ = QFileDialog.getOpenFileName(self, "Run script", "", "Python (*.py)")
+        if not p:
+            return
+        class _ScriptError(Exception):
+            pass
+
+        try:
+            with self.state.edit(f"Script {Path(p).name}", discard_if_unchanged=True):
+                err = plugins.run_script(p, self.state.project, self.state, log=lambda s: self.state.log(s, "info"),
+                                         ask=lambda pr, d: QInputDialog.getText(self, "Plumbline", pr, text=d)[0] or None,
+                                         message=lambda t, m: info_box(self, t, m))
+                if err:
+                    raise _ScriptError(err)
+        except _ScriptError as ex:
+            error_box(self, "Script", "The script raised an error; its changes were rolled back.", str(ex))
+            self.state.log(f"Script {Path(p).name} failed.", "error")
+        else:
+            self.state.log(f"Script {Path(p).name} finished.", "ok")

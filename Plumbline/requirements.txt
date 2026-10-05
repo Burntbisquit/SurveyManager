@@ -1,0 +1,15 @@
+# Plumbline needs Python 3.13 or newer (64-bit); 3.14 is the recommended, fully tested version.
+# Run:  pip install -r requirements.txt   then   python -m plumbline
+# The minimums are the versions the test suite ran against on Python 3.14; newer ones are picked up automatically.
+PySide6-Essentials>=6.11     # Qt user interface (Essentials is enough; the full PySide6 also works)
+numpy>=2.5
+scipy>=1.18                  # Delaunay triangulation, KD-trees
+shapely>=2.1                 # polygon clipping for volumes, breakline noding
+pyproj>=3.8                  # coordinate systems (EPSG catalogue, datum transformations)
+ezdxf>=1.4                   # DXF import / export
+pyogrio>=0.13                # Shapefile / GeoPackage / GeoJSON read + write
+matplotlib>=3.11             # TIN point locator + Agg rasteriser for the shaded surface display
+openpyxl>=3.1                # Excel reports
+Pillow>=12.3                 # images + world-file (PNG/JPG) orthophotos
+rasterio>=1.5                # OPTIONAL - GeoTIFF orthophotos (PNG/JPG + world file work without it)
+pytest>=9.1                  # OPTIONAL - run the test suite

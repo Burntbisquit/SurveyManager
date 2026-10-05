@@ -1,0 +1,9 @@
+﻿Step,Title,Total,Fixed,Open,Pct,Status,Detail
+1,1. Fix All Description Errors,36,0,36,0,Not Started,"0/36 fixed, 36 Open"
+2,2. Fix Duplicate Errors,26,0,26,0,Not Started,"0/26 fixed, 26 Open"
+3,3. Fix Line Code Errors,0,0,0,100,Complete,No line code errors
+4,"4. Check Against Master — Duplicate Points, Merge / Remove / Renumber",4,0,4,50,In Progress,4 new points conflict with master — renumber single/range required
+
+Generated,2026-09-25T15:05:04.803342
+Project,/home/user
+Master,/tmp/master_demo.csv
