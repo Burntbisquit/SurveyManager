@@ -1,2 +1,0 @@
-# SurveyManager
-Survey Manager
