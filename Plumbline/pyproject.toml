@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "plumbline"
+dynamic = ["version"]
+description = "Planimetric and topographic CAD for survey data: CSV/LandXML/DXF/GIS in, surfaces + contours + imagery checks, DXF/reports out."
+readme = "README.md"
+requires-python = ">=3.13"
+classifiers = [
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+    "PySide6-Essentials>=6.11",
+    "numpy>=2.5",
+    "scipy>=1.18",
+    "shapely>=2.1",
+    "pyproj>=3.8",
+    "ezdxf>=1.4",
+    "pyogrio>=0.13",
+    "matplotlib>=3.11",
+    "openpyxl>=3.1",
+    "Pillow>=12.3",
+]
+
+[project.optional-dependencies]
+geotiff = ["rasterio>=1.5"]
+dev = ["pytest>=9.1"]
+
+[project.scripts]
+plumbline = "plumbline.cli:main"
+
+[project.gui-scripts]
+plumbline-gui = "plumbline.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["plumbline*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "plumbline.__version__" }
+
+[tool.setuptools.package-data]
+plumbline = ["resources/*.md", "plugins/examples/*.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::UserWarning"]

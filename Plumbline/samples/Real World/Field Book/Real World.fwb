@@ -1,0 +1,1719 @@
+Code,Description,Symbol,Layer,Entity Type,Category
+DEFAULT,default,CG08,V-SITE-DEFAULT,Point,Default
+MISC,MISC.,CG08,V-SITE-MISC,Point,Default
+DNF,Did Not Find,SPT10,V-PROP-CRNR-NOT FOUND,Point,Corners
+LNF,Did Not Find,SPT10,V-PROP-CRNR-NOT FOUND,Point,Corners
+MAGF,MAG Nail Found,Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+12CIRF,"1/2"" cirf",Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+12IPF,"1/2"" ipf",Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+38IPF,"3/8"" ipf",Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+12IRS,"1/2"" irs",Iron_Pin_Set,V-PROP-CRNR,Point,Corners
+1IRF,"1"" IRF",Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+2IPF,"2"" IPF",Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+34IRF,"3/4"" irf",Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+38IRF,"3/8"" irf",Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+58CIRS,"5/8"" cirs",Iron_Pin_Set,V-PROP-CRNR,Point,Corners
+58IRF,"5/8"" irf",Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+60DF,60d nail found,Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+80DF,80d nail found,Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+BMON,Brass Mon.,Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+CIRS,cirs,Iron_Pin_Set,V-PROP-CRNR,Point,Corners
+CIRF,cirf,Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+ESMT,ESMT,CORNER,V-PROP-CRNR,Point,Corners
+MONA,Alum. Mon.,Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+MONC,Concrete Mon.,Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+PKF,PK Nail Found,Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+RRF,RR Spike Found,Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+TBM,TBM,Benchmark,V-CTRL-VCPT,Point,Corners
+TPF,T Post Found,Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+XF,X Cut Found,Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+100DS,100d nail set,Iron_Pin_Set,V-PROP-CRNR,Point,Corners
+100DF,100d nail found,Iron_Pin_Set,V-PROP-CRNR,Point,Corners
+MAGS,MAG Nail Set,Iron_Pin_Set,V-PROP-CRNR,Point,Corners
+12CIRS,"1/2"" cirs",Iron_Pin_Set,V-PROP-CRNR,Point,Corners
+12IRF,"1/2"" irf",Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+1IPF,"1"" pipe fnd.",Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+1IRS,"1"" irs",Iron_Pin_Set,V-PROP-CRNR,Point,Corners
+34IPF,"3/4"" ipf",Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+38CIRF,"3/8"" cirf",Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+58CIRF,"5/8"" cirf",Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+58IPF,"5/8"" ipf",Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+58IRS,"5/8"" irs",Iron_Pin_Set,V-PROP-CRNR,Point,Corners
+60DS,60d nail set,Iron_Pin_Set,V-PROP-CRNR,Point,Corners
+BM,benchmark,Benchmark,V-CTRL-VCPT,Point,Corners
+BOLT,Bolt,Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+CORNER,CORNER,CORNER,V-Stakeout,Point,Corners
+IPF,iron pipe fnd.,Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+MON,Monument,Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+MONB,Brass Mon.,Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+MONW,Wood Mon.,Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+PKS,PK nail set,Iron_Pin_Set,V-PROP-CRNR,Point,Corners
+RRS,RR Spike set,Iron_Pin_Set,V-PROP-CRNR,Point,Corners
+WMON,Wood Mon.,Iron_Pin_Found,V-PROP-CRNR,Point,Corners
+XS,X set,Iron_Pin_Set,V-PROP-CRNR,Point,Corners
+BH,Bore Hole,Bore_Hole,E_Utility_SUE_BH,Point,SUE
+TH,Bore Hole,Bore_Hole,E_Utility_SUE_TH,Point,SUE
+UFO,UG FO,CG08,E_Utility_Fiber Optic_Fiber Optic Cable,2D Polyline,SUE
+UGC,UGC,CG08,E_Utility_Cable_Line,2D Polyline,SUE
+UGD,Underground Duct,CG08,E_Utility_Duct_Line,2D Polyline,SUE
+UGE,UGE,CG08,E_Utility_Electric_Line,2D Polyline,SUE
+UGG,Gas Line,CG08,E_Utility_Gas_Line,2D Polyline,SUE
+UGP,Petro Line,CG08,E_Utility_Petro_Line,2D Polyline,SUE
+UGSS,Sewer Line,CG08,E_Utility_Sanitary_Sewer_Line,2D Polyline,SUE
+UGSW,UG Storm,CG08,E_Utility_Storm_Line,2D Polyline,SUE
+UT,udg tele line,CG08,E_Utility_Telephone_Line,2D Polyline,SUE
+UGTV,UGTV,CG08,E_Utility_Television_Line,2D Polyline,SUE
+UGU,UGU,CG08,E_Utility_Unknown_Line,2D Polyline,SUE
+UGW,ugw,CG08,E_Utility_Water_Line,2D Polyline,SUE
+UGWW,UGWW,CG08,E_Utility_Waste_Water_Line,2D Polyline,SUE
+A,asphalt,CG08,V-SITE-ASPH,Point,Topo
+B,brick,CG08,V-SITE-BRCK,Point,Topo
+BP,brick pavers,CG08,V-SITE-BRCK,3D Polyline,Topo
+C,concrete,CG08,V-SITE-CONC,Point,Topo
+CLD,cl,CG08,V-SITE-DTCH-CNTR,3D Polyline,Topo
+CL,Centerline,CG08,V-SITE-BRKL-FLOW,3D Polyline,Topo
+RAMPY,ramp,CG08,V-SITE-CONC,3D Polyline,Topo
+EA,asphalt,CG08,V-SITE-ASPH,3D Polyline,Topo
+EB,eob,CG08,V-SITE-BRCK,3D Polyline,Topo
+EC,eoc,CG08,V-SITE-CONC,3D Polyline,Topo
+EJ,ej,CG08,V-SITE-CONC-EJ,3D Polyline,Topo
+EDIRT,edge dirt,CG08,V-SITE-DIRT,3D Polyline,Topo
+EG,edge gravel,CG08,V-SITE-GRVL,3D Polyline,Topo
+ER,rock,CG08,V-SITE-ROCK,3D Polyline,Topo
+ESTONE,eos,CG08,V-SITE-STON,3D Polyline,Topo
+EW,eow,CG08,V-SITE-POND,3D Polyline,Topo
+FL,flowline,CG08,V-SITE-BRKL-FLOW,3D Polyline,Topo
+FLD,flowline ditch,CG08,V-SITE-BRKL-FLOW,3D Polyline,Topo
+GUT,Gutter,CG08,V-SITE-ROAD-GUTR,3D Polyline,Topo
+GB,gradebreak,CG08,V-SITE-BRKL,3D Polyline,Topo
+GVL,gravel,CG08,V-SITE-GRVL,Point,Topo
+NG,NG,CG08,V-SITE-GRND,Point,Topo
+POND,pond,CG08,V-SITE-POND,3D Polyline,Topo
+STRCRK,crack,CG08,V-SITE-MISC,Point,Topo
+SW,Sidewalk,CG08,V-SITE-WALK,3D Polyline,Topo
+BANK,top,CG08,V-SITE-DTCH-TOPD,3D Polyline,Topo
+TOC,TC,SPT10,V-SITE-ROAD-CURB,3D Polyline,Topo
+TCC,curb cut,CG08,V-SITE-ROAD-CURB,3D Polyline,Topo
+TCT,tapered curb,CG08,V-SITE-ROAD-CURB,3D Polyline,Topo
+TOE,toe,CG08,V-SITE-DTCH-BOTD,3D Polyline,Topo
+TOP,top,CG08,V-SITE-DTCH-TOPD,3D Polyline,Topo
+W,top water,CG08,V-SITE-POND,3D Polyline,Topo
+TOA,asphalt,CG08,V-SITE-ASPH,Point,Topo
+12CIRST,"1/2"" cirs",Control_Point,V-CTRL-HCPT,Point,Traverse
+MAGST,Mag Nail Set,Control_Point,V-CTRL-HCPT,Point,Traverse
+MAGFT,Mag Nail Found,Control_Point,V-CTRL-HCPT,Point,Traverse
+12IPFT,"1/2"" pipe fnd.",Control_Point,V-CTRL-HCPT,Point,Traverse
+12IRFT,"1/2"" irf",Control_Point,V-CTRL-HCPT,Point,Traverse
+12IRST,"1/2"" irs",Control_Point,V-CTRL-HCPT,Point,Traverse
+1IRFT,"1"" irf",Control_Point,V-CTRL-HCPT,Point,Traverse
+1IRST,"1"" irs",Control_Point,V-CTRL-HCPT,Point,Traverse
+34IPFT,"3/4"" ipf",Control_Point,V-CTRL-HCPT,Point,Traverse
+34IRFT,"3/4"" irf",Control_Point,V-CTRL-HCPT,Point,Traverse
+34IRST,"3/4"" irs",Control_Point,V-CTRL-HCPT,Point,Traverse
+58CIRFT,"5/8"" cirf",Control_Point,V-CTRL-HCPT,Point,Traverse
+58CIRST,"5/8"" cirs",Control_Point,V-CTRL-HCPT,Point,Traverse
+58IPST,"5/8"" pipe set",Control_Point,V-CTRL-HCPT,Point,Traverse
+58IRFT,"5/8"" irf",Control_Point,V-CTRL-HCPT,Point,Traverse
+58IRST,"5/8"" irs",Control_Point,V-CTRL-HCPT,Point,Traverse
+60DFT,60d nail fnd.,Control_Point,V-CTRL-HCPT,Point,Traverse
+60DST,60d nail set,Control_Point,V-CTRL-HCPT,Point,Traverse
+CIRFT,cirf,Control_Point,V-CTRL-HCPT,Point,Traverse
+CIRST,cirs,Control_Point,V-NODE-HCPT,Point,Traverse
+HTT,hub & tack,Control_Point,V-NODE-HCPT,Point,Traverse
+PKFT,PK nail fnd.,Control_Point,V-CTRL-HCPT,Point,Traverse
+PKST,PK nail set,Control_Point,V-CTRL-HCPT,Point,Traverse
+XFT,X fnd.,Control_Point,V-CTRL-HCPT,Point,Traverse
+XST,X set,Control_Point,V-CTRL-HCPT,Point,Traverse
+CS,Check Shot,Control_Point,V-PROP-CRNR,Point,Traverse
+CKS,Check Shot,Control_Point,V-PROP-CRNR-Check,Point,Traverse
+CKST,Check Shot,Control_Point,V-PROP-CRNR-Check,Point,Traverse
+BCF,BCF,SPT3,V-SITE-FENC-BCF,2D Polyline,Fences
+BWF,Barbed Wire Fence,CG08,V-SITE-FENC-WIRE,2D Polyline,Fences
+CF,Concrete Fence,CG08,V-SITE-FENC-CONC,2D Polyline,Fences
+CLF,Chainlink Fence,CG08,V-SITE-FENC-CLFC,2D Polyline,Fences
+FRM,Fence Remnants,CG08,V-SITE-FENC-CLFC,2D Polyline,Fences
+FNC,Fence,CG08,V-SITE-FENC,2D Polyline,Fences
+GATE,gate,CG08,V-SITE-FENC-GATE,Point,Fences
+GR,Guard Rail,CG08,V-SITE-FENC-GR,2D Polyline,Fences
+MF,Metal Fence,CG08,V-SITE-FENC-METAL,2D Polyline,Fences
+PF,Pipe Fence,CG08,V-SITE-FENC-PIPE,2D Polyline,Fences
+MPF,Metal Pipe Fence,CG08,V-SITE-FENC-PIPE,2D Polyline,Fences
+RF,Rock Fence,CG08,V-SITE-FENC-ROCK,2D Polyline,Fences
+SF,Silt Fence,CG08,V-SITE-FENC-SILT,2D Polyline,Fences
+WDF,Wood Fence,CG08,V-SITE-FENC-WOOD,2D Polyline,Fences
+WRF,Wire Fence,CG08,V-SITE-FENC-WIRE,2D Polyline,Fences
+CTFC,Cell Tower Fence Corner,CTFC,V-SITE-FENC-CTFC,2D Polyline,Fences
+WIF,Iron Fence,CG08,V-SITE-FENC-WIFC,2D Polyline,Fences
+HR,handrail,CG08,V-SITE-FENC-HANDRAIL,3D Polyline,Fences
+BALC,BE,CG08,V-BLDG-OVHD,Line,Building
+BLD,Building Corner,CG08,V-BLDG,3D Polyline,Building
+BLDG,Building Corner,CG08,V-BLDG,3D Polyline,Building
+BC,Building Corner,CG08,V-BLDG,3D Polyline,Building
+SHED,Shed Corner,CG08,V-BLDG,3D Polyline,Building
+COL,Column,CG02,V-BLDG,Point,Building
+PLATE,Plate,CG02,V-BLDG,Point,Building
+DOOR,Door Way,CG08,V-BLDG,Point,Building
+FF,FF,CG08,V-BLDG,Point,Building
+OHG,Overhang,CG08,V-BLDG-OVHD,Point,Building
+AWN,Overhang,CG08,V-BLDG-OVHD,Point,Building
+PKG,Garage,CG08,V-BLDG,3D Polyline,Building
+RD,Roof Drain,ROOFDRAIN,V-STRM-ROOF,Point,Building
+RE,Eaves,CG08,V-BLDG,Point,Building
+PEAK,Roof Peak,CG08,V-BLDG,Point,Building
+STEP,step,CG08,V-SITE-STRS,3D Polyline,Building
+V,Vent,CG08,V-BLDG,Point,Building
+PAE,paint-electric,paint-elec,V-POWR-UNDR,Point,Utility Marks
+PFC,pinflag-cable,cable-pinflag,V-CABL-UNDR,Point,Utility Marks
+PFE,pinflag-electric,elec-pin,V-POWR-UNDR,Point,Utility Marks
+PFFO,pinflag-foc,FOC-pinflag,V-FOCM-UNDR,Point,Utility Marks
+PFO,paint-foc,FOC-paint,V-FOCM-UNDR,Point,Utility Marks
+PFST,pinflag-storm,storm-pinflag,V-STRM-UNDR,Point,Utility Marks
+PFS,pinflag-sewer,sewerpipn,V-SSWR-UNDR,Point,Utility Marks
+PFG,pinflag-gas,Gas-pin,V-NGAS-UNDR,Point,Utility Marks
+PFW,pinflag-water,w-pin,V-WATR-UNDR,Point,Utility Marks
+PFT,pinflag-tele,telephoneflag,V-COMM-UNDR,Point,Utility Marks
+PG,paint-gas,paint-gas,V-NGAS-UNDR,Point,Utility Marks
+PAS,paint-sewer,paint-ww,V-SSWR-UNDR,Point,Utility Marks
+PAST,paint-storm,storm-paint,V-STRM-UNDR,Point,Utility Marks
+PTE,paint-tele,paint-tele,V-COMM-UNDR,Point,Utility Marks
+PUC,paint-cable,cable-paint,V-CABL-UNDR,Point,Utility Marks
+PW,paint-water,paint-water,V-WATR-UNDR,Point,Utility Marks
+TCB,traffic box,Traffic_Signal_Control_Box,E_Utility_Traffic_Signal_Control_Box,Point,Traffic
+TS,traffic light,Traffic_Signal_Pole,E_Utility_Traffic_Signal,Point,Traffic
+SPED,Signal Pedestal,TSP,E_Utility_Traffic_Signal,Point,Traffic
+TSCAM,Traffic Camera,SPT114,E_Utility_Traffic_Signal_Camera,Point,Traffic
+TSB,traffic pull box,TSCB,E_Utility_Traffic_Signal_Power_Box,Point,Traffic
+BPM,Pipeline Marker,SPT200,E_Utility_Marker,Point,Water
+FDC,FDC,FDC,E_Utility_Water_FDC,Point,Water
+FH,FH,Water_Fire_Hydrant_Ex,E_Utility_Water_Fire_Hydrant_FH,Point,Water
+ICV,sv,Water_Irrigation_Valve_Ex,E_Utility_Water_ICV,Point,Water
+MHW,Water MH,Water_Manhole_Ex,E_Utility_Water_Water ManHole_MH,Point,Water
+SB,Sprinkler Box,SPRINKBO,E_Utility_Water_Sprinkler_Box,Point,Water
+SP,Sprinkler,CG13,E_Utility_Water_Sprinkler,Point,Water
+SPIP,Standpipe,STNDPIPE,E_Utility_Water_Stand_Pipe,Point,Water
+FHN,Top Nut FH,Water_Fire_Hydrant_Ex,E_Utility_Water_TopNut,Point,Water
+SV,sv,Water_Irrigation_Valve_Ex,E_Utility_Water_Sprinkler_Valve,Point,Water
+TON,wv-TON,Water_Valve_Ex,E_Utility_Water_Top_Nut,Point,Water
+TWV,Twin Valve,Water_Valve_Ex,E_Utility_Water_Twin_Valve,Point,Water
+WL,Water Line,CG08,E_Utility_Water_Line,2D Polyline,Water
+WM,wm,Water_Meter_Ex,E_Utility_Water_Water Meter_WM,Point,Water
+WBPM,WBPM,WBPM,E_Utility_Water_Water Meter_WBPM,Point,Water
+WTST,WTST,WTST,E_Utility_Water_Water TST_WTST,Point,Water
+WVNT,WVNT,WVNT,E_Utility_Water_Water VNT_WVNT,Point,Water
+WMH,Water MH,Water_Manhole_Ex,E_Utility_Water_Water ManHole_MH,Point,Water
+WV,wv,Water_Valve_Ex,E_Utility_Water_Water Valve_WV,Point,Water
+WVLT,Water Vault,Water_Meter_Vault_Ex,E_Utility_Water_Water Vault_VLTW,Point,Water
+FC,FC,CG19,E_Utility_Gas_Filler_Cap,Point,Gas
+GASTST,Gas Test,SUGV,E_Utility_Gas_Test_Station,Point,Gas
+GBPM,Gas Marker,UGGM,E_Utility_Gas_Pipeline_Marker,Point,Gas
+GVENT,Gas Vent,SPT241,E_Utility_Gas_Pipeline,Point,Gas
+GM,Gas Meter,Gas_Meter,E_Utility_Gas_Gas_Meter_GM,Point,Gas
+GMH,Gas MH,Gas_Utility_Manhole_Ex,E_Utility_Gas_Manhole_MH,Point,Gas
+GTST,GTST,GTST,E_Utility_Gas_GTST,Point,Gas
+GVNT,GVNT,GVNT,E_Utility_Gas_GVNT,Point,Gas
+FTAP,FTAP,FTAP,E_Utility_Gas_FTAP,Point,Gas
+GRS,GRS,GRS,E_Utility_Gas_GRS,Point,Gas
+GV,Gas Valve,GASVALVE,E_Utility_Gas_Valve_GV,Point,Gas
+MW,OMW,OMW,E_Utility_Gas_Monitoring_Well,Point,Gas
+PGP,Petrolium Gas Pump,SPT81,E_Utility_Gas_Pump,Point,Gas
+PPM,Petr. Pipeline Marker,UGGM,E_Utility_Gas_Petroleum_Pipeline_Marker,Point,Gas
+EDUCT,Elec. Duct,CG08,E_Utility_Electric_Duct,2D Polyline,Electric
+EM,Electric Meter,ELECMTR,E_Utility_Electric_ElectricMeter,Point,Electric
+UGEM,Electric Marker,SPT2,E_Utility_Electric_ElectricMarker,Point,Electric
+EMH,Elec. MH,Electric_Utility_Manhole_Ex,E_Utility_Electric_Manhole Electric_MHE,Point,Electric
+EBPM,EBPM,EBPM,E_Utility_Electric_EBPM,Point,Electric
+HMLP,HMLP,HMLP,E_Utility_Electric_HMLP,Point,Electric
+TTL,TTL,TTL,E_Utility_Electric_TTL,Point,Electric
+SG,SG,SG,E_Utility_Electric_SG,Point,Electric
+3PR,3PR,3PR,E_Utility_Electric_3PR,Point,Electric
+1PR,1PR,1PR,E_Utility_Electric_1PR,Point,Electric
+SAG,SAG,SAG,E_Utility_Electric_SAG,Point,Electric
+EPB,Electric Pull Box,EPB,E_Utility_Electric_PullBox,Point,Electric
+EPBX,Electric Pull Box,EPB,E_Utility_Electric_PullBox,Point,Electric
+EPED,Elec. Ped.,ELECTPED,E_Utility_Electric_PED,Point,Electric
+ET,Elec. Tower,Electric_Power_Pole,E_Utility_Electric_Tower,Point,Electric
+EV,Elec. Vault,Electric_vault,E_Utility_Electric_Vault,Point,Electric
+GUY,guy,Electric_Power_Pole_Anchor,E_Utility_Electric_guy,Point,Electric
+GW,guy,Electric_Power_Pole_Anchor,E_Utility_Electric_Guy,Point,Electric
+INSULATOR,Insulator,CG08,E_Utility_Electric_Insulator,2D Polyline,Electric
+LP,LP,Street_Lamp,E_Utility_Electric_LightPole,Point,Electric
+LPR,LP,Street_Lamp,E_Utility_Electric_LightPole,Point,Electric
+LPS,LP,Street_Lamp,E_Utility_Electric_LightPole,Point,Electric
+LS,LP,Street_Lamp,E_Utility_Electric_LightPole,Point,Electric
+MHE,Elec. MH,Electric_Utility_Manhole_Ex,E_Utility_Electric_Manhole Electric_MHE,Point,Electric
+OHE,OH Line,CG08,E_Utility_Electric_Line_OHE,2D Polyline,Electric
+PB,Electric Pull Box,EPB,E_Utility_Electric_PullBox,Point,Electric
+PBX,Electric Pull Box,EPB,E_Utility_Electric_PullBox,Point,Electric
+PP,pp,Electric_Power_Pole,E_Utility_Electric_Power Pole_PP,Point,Electric
+TF,trans.,Electric_Pad_Mounted_Transformer,E_Utility_Electric_Transformer_TRNS,Point,Electric
+TRANS,trans.,Electric_Pad_Mounted_Transformer,E_Utility_Electric_Transformer_TRNS,Point,Electric
+PPC,pp,Electric_Power_Pole,E_Utility_Electric_Power Pole_PP,Point,Electric
+CI,Curb Inlet,CG08,E_Utility_Storm_Inlet,3D Polyline,Storm
+CMP,CMP,CG08,E_Utility_Storm_CMP,3D Polyline,Storm
+CPP,Cor. Plastic Pipe,CG08,E_Utility_Storm_CMP,3D Polyline,Storm
+D,Drain,DRAIN,E_Utility_Storm_Drain,Point,Storm
+FLU,Flume,CG08,E_Utility_Storm_culv,3D Polyline,Storm
+GI,Grate Inlet,GRATE,E_Utility_Storm_Inlet,Point,Storm
+HDW,Headwall,CG08,E_Utility_Storm_Headwall,3D Polyline,Storm
+MHS,Storm MH,Storm_Drain_Manhole_Ex,E_Utility_Storm_Manhole Storm Sewer_MHS,Point,Storm
+PVC,PVC,CG08,E_Utility_Storm_PVC,3D Polyline,Storm
+RCP,RCP,CG08,E_Utility_Storm_RCP,2D Polyline,Storm
+CULV,Box Culv,CG08,E_Utility_Storm_culv,2D Polyline,Storm
+RIP,Rip-Rap,CG08,E_Utility_Storm_RIP,3D Polyline,Storm
+SDMH,Storm MH,Storm_Drain_Manhole_Ex,E_Utility_Storm_Manhole Storm Sewer_MHS,Point,Storm
+STMH,Storm MH,Storm_Drain_Manhole_Ex,E_Utility_Storm_Manhole Storm Sewer_MHS,Point,Storm
+TCD,Curb Drain,CG08,E_Utility_Storm_Drain,3D Polyline,Storm
+CD,Curb Drain,CD,E_Utility_Storm_Drain,3D Polyline,Storm
+YI,Wye Inlet,CG08,E_Utility_Storm_Inlet,3D Polyline,Storm
+WGW,wingwall,CG08,E_Utility_Storm_Headwall,3D Polyline,Storm
+MHT,Tele. MH,Telephone_Utility_Manhole_Ex,E_Utility_Telephone_Manhole Telephone_MHT,Point,Telephone
+TFP,TFP,TFP,E_Utility_Telephone_TFP,Point,Telephone
+XBOX,XBOX,XBOX,E_Utility_Telephone_XBOX,Point,Telephone
+TDP,TDP,TDP,E_Utility_Telephone_TDP,Point,Telephone
+TPR,TPR,TPR,E_Utility_Telephone_TPR,Point,Telephone
+TT,TT,TT,E_Utility_Telephone_TT,Point,Telephone
+UGTM,Tele. Marker,SPT195,E_Utility_Telephone_Marker,Point,Telephone
+OHW,OH Line,CG08,E_Utility_Telephone_Line_OHE,2D Polyline,Telephone
+SUTPED,Tele. Ped.,SPT173,E_Utility_Telephone_PED,Point,Telephone
+TBOX,Tele. Box,HHT,E_Utility_Telephone_Box,Point,Telephone
+TDUCT,Tele Duct,CG08,E_Utility_Telephone_Duct,2D Polyline,Telephone
+TLNE,OH Line,CG08,E_Utility_Unknown_Line_OH,2D Polyline,Telephone
+TMH,Tele. MH,Telephone_Utility_Manhole_Ex,E_Utility_Telephone_Manhole Telephone_MHT,Point,Telephone
+TPBX,Tele Pull Box,HHT,E_Utility_Telephone_Pullbox,Point,Telephone
+TPED,Tele. Ped.,Telephone_Pedestal,E_Utility_Telephone_PED,Point,Telephone
+TPOL,Tele. Pole,CG82,E_Utility_Telephone_Pole,Point,Telephone
+TVLT,Tele. Vault,CG87,E_Utility_Telephone_Vault,Point,Telephone
+UGTD,udg tele line,CG08,E_Utility_Telephone_Line_Duct,2D Polyline,Telephone
+CPED,cable. Ped.,CPED,E_Utility_Cable_PED,Point,Cable
+CBPM,CBPM,CBPM,E_Utility_Cable_CBPM,Point,Cable
+CHH,CHH,CHH,E_Utility_Cable_CHH,Point,Cable
+CJB,CJB,CJB,E_Utility_Cable_CJB,Point,Cable
+CATVR,CATVR,CATVR,E_Utility_Cable_CATVR,Point,Cable
+CPR,CPR,CPR,E_Utility_Cable_CPR,Point,Cable
+CTST,CTST,CTST,E_Utility_Cable_CTST,Point,Cable
+JB,jb,HHT,E_Utility_Cable_Jbox,Point,Cable
+UCM,Cable Marker,FOCM,E_Utility_Cable_Marker,Point,Cable
+CPB,Pull Box,HHT,E_Utility_Cable_Pullbox,Point,Cable
+CVLT,Cable Vault,SPT155,E_Utility_Cable_Vault,Point,Cable
+FOCM,FOCM,UGFM,E_Utility_Fiber Optic_FOCM,Point,Fiber Optic
+FOCL,FOC Line,SPT10,E_Utility_Fiber Optic_FOCM,2D Polyline,Fiber Optic
+FOCPED,FOC Ped.,CPED,E_Utility_Fiber Optic_PED,Point,Fiber Optic
+FPED,FOC Ped.,CPED,E_Utility_Fiber Optic_PED,Point,Fiber Optic
+FVLT,FOC Vault,VLTFO,E_Utility_Fiber Optic_Fiber Optic Cable Vault_VLTFO,Point,Fiber Optic
+TVPED,T.V. Ped.,TPED,E_Utility_Fiber Optic_TV_PED,Point,Fiber Optic
+FOMH,FO MH,Fiber_Optic_Manhole_Ex,E_Utility_Fiber Optic_MH,Point,Fiber Optic
+FOHH,FOHH,FOHH,E_Utility_Fiber Optic_FOHH,Point,Fiber Optic
+FTST,FTST,FTST,E_Utility_Fiber Optic_FTST,Point,Fiber Optic
+FPR,FPR,FPR,E_Utility_Fiber Optic_FPR,Point,Fiber Optic
+RFP,RFP,RFP,E_Utility_Fiber Optic_RFP,Point,Fiber Optic
+RT,RT,RT,E_Utility_Fiber Optic_RT,Point,Fiber Optic
+BR,Bridge,CG08,V-BRDG,3D Polyline,Structures
+BAR,Barricade,CG08,V-SITE-Barricade,3D Polyline,Structures
+BEAM,Bridge Beam,CG08,V-BRDG,Point,Structures
+BRJ,Bridge Joint,CG08,V-BRDG,Point,Structures
+BENT,Bridge Bent,CG08,V-BRDG,Point,Structures
+BRAB,Bridge Abutment,CG08,V-BRDG,Point,Structures
+DECK,wood deck,CG08,V-BLDG-DECK,3D Polyline,Structures
+PR,Pier,CG13,V-BLDG,Point,Structures
+RWALL,Wall,CG08,V-SITE-RTWL,3D Polyline,Structures
+STR,stairs,CG08,V-SITE-STRS,3D Polyline,Structures
+WALL,Wall,CG08,V-SITE-RTWL,3D Polyline,Structures
+WLL,Wall,CG08,V-SITE-RTWL,3D Polyline,Structures
+WLLB,Wall,CG08,V-SITE-RTWL,3D Polyline,Structures
+WLLC,Wall,CG08,V-SITE-RTWL,3D Polyline,Structures
+WLLCO,Wall,CG08,V-SITE-RTWL,3D Polyline,Structures
+WLLR,Wall,CG08,V-SITE-RTWL,3D Polyline,Structures
+WLLRR,Wall,CG08,V-SITE-RTWL,3D Polyline,Structures
+FRL,Firelane,CG08,V-PRKG-FLNE,2D Polyline,Signs
+GS,Gas Sign,Street_Sign,V-NGAS-SIGN,Point,Signs
+HC,HC Parking,HANDI,V-PRKG-MRKG,Point,Signs
+NP,No Parking,CG08,V-PRKG-STRP,2D Polyline,Signs
+PM1,Parking Meter,Parking_Meter,V-PRKG-FIXT,Point,Signs
+PSTP,parking,CG08,V-PRKG-STRP,2D Polyline,Signs
+PTSP,parking,CG08,V-PRKG-STRP,2D Polyline,Signs
+PX,PEDXING,Street_Sign,V-ROAD-SIGN,Point,Signs
+PXING,PXING,PXING,V-ROAD-SIGN_PXING,Point,Signs
+SN,Sign,Street_Sign,V-ROAD-SIGN,Point,Signs
+SNB,Billboard,CG104,V-ROAD-SIGN,Point,Signs
+SNC,Conc. Sign,CG104,V-ROAD-SIGN,Point,Signs
+SNHC,HC Parking Sign,Street_Sign,V-PRKG-SIGN,Point,Signs
+SNM,Metal Sign,Street_Sign,V-ROAD-SIGN,Point,Signs
+SNME,Merge Sign,Street_Sign,V-ROAD-SIGN,Point,Signs
+SNP,Parking Sign,Street_Sign,V-PRKG-SIGN,Point,Signs
+SNR,Road Sign,Street_Sign,V-ROAD-SIGN,Point,Signs
+SNS,Stop Sign,Street_Sign,V-ROAD-SIGN,Point,Signs
+SNSL,Speed Limit Sign,Street_Sign,V-ROAD-SIGN,Point,Signs
+SNW,Wood Sign,Street_Sign,V-ROAD-SIGN,Point,Signs
+SNY,Yield Sign,Street_Sign,V-ROAD-SIGN,Point,Signs
+STRIP,Traffic Stripe,CG08,V-PRKG-STRP,2D Polyline,Signs
+TSN,Tele. sign,Street_Sign,V-COMM-SIGN,Point,Signs
+TVSN,T.V. Sign,Street_Sign,V-COMM-SIGN,Point,Signs
+YP,Stripe yellow,CG08,V-PRKG-STRP-Yellow,3D Polyline,Signs
+RWS,Stripe RWS,CG08,V-PRKG-RWS,3D Polyline,Signs
+RLR,RLR,CG08,V-PRKG-RLR,3D Polyline,Signs
+HB,Stripe RWS,CG08,V-PRKG-HB,3D Polyline,Signs
+RTCL,Stripe RTCL,CG08,V-PRKG-RTCL,3D Polyline,Signs
+YPS,Stripe yellow,CG08,V-PRKG-STRP-Yellow,3D Polyline,Signs
+PSY,PS SOLID YELLOW,CG08,E_Road_Paint Stripe_Paint Stripe solid Yellow_PSY,2D Polyline,Signs
+PSDY,PS Dashed Yellow,CG08,E_Road_Paint Stripe_Paint Stripe Dashed Yellow_PSDY,2D Polyline,Signs
+PS,PS Solid White,CG08,E_Road_Paint Stripe_Paint Stripe Solid White_PS,2D Polyline,Signs
+PSD,PS Dashed White,CG08,E_Road_Paint Stripe_Paint Stripe Dashed White_PSD,2D Polyline,Signs
+TXS,Taxiway Sign,CG08,V-TAXI-SIGN,Point,Signs
+TXSN,Taxiway Sign,CG08,V-TAXI-SIGN,Point,Signs
+RLF,light,CG44,V-SITE-STRC,Point,Signs
+GLIT,light,CG44,V-SITE-STRC,Point,Landscape
+LT,Land. Timber,CG08,V-SITE-STRC,3D Polyline,Landscape
+ME,Metal Edging,CG08,V-SITE-STRC,3D Polyline,Landscape
+PLTR,planter,CG08,V-SITE-STRC,3D Polyline,Landscape
+BUSH,Bush,Tree,V-SITE-VEGE,Point,Trees
+CLU,Tree Cluster,CG132,V-SITE-VEGE,Point,Trees
+DL,Tree Line,CG08,V-SITE-VEGE,2D Polyline,Trees
+F,FLOWER,FLWR,V-SITE-VEGE-FLWR,Point,Trees
+HDG,hedge,Tree,V-SITE-VEGE,Point,Trees
+HEDGE,hedge,Tree,V-SITE-VEGE,Point,Trees
+SH,Shrubs,Tree,V-SITE-VEGE,Point,Trees
+T05,"Tree 5""",Tree,V-SITE-VEGE,Point,Trees
+T03,"Tree 3""",Tree,V-SITE-VEGE,Point,Trees
+T04,"Tree 4""",Tree,V-SITE-VEGE,Point,Trees
+T08,"Tree 8""",Tree,V-SITE-VEGE,Point,Trees
+T09,"Tree 9""",Tree,V-SITE-VEGE,Point,Trees
+T06,"Tree 6""",Tree,V-SITE-VEGE,Point,Trees
+T07,"Tree 7""",Tree,V-SITE-VEGE,Point,Trees
+T26,"Tree 26""",Tree,V-SITE-VEGE,Point,Trees
+T27,"Tree 27""",Tree,V-SITE-VEGE,Point,Trees
+T28,"Tree 28""",Tree,V-SITE-VEGE,Point,Trees
+T29,"Tree 29""",Tree,V-SITE-VEGE,Point,Trees
+T30,"Tree 30""",Tree,V-SITE-VEGE,Point,Trees
+T31,"Tree 31""",Tree,V-SITE-VEGE,Point,Trees
+T32,"Tree 32""",Tree,V-SITE-VEGE,Point,Trees
+T33,"Tree 33""",Tree,V-SITE-VEGE,Point,Trees
+T34,"Tree 34""",Tree,V-SITE-VEGE,Point,Trees
+T35,"Tree 35""",Tree,V-SITE-VEGE,Point,Trees
+T36,"Tree 36""",Tree,V-SITE-VEGE,Point,Trees
+T12,"Tree 12""",Tree,V-SITE-VEGE,Point,Trees
+T13,"Tree 13""",Tree,V-SITE-VEGE,Point,Trees
+T14,"Tree 14""",Tree,V-SITE-VEGE,Point,Trees
+T15,"Tree 15""",Tree,V-SITE-VEGE,Point,Trees
+T16,"Tree 16""",Tree,V-SITE-VEGE,Point,Trees
+T17,"Tree 17""",Tree,V-SITE-VEGE,Point,Trees
+T18,"Tree 18""",Tree,V-SITE-VEGE,Point,Trees
+T19,"Tree 19""",Tree,V-SITE-VEGE,Point,Trees
+T20,"Tree 20""",Tree,V-SITE-VEGE,Point,Trees
+T21,"Tree 21""",Tree,V-SITE-VEGE,Point,Trees
+T22,"Tree 22""",Tree,V-SITE-VEGE,Point,Trees
+T23,"Tree 23""",Tree,V-SITE-VEGE,Point,Trees
+T24,"Tree 24""",Tree,V-SITE-VEGE,Point,Trees
+T25,"Tree 25""",Tree,V-SITE-VEGE,Point,Trees
+T10,"Tree 10""",Tree,V-SITE-VEGE,Point,Trees
+T11,"Tree 11""",Tree,V-SITE-VEGE,Point,Trees
+TASH04,"Ash 4""",Tree,V-SITE-VEGE,Point,Trees
+TASH02,"Ash 2""",Tree,V-SITE-VEGE,Point,Trees
+TASH03,"Ash 3""",Tree,V-SITE-VEGE,Point,Trees
+TASH08,"Ash 8""",Tree,V-SITE-VEGE,Point,Trees
+TASH12,"Ash 12""",Tree,V-SITE-VEGE,Point,Trees
+TASH06,"Ash 6""",Tree,V-SITE-VEGE,Point,Trees
+TASH07,"Ash 7""",Tree,V-SITE-VEGE,Point,Trees
+TASH09,"Ash 9""",Tree,V-SITE-VEGE,Point,Trees
+TASH10,"Ash 10""",Tree,V-SITE-VEGE,Point,Trees
+TASH11,"Ash 11""",Tree,V-SITE-VEGE,Point,Trees
+TASH13,"Ash 13""",Tree,V-SITE-VEGE,Point,Trees
+TASH14,"Ash 14""",Tree,V-SITE-VEGE,Point,Trees
+TASH15,"Ash 15""",Tree,V-SITE-VEGE,Point,Trees
+TASH16,"Ash 16""",Tree,V-SITE-VEGE,Point,Trees
+TASH17,"Ash 17""",Tree,V-SITE-VEGE,Point,Trees
+TASH05,"Ash 5""",Tree,V-SITE-VEGE,Point,Trees
+TASH18,"Ash 18""",Tree,V-SITE-VEGE,Point,Trees
+TASH19,"Ash 19""",Tree,V-SITE-VEGE,Point,Trees
+TASH20,"Ash 20""",Tree,V-SITE-VEGE,Point,Trees
+TASH21,"Ash 21""",Tree,V-SITE-VEGE,Point,Trees
+TASH22,"Ash 22""",Tree,V-SITE-VEGE,Point,Trees
+TASH23,"Ash 23""",Tree,V-SITE-VEGE,Point,Trees
+TASH24,"Ash 24""",Tree,V-SITE-VEGE,Point,Trees
+TASH25,"Ash 25""",Tree,V-SITE-VEGE,Point,Trees
+TASH26,"Ash 26""",Tree,V-SITE-VEGE,Point,Trees
+TASH27,"Ash 27""",Tree,V-SITE-VEGE,Point,Trees
+TASH28,"Ash 28""",Tree,V-SITE-VEGE,Point,Trees
+TASH29,"Ash 29""",Tree,V-SITE-VEGE,Point,Trees
+TASH30,"Ash 30""",Tree,V-SITE-VEGE,Point,Trees
+TASH31,"Ash 31""",Tree,V-SITE-VEGE,Point,Trees
+TASH32,"Ash 32""",Tree,V-SITE-VEGE,Point,Trees
+TASH33,"Ash 33""",Tree,V-SITE-VEGE,Point,Trees
+TASH34,"Ash 34""",Tree,V-SITE-VEGE,Point,Trees
+TASH35,"Ash 35""",Tree,V-SITE-VEGE,Point,Trees
+TASH36,"Ash 36""",Tree,V-SITE-VEGE,Point,Trees
+TASH46,"Ash 46""",Tree,V-SITE-VEGE,Point,Trees
+TBA06,"Bois De Arc 6""",Tree,V-SITE-VEGE,Point,Trees
+TBA05,"Bois De Arc 5""",Tree,V-SITE-VEGE,Point,Trees
+TBA04,"Bois De Arc 4""",Tree,V-SITE-VEGE,Point,Trees
+TBA07,"Bois De Arc 7""",Tree,V-SITE-VEGE,Point,Trees
+TBA08,"Bois De Arc 8""",Tree,V-SITE-VEGE,Point,Trees
+TBA09,"Bois De Arc 9""",Tree,V-SITE-VEGE,Point,Trees
+TBA10,"Bois De Arc 10""",Tree,V-SITE-VEGE,Point,Trees
+TBA11,"Bois De Arc 11""",Tree,V-SITE-VEGE,Point,Trees
+TBA12,"Bois De Arc 12""",Tree,V-SITE-VEGE,Point,Trees
+TBA13,"Bois De Arc 13""",Tree,V-SITE-VEGE,Point,Trees
+TBA14,"Bois De Arc 14""",Tree,V-SITE-VEGE,Point,Trees
+TBA15,"Bois De Arc 15""",Tree,V-SITE-VEGE,Point,Trees
+TBA16,"Bois De Arc 16""",Tree,V-SITE-VEGE,Point,Trees
+TBA17,"Bois De Arc 17""",Tree,V-SITE-VEGE,Point,Trees
+TBA18,"Bois De Arc 18""",Tree,V-SITE-VEGE,Point,Trees
+TBA19,"Bois De Arc 19""",Tree,V-SITE-VEGE,Point,Trees
+TBA20,"Bois De Arc 20""",Tree,V-SITE-VEGE,Point,Trees
+TBA21,"Bois De Arc 21""",Tree,V-SITE-VEGE,Point,Trees
+TBA22,"Bois De Arc 22""",Tree,V-SITE-VEGE,Point,Trees
+TBA23,"Bois De Arc 23""",Tree,V-SITE-VEGE,Point,Trees
+TBA24,"Bois De Arc 24""",Tree,V-SITE-VEGE,Point,Trees
+TBA25,"Bois De Arc 25""",Tree,V-SITE-VEGE,Point,Trees
+TBA26,"Bois De Arc 26""",Tree,V-SITE-VEGE,Point,Trees
+TBA27,"Bois De Arc 27""",Tree,V-SITE-VEGE,Point,Trees
+TBA28,"Bois De Arc 28""",Tree,V-SITE-VEGE,Point,Trees
+TBA29,"Bois De Arc 29""",Tree,V-SITE-VEGE,Point,Trees
+TBA30,"Bois De Arc 30""",Tree,V-SITE-VEGE,Point,Trees
+TBA31,"Bois De Arc 31""",Tree,V-SITE-VEGE,Point,Trees
+TBA32,"Bois De Arc 32""",Tree,V-SITE-VEGE,Point,Trees
+TBA33,"Bois De Arc 33""",Tree,V-SITE-VEGE,Point,Trees
+TBA34,"Bois De Arc 34""",Tree,V-SITE-VEGE,Point,Trees
+TBA35,"Bois De Arc 35""",Tree,V-SITE-VEGE,Point,Trees
+TBA36,"Bois De Arc 36""",Tree,V-SITE-VEGE,Point,Trees
+TBA54,"Bois De Arc 54""",Tree,V-SITE-VEGE,Point,Trees
+TBA56,"Bois De Arc 56""",Tree,V-SITE-VEGE,Point,Trees
+TBE06,"Box Elder 6""",Tree,V-SITE-VEGE,Point,Trees
+TBE07,"Box Elder 7""",Tree,V-SITE-VEGE,Point,Trees
+TBE05,"Box Elder 5""",Tree,V-SITE-VEGE,Point,Trees
+TBE04,"Box Elder 4""",Tree,V-SITE-VEGE,Point,Trees
+TBE08,"Box Elder 8""",Tree,V-SITE-VEGE,Point,Trees
+TBE09,"Box Elder 9""",Tree,V-SITE-VEGE,Point,Trees
+TBE10,"Box Elder 10""",Tree,V-SITE-VEGE,Point,Trees
+TBE11,"Box Elder 11""",Tree,V-SITE-VEGE,Point,Trees
+TBE12,"Box Elder 12""",Tree,V-SITE-VEGE,Point,Trees
+TBE13,"Box Elder 13""",Tree,V-SITE-VEGE,Point,Trees
+TBE14,"Box Elder 14""",Tree,V-SITE-VEGE,Point,Trees
+TBE15,"Box Elder 15""",Tree,V-SITE-VEGE,Point,Trees
+TBE16,"Box Elder 16""",Tree,V-SITE-VEGE,Point,Trees
+TBE17,"Box Elder 17""",Tree,V-SITE-VEGE,Point,Trees
+TBE18,"Box Elder 18""",Tree,V-SITE-VEGE,Point,Trees
+TBE19,"Box Elder 19""",Tree,V-SITE-VEGE,Point,Trees
+TBE20,"Box Elder 20""",Tree,V-SITE-VEGE,Point,Trees
+TBE21,"Box Elder 21""",Tree,V-SITE-VEGE,Point,Trees
+TBE22,"Box Elder 22""",Tree,V-SITE-VEGE,Point,Trees
+TBE23,"Box Elder 23""",Tree,V-SITE-VEGE,Point,Trees
+TBE24,"Box Elder 24""",Tree,V-SITE-VEGE,Point,Trees
+TBE25,"Box Elder 25""",Tree,V-SITE-VEGE,Point,Trees
+TBE26,"Box Elder 26""",Tree,V-SITE-VEGE,Point,Trees
+TBE27,"Box Elder 27""",Tree,V-SITE-VEGE,Point,Trees
+TBE28,"Box Elder 28""",Tree,V-SITE-VEGE,Point,Trees
+TBE29,"Box Elder 29""",Tree,V-SITE-VEGE,Point,Trees
+TBE30,"Box Elder 30""",Tree,V-SITE-VEGE,Point,Trees
+TBE31,"Box Elder 31""",Tree,V-SITE-VEGE,Point,Trees
+TBE32,"Box Elder 32""",Tree,V-SITE-VEGE,Point,Trees
+TBE33,"Box Elder 33""",Tree,V-SITE-VEGE,Point,Trees
+TBE34,"Box Elder 34""",Tree,V-SITE-VEGE,Point,Trees
+TBE35,"Box Elder 35""",Tree,V-SITE-VEGE,Point,Trees
+TBE36,"Box Elder 36""",Tree,V-SITE-VEGE,Point,Trees
+TBP06,"Bradford Pear 6""",Tree,V-SITE-VEGE,Point,Trees
+TBP07,"Bradford Pear 7""",Tree,V-SITE-VEGE,Point,Trees
+TBP08,"Bradford Pear 8""",Tree,V-SITE-VEGE,Point,Trees
+TBP09,"Bradford Pear 9""",Tree,V-SITE-VEGE,Point,Trees
+TBP10,"Bradford Pear 10""",Tree,V-SITE-VEGE,Point,Trees
+TBP11,"Bradford Pear 11""",Tree,V-SITE-VEGE,Point,Trees
+TBP12,"Bradford Pear 12""",Tree,V-SITE-VEGE,Point,Trees
+TBP13,"Bradford Pear 13""",Tree,V-SITE-VEGE,Point,Trees
+TBP02,"Bradford Pear 2""",Tree,V-SITE-VEGE,Point,Trees
+TBP03,"Bradford Pear 3""",Tree,V-SITE-VEGE,Point,Trees
+TBP04,"Bradford Pear 4""",Tree,V-SITE-VEGE,Point,Trees
+TBP05,"Bradford Pear 5""",Tree,V-SITE-VEGE,Point,Trees
+TBP14,"Bradford Pear 14""",Tree,V-SITE-VEGE,Point,Trees
+TBP15,"Bradford Pear 15""",Tree,V-SITE-VEGE,Point,Trees
+TBP16,"Bradford Pear 16""",Tree,V-SITE-VEGE,Point,Trees
+TBP17,"Bradford Pear 17""",Tree,V-SITE-VEGE,Point,Trees
+TBP18,"Bradford Pear 18""",Tree,V-SITE-VEGE,Point,Trees
+TBP19,"Bradford Pear 19""",Tree,V-SITE-VEGE,Point,Trees
+TBP20,"Bradford Pear 20""",Tree,V-SITE-VEGE,Point,Trees
+TBP21,"Bradford Pear 21""",Tree,V-SITE-VEGE,Point,Trees
+TBP22,"Bradford Pear 22""",Tree,V-SITE-VEGE,Point,Trees
+TBP23,"Bradford Pear 23""",Tree,V-SITE-VEGE,Point,Trees
+TBP24,"Bradford Pear 24""",Tree,V-SITE-VEGE,Point,Trees
+TBP25,"Bradford Pear 25""",Tree,V-SITE-VEGE,Point,Trees
+TBP26,"Bradford Pear 26""",Tree,V-SITE-VEGE,Point,Trees
+TBP27,"Bradford Pear 27""",Tree,V-SITE-VEGE,Point,Trees
+TBP28,"Bradford Pear 28""",Tree,V-SITE-VEGE,Point,Trees
+TBP29,"Bradford Pear 29""",Tree,V-SITE-VEGE,Point,Trees
+TBP30,"Bradford Pear 30""",Tree,V-SITE-VEGE,Point,Trees
+TBP31,"Bradford Pear 31""",Tree,V-SITE-VEGE,Point,Trees
+TBP32,"Bradford Pear 32""",Tree,V-SITE-VEGE,Point,Trees
+TBP33,"Bradford Pear 33""",Tree,V-SITE-VEGE,Point,Trees
+TBP34,"Bradford Pear 34""",Tree,V-SITE-VEGE,Point,Trees
+TBP35,"Bradford Pear 35""",Tree,V-SITE-VEGE,Point,Trees
+TBP36,"Bradford Pear 36""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH09,"Birch 9""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH10,"Birch 10""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH11,"Birch 11""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH12,"Birch 12""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH13,"Birch 13""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH14,"Birch 14""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH15,"Birch 15""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH16,"Birch 16""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH17,"Birch 17""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH18,"Birch 18""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH19,"Birch 19""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH20,"Birch 20""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH21,"Birch 21""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH22,"Birch 22""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH23,"Birch 23""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH24,"Birch 24""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH25,"Birch 25""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH26,"Birch 26""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH27,"Birch 27""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH28,"Birch 28""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH29,"Birch 29""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH30,"Birch 30""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH31,"Birch 31""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH32,"Birch 32""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH33,"Birch 33""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH34,"Birch 34""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH35,"Birch 35""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH36,"Birch 36""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH06,"Birch 6""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH07,"Birch 7""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH08,"Birch 8""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH05,"Birch 5""",Tree,V-SITE-VEGE,Point,Trees
+TBIRCH04,"Birch 4""",Tree,V-SITE-VEGE,Point,Trees
+THC06,"Hercules Club 6""",Tree,V-SITE-VEGE,Point,Trees
+THC05,"Hercules Club 5""",Tree,V-SITE-VEGE,Point,Trees
+THC04,"Hercules Club 4""",Tree,V-SITE-VEGE,Point,Trees
+THC07,"Hercules Club 7""",Tree,V-SITE-VEGE,Point,Trees
+THC08,"Hercules Club 8""",Tree,V-SITE-VEGE,Point,Trees
+THC09,"Hercules Club 9""",Tree,V-SITE-VEGE,Point,Trees
+THC10,"Hercules Club 10""",Tree,V-SITE-VEGE,Point,Trees
+THC11,"Hercules Club 11""",Tree,V-SITE-VEGE,Point,Trees
+THC12,"Hercules Club 12""",Tree,V-SITE-VEGE,Point,Trees
+THC13,"Hercules Club 13""",Tree,V-SITE-VEGE,Point,Trees
+THC14,"Hercules Club 14""",Tree,V-SITE-VEGE,Point,Trees
+THC15,"Hercules Club 15""",Tree,V-SITE-VEGE,Point,Trees
+THC16,"Hercules Club 16""",Tree,V-SITE-VEGE,Point,Trees
+THC17,"Hercules Club 17""",Tree,V-SITE-VEGE,Point,Trees
+THC18,"Hercules Club 18""",Tree,V-SITE-VEGE,Point,Trees
+THC19,"Hercules Club 19""",Tree,V-SITE-VEGE,Point,Trees
+THC20,"Hercules Club 20""",Tree,V-SITE-VEGE,Point,Trees
+THC21,"Hercules Club 21""",Tree,V-SITE-VEGE,Point,Trees
+THC22,"Hercules Club 22""",Tree,V-SITE-VEGE,Point,Trees
+THC23,"Hercules Club 23""",Tree,V-SITE-VEGE,Point,Trees
+THC24,"Hercules Club 24""",Tree,V-SITE-VEGE,Point,Trees
+THC25,"Hercules Club 25""",Tree,V-SITE-VEGE,Point,Trees
+THC26,"Hercules Club 26""",Tree,V-SITE-VEGE,Point,Trees
+THC27,"Hercules Club 27""",Tree,V-SITE-VEGE,Point,Trees
+THC28,"Hercules Club 28""",Tree,V-SITE-VEGE,Point,Trees
+THC29,"Hercules Club 29""",Tree,V-SITE-VEGE,Point,Trees
+THC30,"Hercules Club 30""",Tree,V-SITE-VEGE,Point,Trees
+THC31,"Hercules Club 31""",Tree,V-SITE-VEGE,Point,Trees
+THC32,"Hercules Club 32""",Tree,V-SITE-VEGE,Point,Trees
+THC33,"Hercules Club 33""",Tree,V-SITE-VEGE,Point,Trees
+THC34,"Hercules Club 34""",Tree,V-SITE-VEGE,Point,Trees
+THC35,"Hercules Club 35""",Tree,V-SITE-VEGE,Point,Trees
+THC36,"Hercules Club 36""",Tree,V-SITE-VEGE,Point,Trees
+THCB06,"China Berry 6""",Tree,V-SITE-VEGE,Point,Trees
+THCB07,"China Berry 7""",Tree,V-SITE-VEGE,Point,Trees
+THCB08,"China Berry 8""",Tree,V-SITE-VEGE,Point,Trees
+THCB09,"China Berry 9""",Tree,V-SITE-VEGE,Point,Trees
+THCB10,"China Berry 10""",Tree,V-SITE-VEGE,Point,Trees
+THCB11,"China Berry 11""",Tree,V-SITE-VEGE,Point,Trees
+THCB12,"China Berry 12""",Tree,V-SITE-VEGE,Point,Trees
+THCB13,"China Berry 13""",Tree,V-SITE-VEGE,Point,Trees
+THCB14,"China Berry 14""",Tree,V-SITE-VEGE,Point,Trees
+THCB15,"China Berry 15""",Tree,V-SITE-VEGE,Point,Trees
+THCB16,"China Berry 16""",Tree,V-SITE-VEGE,Point,Trees
+THCB17,"China Berry 17""",Tree,V-SITE-VEGE,Point,Trees
+THCB18,"China Berry 18""",Tree,V-SITE-VEGE,Point,Trees
+THCB19,"China Berry 19""",Tree,V-SITE-VEGE,Point,Trees
+THCB20,"China Berry 20""",Tree,V-SITE-VEGE,Point,Trees
+THCB21,"China Berry 21""",Tree,V-SITE-VEGE,Point,Trees
+THCB22,"China Berry 22""",Tree,V-SITE-VEGE,Point,Trees
+THCB23,"China Berry 23""",Tree,V-SITE-VEGE,Point,Trees
+THCB24,"China Berry 24""",Tree,V-SITE-VEGE,Point,Trees
+THCB25,"China Berry 25""",Tree,V-SITE-VEGE,Point,Trees
+THCB26,"China Berry 26""",Tree,V-SITE-VEGE,Point,Trees
+THCB27,"China Berry 27""",Tree,V-SITE-VEGE,Point,Trees
+THCB28,"China Berry 28""",Tree,V-SITE-VEGE,Point,Trees
+THCB29,"China Berry 29""",Tree,V-SITE-VEGE,Point,Trees
+THCB30,"China Berry 30""",Tree,V-SITE-VEGE,Point,Trees
+THCB31,"China Berry 31""",Tree,V-SITE-VEGE,Point,Trees
+THCB32,"China Berry 32""",Tree,V-SITE-VEGE,Point,Trees
+THCB33,"China Berry 33""",Tree,V-SITE-VEGE,Point,Trees
+THCB34,"China Berry 34""",Tree,V-SITE-VEGE,Point,Trees
+THCB35,"China Berry 35""",Tree,V-SITE-VEGE,Point,Trees
+THCB36,"China Berry 36""",Tree,V-SITE-VEGE,Point,Trees
+THCB05,"China Berry 5""",Tree,V-SITE-VEGE,Point,Trees
+THCB04,"China Berry 4""",Tree,V-SITE-VEGE,Point,Trees
+THL10,"Honey Locust 10""",Tree,V-SITE-VEGE,Point,Trees
+THL11,"Honey Locust 11""",Tree,V-SITE-VEGE,Point,Trees
+THL12,"Honey Locust 12""",Tree,V-SITE-VEGE,Point,Trees
+THL13,"Honey Locust 13""",Tree,V-SITE-VEGE,Point,Trees
+THL14,"Honey Locust 14""",Tree,V-SITE-VEGE,Point,Trees
+THL15,"Honey Locust 15""",Tree,V-SITE-VEGE,Point,Trees
+THL16,"Honey Locust 16""",Tree,V-SITE-VEGE,Point,Trees
+THL17,"Honey Locust 17""",Tree,V-SITE-VEGE,Point,Trees
+THL18,"Honey Locust 18""",Tree,V-SITE-VEGE,Point,Trees
+THL19,"Honey Locust 19""",Tree,V-SITE-VEGE,Point,Trees
+THL20,"Honey Locust 20""",Tree,V-SITE-VEGE,Point,Trees
+THL21,"Honey Locust 21""",Tree,V-SITE-VEGE,Point,Trees
+THL22,"Honey Locust 22""",Tree,V-SITE-VEGE,Point,Trees
+THL23,"Honey Locust 23""",Tree,V-SITE-VEGE,Point,Trees
+THL24,"Honey Locust 24""",Tree,V-SITE-VEGE,Point,Trees
+THL25,"Honey Locust 25""",Tree,V-SITE-VEGE,Point,Trees
+THL26,"Honey Locust 26""",Tree,V-SITE-VEGE,Point,Trees
+THL27,"Honey Locust 27""",Tree,V-SITE-VEGE,Point,Trees
+THL28,"Honey Locust 28""",Tree,V-SITE-VEGE,Point,Trees
+THL29,"Honey Locust 29""",Tree,V-SITE-VEGE,Point,Trees
+THL30,"Honey Locust 30""",Tree,V-SITE-VEGE,Point,Trees
+THL31,"Honey Locust 31""",Tree,V-SITE-VEGE,Point,Trees
+THL32,"Honey Locust 32""",Tree,V-SITE-VEGE,Point,Trees
+THL33,"Honey Locust 33""",Tree,V-SITE-VEGE,Point,Trees
+THL34,"Honey Locust 34""",Tree,V-SITE-VEGE,Point,Trees
+THL35,"Honey Locust 35""",Tree,V-SITE-VEGE,Point,Trees
+THL36,"Honey Locust 36""",Tree,V-SITE-VEGE,Point,Trees
+THL08,"Honey Locust 8""",Tree,V-SITE-VEGE,Point,Trees
+THL06,"Honey Locust 6""",Tree,V-SITE-VEGE,Point,Trees
+THL07,"Honey Locust 7""",Tree,V-SITE-VEGE,Point,Trees
+THL05,"Honey Locust 5""",Tree,V-SITE-VEGE,Point,Trees
+THL04,"Honey Locust 4""",Tree,V-SITE-VEGE,Point,Trees
+THL09,"Honey Locust 9""",Tree,V-SITE-VEGE,Point,Trees
+TJUN06,"Juniper 6""",Tree,V-SITE-VEGE,Point,Trees
+TJUN05,"Juniper 5""",Tree,V-SITE-VEGE,Point,Trees
+TJUN04,"Juniper 4""",Tree,V-SITE-VEGE,Point,Trees
+TJUN07,"Juniper 7""",Tree,V-SITE-VEGE,Point,Trees
+TJUN08,"Juniper 8""",Tree,V-SITE-VEGE,Point,Trees
+TJUN09,"Juniper 9""",Tree,V-SITE-VEGE,Point,Trees
+TJUN10,"Juniper 10""",Tree,V-SITE-VEGE,Point,Trees
+TJUN11,"Juniper 11""",Tree,V-SITE-VEGE,Point,Trees
+TJUN12,"Juniper 12""",Tree,V-SITE-VEGE,Point,Trees
+TJUN13,"Juniper 13""",Tree,V-SITE-VEGE,Point,Trees
+TJUN14,"Juniper 14""",Tree,V-SITE-VEGE,Point,Trees
+TJUN15,"Juniper 15""",Tree,V-SITE-VEGE,Point,Trees
+TJUN16,"Juniper 16""",Tree,V-SITE-VEGE,Point,Trees
+TJUN17,"Juniper 17""",Tree,V-SITE-VEGE,Point,Trees
+TJUN18,"Juniper 18""",Tree,V-SITE-VEGE,Point,Trees
+TJUN19,"Juniper 19""",Tree,V-SITE-VEGE,Point,Trees
+TJUN20,"Juniper 20""",Tree,V-SITE-VEGE,Point,Trees
+TJUN21,"Juniper 21""",Tree,V-SITE-VEGE,Point,Trees
+TJUN22,"Juniper 22""",Tree,V-SITE-VEGE,Point,Trees
+TJUN23,"Juniper 23""",Tree,V-SITE-VEGE,Point,Trees
+TJUN24,"Juniper 24""",Tree,V-SITE-VEGE,Point,Trees
+TJUN25,"Juniper 25""",Tree,V-SITE-VEGE,Point,Trees
+TJUN26,"Juniper 26""",Tree,V-SITE-VEGE,Point,Trees
+TJUN27,"Juniper 27""",Tree,V-SITE-VEGE,Point,Trees
+TJUN28,"Juniper 28""",Tree,V-SITE-VEGE,Point,Trees
+TJUN29,"Juniper 29""",Tree,V-SITE-VEGE,Point,Trees
+TJUN30,"Juniper 30""",Tree,V-SITE-VEGE,Point,Trees
+TJUN31,"Juniper 31""",Tree,V-SITE-VEGE,Point,Trees
+TJUN32,"Juniper 32""",Tree,V-SITE-VEGE,Point,Trees
+TJUN33,"Juniper 33""",Tree,V-SITE-VEGE,Point,Trees
+TJUN34,"Juniper 34""",Tree,V-SITE-VEGE,Point,Trees
+TJUN35,"Juniper 35""",Tree,V-SITE-VEGE,Point,Trees
+TJUN36,"Juniper 36""",Tree,V-SITE-VEGE,Point,Trees
+TCAT05,"Catalpa 5""",Tree,V-SITE-VEGE,Point,Trees
+TCAT04,"Catalpa 4""",Tree,V-SITE-VEGE,Point,Trees
+TCAT16,"Catalpa 16""",Tree,V-SITE-VEGE,Point,Trees
+TCAT17,"Catalpa 17""",Tree,V-SITE-VEGE,Point,Trees
+TCAT18,"Catalpa 18""",Tree,V-SITE-VEGE,Point,Trees
+TCAT19,"Catalpa 19""",Tree,V-SITE-VEGE,Point,Trees
+TCAT20,"Catalpa 20""",Tree,V-SITE-VEGE,Point,Trees
+TCAT21,"Catalpa 21""",Tree,V-SITE-VEGE,Point,Trees
+TCAT22,"Catalpa 22""",Tree,V-SITE-VEGE,Point,Trees
+TCAT23,"Catalpa 23""",Tree,V-SITE-VEGE,Point,Trees
+TCAT24,"Catalpa 24""",Tree,V-SITE-VEGE,Point,Trees
+TCAT25,"Catalpa 25""",Tree,V-SITE-VEGE,Point,Trees
+TCAT26,"Catalpa 26""",Tree,V-SITE-VEGE,Point,Trees
+TCAT27,"Catalpa 27""",Tree,V-SITE-VEGE,Point,Trees
+TCAT28,"Catalpa 28""",Tree,V-SITE-VEGE,Point,Trees
+TCAT29,"Catalpa 29""",Tree,V-SITE-VEGE,Point,Trees
+TCAT30,"Catalpa 30""",Tree,V-SITE-VEGE,Point,Trees
+TCAT31,"Catalpa 31""",Tree,V-SITE-VEGE,Point,Trees
+TCAT32,"Catalpa 32""",Tree,V-SITE-VEGE,Point,Trees
+TCAT33,"Catalpa 33""",Tree,V-SITE-VEGE,Point,Trees
+TCAT34,"Catalpa 34""",Tree,V-SITE-VEGE,Point,Trees
+TCAT35,"Catalpa 35""",Tree,V-SITE-VEGE,Point,Trees
+TCAT36,"Catalpa 36""",Tree,V-SITE-VEGE,Point,Trees
+TCAT06,"Catalpa 6""",Tree,V-SITE-VEGE,Point,Trees
+TCAT07,"Catalpa 7""",Tree,V-SITE-VEGE,Point,Trees
+TCAT08,"Catalpa 8""",Tree,V-SITE-VEGE,Point,Trees
+TCAT09,"Catalpa 9""",Tree,V-SITE-VEGE,Point,Trees
+TCAT10,"Catalpa 10""",Tree,V-SITE-VEGE,Point,Trees
+TCAT11,"Catalpa 11""",Tree,V-SITE-VEGE,Point,Trees
+TCAT12,"Catalpa 12""",Tree,V-SITE-VEGE,Point,Trees
+TCAT13,"Catalpa 13""",Tree,V-SITE-VEGE,Point,Trees
+TCAT14,"Catalpa 14""",Tree,V-SITE-VEGE,Point,Trees
+TCAT15,"Catalpa 15""",Tree,V-SITE-VEGE,Point,Trees
+TCDR05,"Cedar 5""",Tree,V-SITE-VEGE,Point,Trees
+TCDR04,"Cedar 4""",Tree,V-SITE-VEGE,Point,Trees
+TCDR08,"Cedar 8""",Tree,V-SITE-VEGE,Point,Trees
+TCDR09,"Cedar 9""",Tree,V-SITE-VEGE,Point,Trees
+TCDR11,"Cedar 11""",Tree,V-SITE-VEGE,Point,Trees
+TCDR12,"Cedar 12""",Tree,V-SITE-VEGE,Point,Trees
+TCDR13,"Cedar 13""",Tree,V-SITE-VEGE,Point,Trees
+TCDR15,"Cedar 15""",Tree,V-SITE-VEGE,Point,Trees
+TCDR14,"Cedar 14""",Tree,V-SITE-VEGE,Point,Trees
+TCDR10,"Cedar 10""",Tree,V-SITE-VEGE,Point,Trees
+TCDR06,"Cedar 6""",Tree,V-SITE-VEGE,Point,Trees
+TCDR07,"Cedar 7""",Tree,V-SITE-VEGE,Point,Trees
+TCDR16,"Cedar 16""",Tree,V-SITE-VEGE,Point,Trees
+TCDR17,"Cedar 17""",Tree,V-SITE-VEGE,Point,Trees
+TCDR18,"Cedar 18""",Tree,V-SITE-VEGE,Point,Trees
+TCDR19,"Cedar 19""",Tree,V-SITE-VEGE,Point,Trees
+TCDR24,"Cedar 24""",Tree,V-SITE-VEGE,Point,Trees
+TCDR25,"Cedar 25""",Tree,V-SITE-VEGE,Point,Trees
+TCDR26,"Cedar 26""",Tree,V-SITE-VEGE,Point,Trees
+TCE08,"Cedar Elm 8""",Tree,V-SITE-VEGE,Point,Trees
+TCE09,"Cedar Elm 9""",Tree,V-SITE-VEGE,Point,Trees
+TCE10,"Cedar Elm 10""",Tree,V-SITE-VEGE,Point,Trees
+TCE11,"Cedar Elm 11""",Tree,V-SITE-VEGE,Point,Trees
+TCE23,"Cedar Elm 23""",Tree,V-SITE-VEGE,Point,Trees
+TCE24,"Cedar Elm 24""",Tree,V-SITE-VEGE,Point,Trees
+TCE25,"Cedar Elm 25""",Tree,V-SITE-VEGE,Point,Trees
+TCE26,"Cedar Elm 26""",Tree,V-SITE-VEGE,Point,Trees
+TCE27,"Cedar Elm 27""",Tree,V-SITE-VEGE,Point,Trees
+TCE28,"Cedar Elm 28""",Tree,V-SITE-VEGE,Point,Trees
+TCE29,"Cedar Elm 29""",Tree,V-SITE-VEGE,Point,Trees
+TCE30,"Cedar Elm 30""",Tree,V-SITE-VEGE,Point,Trees
+TCE31,"Cedar Elm 31""",Tree,V-SITE-VEGE,Point,Trees
+TCE32,"Cedar Elm 32""",Tree,V-SITE-VEGE,Point,Trees
+TCE33,"Cedar Elm 33""",Tree,V-SITE-VEGE,Point,Trees
+TCE34,"Cedar Elm 34""",Tree,V-SITE-VEGE,Point,Trees
+TCE35,"Cedar Elm 35""",Tree,V-SITE-VEGE,Point,Trees
+TCE36,"Cedar Elm 36""",Tree,V-SITE-VEGE,Point,Trees
+TCE16,"Cedar Elm 16""",Tree,V-SITE-VEGE,Point,Trees
+TCE17,"Cedar Elm 17""",Tree,V-SITE-VEGE,Point,Trees
+TCE18,"Cedar Elm 18""",Tree,V-SITE-VEGE,Point,Trees
+TCE19,"Cedar Elm 19""",Tree,V-SITE-VEGE,Point,Trees
+TCE20,"Cedar Elm 20""",Tree,V-SITE-VEGE,Point,Trees
+TCE21,"Cedar Elm 21""",Tree,V-SITE-VEGE,Point,Trees
+TCE22,"Cedar Elm 22""",Tree,V-SITE-VEGE,Point,Trees
+TCE12,"Cedar Elm 12""",Tree,V-SITE-VEGE,Point,Trees
+TCE13,"Cedar Elm 13""",Tree,V-SITE-VEGE,Point,Trees
+TCE14,"Cedar Elm 14""",Tree,V-SITE-VEGE,Point,Trees
+TCE15,"Cedar Elm 15""",Tree,V-SITE-VEGE,Point,Trees
+TCE04,"Cedar Elm 4""",Tree,V-SITE-VEGE,Point,Trees
+TCE05,"Cedar Elm 5""",Tree,V-SITE-VEGE,Point,Trees
+TCE06,"Cedar Elm 6""",Tree,V-SITE-VEGE,Point,Trees
+TCE07,"Cedar Elm 7""",Tree,V-SITE-VEGE,Point,Trees
+TCM05,"Crape Myrtle 5""",Tree,V-SITE-VEGE,Point,Trees
+TCHB06,"China Berry 6""",Tree,V-SITE-VEGE,Point,Trees
+TCHB07,"China Berry 7""",Tree,V-SITE-VEGE,Point,Trees
+TCHB08,"China Berry 8""",Tree,V-SITE-VEGE,Point,Trees
+TCHB09,"China Berry 9""",Tree,V-SITE-VEGE,Point,Trees
+TCHB10,"China Berry 10""",Tree,V-SITE-VEGE,Point,Trees
+TCHB11,"China Berry 11""",Tree,V-SITE-VEGE,Point,Trees
+TCHB05,"China Berry 5""",Tree,V-SITE-VEGE,Point,Trees
+TCHB04,"China Berry 4""",Tree,V-SITE-VEGE,Point,Trees
+TCHB12,"China Berry 12""",Tree,V-SITE-VEGE,Point,Trees
+TCHB13,"China Berry 13""",Tree,V-SITE-VEGE,Point,Trees
+TCHB14,"China Berry 14""",Tree,V-SITE-VEGE,Point,Trees
+TCHB15,"China Berry 15""",Tree,V-SITE-VEGE,Point,Trees
+TCHB16,"China Berry 16""",Tree,V-SITE-VEGE,Point,Trees
+TCHB17,"China Berry 17""",Tree,V-SITE-VEGE,Point,Trees
+TCHB18,"China Berry 18""",Tree,V-SITE-VEGE,Point,Trees
+TCHB19,"China Berry 19""",Tree,V-SITE-VEGE,Point,Trees
+TCHB20,"China Berry 20""",Tree,V-SITE-VEGE,Point,Trees
+TCHB21,"China Berry 21""",Tree,V-SITE-VEGE,Point,Trees
+TCHB22,"China Berry 22""",Tree,V-SITE-VEGE,Point,Trees
+TCHB23,"China Berry 23""",Tree,V-SITE-VEGE,Point,Trees
+TCHB24,"China Berry 24""",Tree,V-SITE-VEGE,Point,Trees
+TCHB25,"China Berry 25""",Tree,V-SITE-VEGE,Point,Trees
+TCHB26,"China Berry 26""",Tree,V-SITE-VEGE,Point,Trees
+TCHB27,"China Berry 27""",Tree,V-SITE-VEGE,Point,Trees
+TCHB28,"China Berry 28""",Tree,V-SITE-VEGE,Point,Trees
+TCHB29,"China Berry 29""",Tree,V-SITE-VEGE,Point,Trees
+TCHB30,"China Berry 30""",Tree,V-SITE-VEGE,Point,Trees
+TCHB31,"China Berry 31""",Tree,V-SITE-VEGE,Point,Trees
+TCHB32,"China Berry 32""",Tree,V-SITE-VEGE,Point,Trees
+TCHB33,"China Berry 33""",Tree,V-SITE-VEGE,Point,Trees
+TCHB34,"China Berry 34""",Tree,V-SITE-VEGE,Point,Trees
+TCHB35,"China Berry 35""",Tree,V-SITE-VEGE,Point,Trees
+TCHB36,"China Berry 36""",Tree,V-SITE-VEGE,Point,Trees
+TCDR27,"Cedar 27""",Tree,V-SITE-VEGE,Point,Trees
+TCDR28,"Cedar 28""",Tree,V-SITE-VEGE,Point,Trees
+TCDR29,"Cedar 29""",Tree,V-SITE-VEGE,Point,Trees
+TCDR30,"Cedar 30""",Tree,V-SITE-VEGE,Point,Trees
+TCDR31,"Cedar 31""",Tree,V-SITE-VEGE,Point,Trees
+TCDR32,"Cedar 32""",Tree,V-SITE-VEGE,Point,Trees
+TCDR33,"Cedar 33""",Tree,V-SITE-VEGE,Point,Trees
+TCDR34,"Cedar 34""",Tree,V-SITE-VEGE,Point,Trees
+TCDR35,"Cedar 35""",Tree,V-SITE-VEGE,Point,Trees
+TCDR36,"Cedar 36""",Tree,V-SITE-VEGE,Point,Trees
+TCDR20,"Cedar 20""",Tree,V-SITE-VEGE,Point,Trees
+TCDR21,"Cedar 21""",Tree,V-SITE-VEGE,Point,Trees
+TCDR22,"Cedar 22""",Tree,V-SITE-VEGE,Point,Trees
+TCDR23,"Cedar 23""",Tree,V-SITE-VEGE,Point,Trees
+TCM18,"Crape Myrtle 18""",Tree,V-SITE-VEGE,Point,Trees
+TCM19,"Crape Myrtle 19""",Tree,V-SITE-VEGE,Point,Trees
+TCM20,"Crape Myrtle 20""",Tree,V-SITE-VEGE,Point,Trees
+TCM21,"Crape Myrtle 21""",Tree,V-SITE-VEGE,Point,Trees
+TCM22,"Crape Myrtle 22""",Tree,V-SITE-VEGE,Point,Trees
+TCM23,"Crape Myrtle 23""",Tree,V-SITE-VEGE,Point,Trees
+TCM24,"Crape Myrtle 24""",Tree,V-SITE-VEGE,Point,Trees
+TCM25,"Crape Myrtle 25""",Tree,V-SITE-VEGE,Point,Trees
+TCM26,"Crape Myrtle 26""",Tree,V-SITE-VEGE,Point,Trees
+TCM27,"Crape Myrtle 27""",Tree,V-SITE-VEGE,Point,Trees
+TCM28,"Crape Myrtle 28""",Tree,V-SITE-VEGE,Point,Trees
+TCM29,"Crape Myrtle 29""",Tree,V-SITE-VEGE,Point,Trees
+TCM30,"Crape Myrtle 30""",Tree,V-SITE-VEGE,Point,Trees
+TCM31,"Crape Myrtle 31""",Tree,V-SITE-VEGE,Point,Trees
+TCM32,"Crape Myrtle 32""",Tree,V-SITE-VEGE,Point,Trees
+TCM33,"Crape Myrtle 33""",Tree,V-SITE-VEGE,Point,Trees
+TCM34,"Crape Myrtle 34""",Tree,V-SITE-VEGE,Point,Trees
+TCM35,"Crape Myrtle 35""",Tree,V-SITE-VEGE,Point,Trees
+TCM36,"Crape Myrtle 36""",Tree,V-SITE-VEGE,Point,Trees
+TCM14,"Crape Myrtle 14""",Tree,V-SITE-VEGE,Point,Trees
+TCM15,"Crape Myrtle 15""",Tree,V-SITE-VEGE,Point,Trees
+TCM16,"Crape Myrtle 16""",Tree,V-SITE-VEGE,Point,Trees
+TCM17,"Crape Myrtle 17""",Tree,V-SITE-VEGE,Point,Trees
+TCM12,"Crape Myrtle 12""",Tree,V-SITE-VEGE,Point,Trees
+TCM13,"Crape Myrtle 13""",Tree,V-SITE-VEGE,Point,Trees
+TCM10,"Crape Myrtle 10""",Tree,V-SITE-VEGE,Point,Trees
+TCM11,"Crape Myrtle 11""",Tree,V-SITE-VEGE,Point,Trees
+TCM08,"Crape Myrtle 8""",Tree,V-SITE-VEGE,Point,Trees
+TCM09,"Crape Myrtle 9""",Tree,V-SITE-VEGE,Point,Trees
+TCM06,"Crape Myrtle 6""",Tree,V-SITE-VEGE,Point,Trees
+TCM07,"Crape Myrtle 7""",Tree,V-SITE-VEGE,Point,Trees
+TCM04,"Crape Myrtle 4""",Tree,V-SITE-VEGE,Point,Trees
+TCM02,"Crape Myrtle 2""",Tree,V-SITE-VEGE,Point,Trees
+TCW05,"Cottonwood 5""",Tree,V-SITE-VEGE,Point,Trees
+TCW04,"Cottonwood 4""",Tree,V-SITE-VEGE,Point,Trees
+TCYP08,"Cypress 8""",Tree,V-SITE-VEGE,Point,Trees
+TCYP09,"Cypress 9""",Tree,V-SITE-VEGE,Point,Trees
+TCYP06,"Cypress 6""",Tree,V-SITE-VEGE,Point,Trees
+TCYP07,"Cypress 7""",Tree,V-SITE-VEGE,Point,Trees
+TCYP05,"Cypress 5""",Tree,V-SITE-VEGE,Point,Trees
+TCYP04,"Cypress 4""",Tree,V-SITE-VEGE,Point,Trees
+TCYP00,Cypress,Tree,V-SITE-VEGE,Point,Trees
+TCW36,"Cottonwood 36""",Tree,V-SITE-VEGE,Point,Trees
+TCW10,"Cottonwood 10""",Tree,V-SITE-VEGE,Point,Trees
+TCW11,"Cottonwood 11""",Tree,V-SITE-VEGE,Point,Trees
+TCW12,"Cottonwood 12""",Tree,V-SITE-VEGE,Point,Trees
+TCW13,"Cottonwood 13""",Tree,V-SITE-VEGE,Point,Trees
+TCW14,"Cottonwood 14""",Tree,V-SITE-VEGE,Point,Trees
+TCW15,"Cottonwood 15""",Tree,V-SITE-VEGE,Point,Trees
+TCW16,"Cottonwood 16""",Tree,V-SITE-VEGE,Point,Trees
+TCW17,"Cottonwood 17""",Tree,V-SITE-VEGE,Point,Trees
+TCW18,"Cottonwood 18""",Tree,V-SITE-VEGE,Point,Trees
+TCW19,"Cottonwood 19""",Tree,V-SITE-VEGE,Point,Trees
+TCW20,"Cottonwood 20""",Tree,V-SITE-VEGE,Point,Trees
+TCW21,"Cottonwood 21""",Tree,V-SITE-VEGE,Point,Trees
+TCW22,"Cottonwood 22""",Tree,V-SITE-VEGE,Point,Trees
+TCW23,"Cottonwood 23""",Tree,V-SITE-VEGE,Point,Trees
+TCW24,"Cottonwood 24""",Tree,V-SITE-VEGE,Point,Trees
+TCW25,"Cottonwood 25""",Tree,V-SITE-VEGE,Point,Trees
+TCW26,"Cottonwood 26""",Tree,V-SITE-VEGE,Point,Trees
+TCW27,"Cottonwood 27""",Tree,V-SITE-VEGE,Point,Trees
+TCW28,"Cottonwood 28""",Tree,V-SITE-VEGE,Point,Trees
+TCW29,"Cottonwood 29""",Tree,V-SITE-VEGE,Point,Trees
+TCW30,"Cottonwood 30""",Tree,V-SITE-VEGE,Point,Trees
+TCW31,"Cottonwood 31""",Tree,V-SITE-VEGE,Point,Trees
+TCW32,"Cottonwood 32""",Tree,V-SITE-VEGE,Point,Trees
+TCW33,"Cottonwood 33""",Tree,V-SITE-VEGE,Point,Trees
+TCW34,"Cottonwood 34""",Tree,V-SITE-VEGE,Point,Trees
+TCW35,"Cottonwood 35""",Tree,V-SITE-VEGE,Point,Trees
+TCW08,"Cottonwood 8""",Tree,V-SITE-VEGE,Point,Trees
+TCW06,"Cottonwood 6""",Tree,V-SITE-VEGE,Point,Trees
+TCW07,"Cottonwood 7""",Tree,V-SITE-VEGE,Point,Trees
+TCW09,"Cottonwood 9""",Tree,V-SITE-VEGE,Point,Trees
+TCYP22,"Cypress 22""",Tree,V-SITE-VEGE,Point,Trees
+TCYP23,"Cypress 23""",Tree,V-SITE-VEGE,Point,Trees
+TCYP24,"Cypress 24""",Tree,V-SITE-VEGE,Point,Trees
+TCYP25,"Cypress 25""",Tree,V-SITE-VEGE,Point,Trees
+TCYP26,"Cypress 26""",Tree,V-SITE-VEGE,Point,Trees
+TCYP27,"Cypress 27""",Tree,V-SITE-VEGE,Point,Trees
+TCYP28,"Cypress 28""",Tree,V-SITE-VEGE,Point,Trees
+TCYP29,"Cypress 29""",Tree,V-SITE-VEGE,Point,Trees
+TCYP30,"Cypress 30""",Tree,V-SITE-VEGE,Point,Trees
+TCYP31,"Cypress 31""",Tree,V-SITE-VEGE,Point,Trees
+TCYP32,"Cypress 32""",Tree,V-SITE-VEGE,Point,Trees
+TCYP33,"Cypress 33""",Tree,V-SITE-VEGE,Point,Trees
+TCYP34,"Cypress 34""",Tree,V-SITE-VEGE,Point,Trees
+TCYP35,"Cypress 35""",Tree,V-SITE-VEGE,Point,Trees
+TCYP36,"Cypress 36""",Tree,V-SITE-VEGE,Point,Trees
+TCYP18,"Cypress 18""",Tree,V-SITE-VEGE,Point,Trees
+TCYP19,"Cypress 19""",Tree,V-SITE-VEGE,Point,Trees
+TCYP20,"Cypress 20""",Tree,V-SITE-VEGE,Point,Trees
+TCYP21,"Cypress 21""",Tree,V-SITE-VEGE,Point,Trees
+TCYP16,"Cypress 16""",Tree,V-SITE-VEGE,Point,Trees
+TCYP17,"Cypress 17""",Tree,V-SITE-VEGE,Point,Trees
+TCYP14,"Cypress 14""",Tree,V-SITE-VEGE,Point,Trees
+TCYP15,"Cypress 15""",Tree,V-SITE-VEGE,Point,Trees
+TCYP12,"Cypress 12""",Tree,V-SITE-VEGE,Point,Trees
+TCYP13,"Cypress 13""",Tree,V-SITE-VEGE,Point,Trees
+TCYP10,"Cypress 10""",Tree,V-SITE-VEGE,Point,Trees
+TCYP11,"Cypress 11""",Tree,V-SITE-VEGE,Point,Trees
+TDW06,"Dog Wood 6""",Tree,V-SITE-VEGE,Point,Trees
+TDW07,"Dog Wood 7""",Tree,V-SITE-VEGE,Point,Trees
+TDW08,"Dog Wood 8""",Tree,V-SITE-VEGE,Point,Trees
+TDW09,"Dog Wood 9""",Tree,V-SITE-VEGE,Point,Trees
+TDW10,"Dog Wood 10""",Tree,V-SITE-VEGE,Point,Trees
+TDW11,"Dog Wood 11""",Tree,V-SITE-VEGE,Point,Trees
+TDW12,"Dog Wood 12""",Tree,V-SITE-VEGE,Point,Trees
+TDW13,"Dog Wood 13""",Tree,V-SITE-VEGE,Point,Trees
+TDW14,"Dog Wood 14""",Tree,V-SITE-VEGE,Point,Trees
+TDW15,"Dog Wood 15""",Tree,V-SITE-VEGE,Point,Trees
+TDW16,"Dog Wood 16""",Tree,V-SITE-VEGE,Point,Trees
+TDW17,"Dog Wood 17""",Tree,V-SITE-VEGE,Point,Trees
+TDW18,"Dog Wood 18""",Tree,V-SITE-VEGE,Point,Trees
+TDW19,"Dog Wood 19""",Tree,V-SITE-VEGE,Point,Trees
+TDW20,"Dog Wood 20""",Tree,V-SITE-VEGE,Point,Trees
+TDW21,"Dog Wood 21""",Tree,V-SITE-VEGE,Point,Trees
+TDW22,"Dog Wood 22""",Tree,V-SITE-VEGE,Point,Trees
+TDW23,"Dog Wood 23""",Tree,V-SITE-VEGE,Point,Trees
+TDW24,"Dog Wood 24""",Tree,V-SITE-VEGE,Point,Trees
+TDW25,"Dog Wood 25""",Tree,V-SITE-VEGE,Point,Trees
+TDW26,"Dog Wood 26""",Tree,V-SITE-VEGE,Point,Trees
+TDW27,"Dog Wood 27""",Tree,V-SITE-VEGE,Point,Trees
+TDW28,"Dog Wood 28""",Tree,V-SITE-VEGE,Point,Trees
+TDW29,"Dog Wood 29""",Tree,V-SITE-VEGE,Point,Trees
+TDW30,"Dog Wood 30""",Tree,V-SITE-VEGE,Point,Trees
+TDW31,"Dog Wood 31""",Tree,V-SITE-VEGE,Point,Trees
+TDW32,"Dog Wood 32""",Tree,V-SITE-VEGE,Point,Trees
+TDW33,"Dog Wood 33""",Tree,V-SITE-VEGE,Point,Trees
+TDW34,"Dog Wood 34""",Tree,V-SITE-VEGE,Point,Trees
+TDW35,"Dog Wood 35""",Tree,V-SITE-VEGE,Point,Trees
+TDW36,"Dog Wood 36""",Tree,V-SITE-VEGE,Point,Trees
+TDW04,"Dog Wood 4""",Tree,V-SITE-VEGE,Point,Trees
+TDW05,"Dog Wood 5""",Tree,V-SITE-VEGE,Point,Trees
+TELM04,"Elm 4""",Tree,V-SITE-VEGE,Point,Trees
+TELM03,"Elm 3""",Tree,V-SITE-VEGE,Point,Trees
+TELM02,"Elm 2""",Tree,V-SITE-VEGE,Point,Trees
+TELM08,"Elm 8""",Tree,V-SITE-VEGE,Point,Trees
+TELM06,"Elm 6""",Tree,V-SITE-VEGE,Point,Trees
+TELM07,"Elm 7""",Tree,V-SITE-VEGE,Point,Trees
+TELM05,"Elm 5""",Tree,V-SITE-VEGE,Point,Trees
+TELM18,"Elm 18""",Tree,V-SITE-VEGE,Point,Trees
+TELM19,"Elm 19""",Tree,V-SITE-VEGE,Point,Trees
+TELM20,"Elm 20""",Tree,V-SITE-VEGE,Point,Trees
+TELM16,"Elm 16""",Tree,V-SITE-VEGE,Point,Trees
+TELM17,"Elm 17""",Tree,V-SITE-VEGE,Point,Trees
+TELM14,"Elm 14""",Tree,V-SITE-VEGE,Point,Trees
+TELM15,"Elm 15""",Tree,V-SITE-VEGE,Point,Trees
+TELM12,"Elm 12""",Tree,V-SITE-VEGE,Point,Trees
+TELM13,"Elm 13""",Tree,V-SITE-VEGE,Point,Trees
+TELM11,"Elm 11""",Tree,V-SITE-VEGE,Point,Trees
+TELM10,"Elm 10""",Tree,V-SITE-VEGE,Point,Trees
+TELM09,"Elm 9""",Tree,V-SITE-VEGE,Point,Trees
+TELM23,"Elm 23""",Tree,V-SITE-VEGE,Point,Trees
+TELM28,"Elm 28""",Tree,V-SITE-VEGE,Point,Trees
+TELM29,"Elm 29""",Tree,V-SITE-VEGE,Point,Trees
+TELM30,"Elm 30""",Tree,V-SITE-VEGE,Point,Trees
+TELM31,"Elm 31""",Tree,V-SITE-VEGE,Point,Trees
+TELM50,"Elm 50""",Tree,V-SITE-VEGE,Point,Trees
+TELM32,"Elm 32""",Tree,V-SITE-VEGE,Point,Trees
+TELM33,"Elm 33""",Tree,V-SITE-VEGE,Point,Trees
+TELM34,"Elm 34""",Tree,V-SITE-VEGE,Point,Trees
+TELM35,"Elm 35""",Tree,V-SITE-VEGE,Point,Trees
+TELM36,"Elm 36""",Tree,V-SITE-VEGE,Point,Trees
+TELM60,"Elm 60""",Tree,V-SITE-VEGE,Point,Trees
+TELM24,"Elm 24""",Tree,V-SITE-VEGE,Point,Trees
+TELM25,"Elm 25""",Tree,V-SITE-VEGE,Point,Trees
+TELM26,"Elm 26""",Tree,V-SITE-VEGE,Point,Trees
+TELM27,"Elm 27""",Tree,V-SITE-VEGE,Point,Trees
+TELM21,"Elm 21""",Tree,V-SITE-VEGE,Point,Trees
+TELM22,"Elm 22""",Tree,V-SITE-VEGE,Point,Trees
+THACK12,"Hackberry 12""",Tree,V-SITE-VEGE,Point,Trees
+THACK13,"Hackberry 13""",Tree,V-SITE-VEGE,Point,Trees
+THACK11,"Hackberry 11""",Tree,V-SITE-VEGE,Point,Trees
+THACK10,"Hackberry 10""",Tree,V-SITE-VEGE,Point,Trees
+THACK09,"Hackberry 9""",Tree,V-SITE-VEGE,Point,Trees
+THACK08,"Hackberry 8""",Tree,V-SITE-VEGE,Point,Trees
+THACK06,"Hackberry 6""",Tree,V-SITE-VEGE,Point,Trees
+THACK07,"Hackberry 7""",Tree,V-SITE-VEGE,Point,Trees
+THACK14,"Hackberry 14""",Tree,V-SITE-VEGE,Point,Trees
+THACK16,"Hackberry 16""",Tree,V-SITE-VEGE,Point,Trees
+THACK17,"Hackberry 17""",Tree,V-SITE-VEGE,Point,Trees
+THACK19,"Hackberry 19""",Tree,V-SITE-VEGE,Point,Trees
+THACK15,"Hackberry 15""",Tree,V-SITE-VEGE,Point,Trees
+THACK05,"Hackberry 5""",Tree,V-SITE-VEGE,Point,Trees
+THACK04,"Hackberry 4""",Tree,V-SITE-VEGE,Point,Trees
+THACK21,"Hackberry 21""",Tree,V-SITE-VEGE,Point,Trees
+THACK22,"Hackberry 22""",Tree,V-SITE-VEGE,Point,Trees
+THACK23,"Hackberry 23""",Tree,V-SITE-VEGE,Point,Trees
+THACK27,"Hackberry 27""",Tree,V-SITE-VEGE,Point,Trees
+THACK28,"Hackberry 28""",Tree,V-SITE-VEGE,Point,Trees
+THACK29,"Hackberry 29""",Tree,V-SITE-VEGE,Point,Trees
+THACK36,"Hackberry 36""",Tree,V-SITE-VEGE,Point,Trees
+THACK37,"Hackberry 37""",Tree,V-SITE-VEGE,Point,Trees
+THACK30,"Hackberry 30""",Tree,V-SITE-VEGE,Point,Trees
+THACK31,"Hackberry 31""",Tree,V-SITE-VEGE,Point,Trees
+THACK32,"Hackberry 32""",Tree,V-SITE-VEGE,Point,Trees
+THACK33,"Hackberry 33""",Tree,V-SITE-VEGE,Point,Trees
+THACK34,"Hackberry 34""",Tree,V-SITE-VEGE,Point,Trees
+THACK35,"Hackberry 35""",Tree,V-SITE-VEGE,Point,Trees
+THACK24,"Hackberry 24""",Tree,V-SITE-VEGE,Point,Trees
+THACK25,"Hackberry 25""",Tree,V-SITE-VEGE,Point,Trees
+THACK26,"Hackberry 26""",Tree,V-SITE-VEGE,Point,Trees
+THACK20,"Hackberry 20""",Tree,V-SITE-VEGE,Point,Trees
+THACK18,"Hackberry 18""",Tree,V-SITE-VEGE,Point,Trees
+THIC06,"Hickory 6""",Tree,V-SITE-VEGE,Point,Trees
+THIC07,"Hickory 7""",Tree,V-SITE-VEGE,Point,Trees
+THIC08,"Hickory 8""",Tree,V-SITE-VEGE,Point,Trees
+THIC09,"Hickory 9""",Tree,V-SITE-VEGE,Point,Trees
+THIC10,"Hickory 10""",Tree,V-SITE-VEGE,Point,Trees
+THIC11,"Hickory 11""",Tree,V-SITE-VEGE,Point,Trees
+THIC12,"Hickory 12""",Tree,V-SITE-VEGE,Point,Trees
+THIC13,"Hickory 13""",Tree,V-SITE-VEGE,Point,Trees
+THIC14,"Hickory 14""",Tree,V-SITE-VEGE,Point,Trees
+THIC15,"Hickory 15""",Tree,V-SITE-VEGE,Point,Trees
+THIC16,"Hickory 16""",Tree,V-SITE-VEGE,Point,Trees
+THIC17,"Hickory 17""",Tree,V-SITE-VEGE,Point,Trees
+THIC18,"Hickory 18""",Tree,V-SITE-VEGE,Point,Trees
+THIC19,"Hickory 19""",Tree,V-SITE-VEGE,Point,Trees
+THIC20,"Hickory 20""",Tree,V-SITE-VEGE,Point,Trees
+THIC21,"Hickory 21""",Tree,V-SITE-VEGE,Point,Trees
+THIC22,"Hickory 22""",Tree,V-SITE-VEGE,Point,Trees
+THIC23,"Hickory 23""",Tree,V-SITE-VEGE,Point,Trees
+THIC24,"Hickory 24""",Tree,V-SITE-VEGE,Point,Trees
+THIC25,"Hickory 25""",Tree,V-SITE-VEGE,Point,Trees
+THIC26,"Hickory 26""",Tree,V-SITE-VEGE,Point,Trees
+THIC27,"Hickory 27""",Tree,V-SITE-VEGE,Point,Trees
+THIC28,"Hickory 28""",Tree,V-SITE-VEGE,Point,Trees
+THIC29,"Hickory 29""",Tree,V-SITE-VEGE,Point,Trees
+THIC30,"Hickory 30""",Tree,V-SITE-VEGE,Point,Trees
+THIC31,"Hickory 31""",Tree,V-SITE-VEGE,Point,Trees
+THIC32,"Hickory 32""",Tree,V-SITE-VEGE,Point,Trees
+THIC33,"Hickory 33""",Tree,V-SITE-VEGE,Point,Trees
+THIC34,"Hickory 34""",Tree,V-SITE-VEGE,Point,Trees
+THIC35,"Hickory 35""",Tree,V-SITE-VEGE,Point,Trees
+THIC36,"Hickory 36""",Tree,V-SITE-VEGE,Point,Trees
+THIC05,"Hickory 5""",Tree,V-SITE-VEGE,Point,Trees
+THIC04,"Hickory 4""",Tree,V-SITE-VEGE,Point,Trees
+THACK38,"Hackberry 38""",Tree,V-SITE-VEGE,Point,Trees
+THACK,"Hackberry 48""",Tree,V-SITE-VEGE,Point,Trees
+TL,Tree Line,CG08,V-SITE-VEGE,2D Polyline,Trees
+TJP18,"Japanese Privot 18""",Tree,V-SITE-VEGE,Point,Trees
+TJP19,"Japanese Privot 19""",Tree,V-SITE-VEGE,Point,Trees
+TJP20,"Japanese Privot 20""",Tree,V-SITE-VEGE,Point,Trees
+TJP21,"Japanese Privot 21""",Tree,V-SITE-VEGE,Point,Trees
+TJP22,"Japanese Privot 22""",Tree,V-SITE-VEGE,Point,Trees
+TJP23,"Japanese Privot 23""",Tree,V-SITE-VEGE,Point,Trees
+TJP24,"Japanese Privot 24""",Tree,V-SITE-VEGE,Point,Trees
+TJP25,"Japanese Privot 25""",Tree,V-SITE-VEGE,Point,Trees
+TJP26,"Japanese Privot 26""",Tree,V-SITE-VEGE,Point,Trees
+TJP27,"Japanese Privot 27""",Tree,V-SITE-VEGE,Point,Trees
+TJP28,"Japanese Privot 28""",Tree,V-SITE-VEGE,Point,Trees
+TJP29,"Japanese Privot 29""",Tree,V-SITE-VEGE,Point,Trees
+TJP30,"Japanese Privot 30""",Tree,V-SITE-VEGE,Point,Trees
+TJP15,"Japanese Privot 15""",Tree,V-SITE-VEGE,Point,Trees
+TJP16,"Japanese Privot 16""",Tree,V-SITE-VEGE,Point,Trees
+TJP17,"Japanese Privot 17""",Tree,V-SITE-VEGE,Point,Trees
+TJP08,"Japanese Privot 8""",Tree,V-SITE-VEGE,Point,Trees
+TJP09,"Japanese Privot 9""",Tree,V-SITE-VEGE,Point,Trees
+TJP10,"Japanese Privot 10""",Tree,V-SITE-VEGE,Point,Trees
+TJP11,"Japanese Privot 11""",Tree,V-SITE-VEGE,Point,Trees
+TJP12,"Japanese Privot 12""",Tree,V-SITE-VEGE,Point,Trees
+TJP13,"Japanese Privot 13""",Tree,V-SITE-VEGE,Point,Trees
+TJP14,"Japanese Privot 14""",Tree,V-SITE-VEGE,Point,Trees
+TJP06,"Japanese Privot 6""",Tree,V-SITE-VEGE,Point,Trees
+TJP07,"Japanese Privot 7""",Tree,V-SITE-VEGE,Point,Trees
+TJP04,"Japanese Privot 4""",Tree,V-SITE-VEGE,Point,Trees
+TJP05,"Japanese Privot 5""",Tree,V-SITE-VEGE,Point,Trees
+TLO06,"Live Oak 6""",Tree,V-SITE-VEGE,Point,Trees
+TLO07,"Live Oak 7""",Tree,V-SITE-VEGE,Point,Trees
+TLO12,"Live Oak 12""",Tree,V-SITE-VEGE,Point,Trees
+TLO13,"Live Oak 13""",Tree,V-SITE-VEGE,Point,Trees
+TLO16,"Live Oak 16""",Tree,V-SITE-VEGE,Point,Trees
+TLO17,"Live Oak 17""",Tree,V-SITE-VEGE,Point,Trees
+TLO14,"Live Oak 14""",Tree,V-SITE-VEGE,Point,Trees
+TLO15,"Live Oak 15""",Tree,V-SITE-VEGE,Point,Trees
+TLO10,"Live Oak 10""",Tree,V-SITE-VEGE,Point,Trees
+TLO11,"Live Oak 11""",Tree,V-SITE-VEGE,Point,Trees
+TLO08,"Live Oak 8""",Tree,V-SITE-VEGE,Point,Trees
+TLO09,"Live Oak 9""",Tree,V-SITE-VEGE,Point,Trees
+TLO01,"Live Oak 1""",Tree,V-SITE-VEGE,Point,Trees
+TLO02,"Live Oak 2""",Tree,V-SITE-VEGE,Point,Trees
+TLO03,"Live Oak 3""",Tree,V-SITE-VEGE,Point,Trees
+TLO04,"Live Oak 4""",Tree,V-SITE-VEGE,Point,Trees
+TLO05,"Live Oak 5""",Tree,V-SITE-VEGE,Point,Trees
+TMAG06,"Magnolia 6""",Tree,V-SITE-VEGE,Point,Trees
+TMAG07,"Magnolia 7""",Tree,V-SITE-VEGE,Point,Trees
+TMAG08,"Magnolia 8""",Tree,V-SITE-VEGE,Point,Trees
+TMAG09,"Magnolia 9""",Tree,V-SITE-VEGE,Point,Trees
+TMAG10,"Magnolia 10""",Tree,V-SITE-VEGE,Point,Trees
+TMAG11,"Magnolia 11""",Tree,V-SITE-VEGE,Point,Trees
+TMAG12,"Magnolia 12""",Tree,V-SITE-VEGE,Point,Trees
+TMAG13,"Magnolia 13""",Tree,V-SITE-VEGE,Point,Trees
+TMAG14,"Magnolia 14""",Tree,V-SITE-VEGE,Point,Trees
+TMAG15,"Magnolia 15""",Tree,V-SITE-VEGE,Point,Trees
+TMAG16,"Magnolia 16""",Tree,V-SITE-VEGE,Point,Trees
+TMAG17,"Magnolia 17""",Tree,V-SITE-VEGE,Point,Trees
+TMAG18,"Magnolia 18""",Tree,V-SITE-VEGE,Point,Trees
+TMAG19,"Magnolia 19""",Tree,V-SITE-VEGE,Point,Trees
+TMAG20,"Magnolia 20""",Tree,V-SITE-VEGE,Point,Trees
+TMAG21,"Magnolia 21""",Tree,V-SITE-VEGE,Point,Trees
+TMAG22,"Magnolia 22""",Tree,V-SITE-VEGE,Point,Trees
+TMAG23,"Magnolia 23""",Tree,V-SITE-VEGE,Point,Trees
+TMAG24,"Magnolia 24""",Tree,V-SITE-VEGE,Point,Trees
+TMAG25,"Magnolia 25""",Tree,V-SITE-VEGE,Point,Trees
+TMAG26,"Magnolia 26""",Tree,V-SITE-VEGE,Point,Trees
+TMAG27,"Magnolia 27""",Tree,V-SITE-VEGE,Point,Trees
+TMAG28,"Magnolia 28""",Tree,V-SITE-VEGE,Point,Trees
+TMAG29,"Magnolia 29""",Tree,V-SITE-VEGE,Point,Trees
+TMAG30,"Magnolia 30""",Tree,V-SITE-VEGE,Point,Trees
+TMAG31,"Magnolia 31""",Tree,V-SITE-VEGE,Point,Trees
+TMAG32,"Magnolia 32""",Tree,V-SITE-VEGE,Point,Trees
+TMAG33,"Magnolia 33""",Tree,V-SITE-VEGE,Point,Trees
+TMAG34,"Magnolia 34""",Tree,V-SITE-VEGE,Point,Trees
+TMAG35,"Magnolia 35""",Tree,V-SITE-VEGE,Point,Trees
+TMAG36,"Magnolia 36""",Tree,V-SITE-VEGE,Point,Trees
+TMAG05,"Magnolia 5""",Tree,V-SITE-VEGE,Point,Trees
+TMAG04,"Magnolia 4""",Tree,V-SITE-VEGE,Point,Trees
+TLOC05,"Locust 5""",Tree,V-SITE-VEGE,Point,Trees
+TLOC04,"Locust 4""",Tree,V-SITE-VEGE,Point,Trees
+TLOC14,"Locust 14""",Tree,V-SITE-VEGE,Point,Trees
+TLOC15,"Locust 15""",Tree,V-SITE-VEGE,Point,Trees
+TLOC16,"Locust 16""",Tree,V-SITE-VEGE,Point,Trees
+TLOC17,"Locust 17""",Tree,V-SITE-VEGE,Point,Trees
+TLOC18,"Locust 18""",Tree,V-SITE-VEGE,Point,Trees
+TLOC19,"Locust 19""",Tree,V-SITE-VEGE,Point,Trees
+TLOC20,"Locust 20""",Tree,V-SITE-VEGE,Point,Trees
+TLOC21,"Locust 21""",Tree,V-SITE-VEGE,Point,Trees
+TLOC22,"Locust 22""",Tree,V-SITE-VEGE,Point,Trees
+TLOC23,"Locust 23""",Tree,V-SITE-VEGE,Point,Trees
+TLOC24,"Locust 24""",Tree,V-SITE-VEGE,Point,Trees
+TLOC25,"Locust 25""",Tree,V-SITE-VEGE,Point,Trees
+TLOC26,"Locust 26""",Tree,V-SITE-VEGE,Point,Trees
+TLOC27,"Locust 27""",Tree,V-SITE-VEGE,Point,Trees
+TLOC28,"Locust 28""",Tree,V-SITE-VEGE,Point,Trees
+TLOC29,"Locust 29""",Tree,V-SITE-VEGE,Point,Trees
+TLOC30,"Locust 30""",Tree,V-SITE-VEGE,Point,Trees
+TLOC31,"Locust 31""",Tree,V-SITE-VEGE,Point,Trees
+TLOC32,"Locust 32""",Tree,V-SITE-VEGE,Point,Trees
+TLOC33,"Locust 33""",Tree,V-SITE-VEGE,Point,Trees
+TLOC34,"Locust 34""",Tree,V-SITE-VEGE,Point,Trees
+TLOC35,"Locust 35""",Tree,V-SITE-VEGE,Point,Trees
+TLOC36,"Locust 36""",Tree,V-SITE-VEGE,Point,Trees
+TLOC13,"Locust 13""",Tree,V-SITE-VEGE,Point,Trees
+TLOC12,"Locust 12""",Tree,V-SITE-VEGE,Point,Trees
+TLOC11,"Locust 11""",Tree,V-SITE-VEGE,Point,Trees
+TLOC10,"Locust 10""",Tree,V-SITE-VEGE,Point,Trees
+TLOC09,"Locust 9""",Tree,V-SITE-VEGE,Point,Trees
+TLOC08,"Locust 8""",Tree,V-SITE-VEGE,Point,Trees
+TLOC07,"Locust 7""",Tree,V-SITE-VEGE,Point,Trees
+TLOC06,"Locust 6""",Tree,V-SITE-VEGE,Point,Trees
+TLO18,"Live Oak 18""",Tree,V-SITE-VEGE,Point,Trees
+TLO19,"Live Oak 19""",Tree,V-SITE-VEGE,Point,Trees
+TLO20,"Live Oak 20""",Tree,V-SITE-VEGE,Point,Trees
+TLO21,"Live Oak 21""",Tree,V-SITE-VEGE,Point,Trees
+TLO22,"Live Oak 22""",Tree,V-SITE-VEGE,Point,Trees
+TLO23,"Live Oak 23""",Tree,V-SITE-VEGE,Point,Trees
+TLO24,"Live Oak 24""",Tree,V-SITE-VEGE,Point,Trees
+TLO25,"Live Oak 25""",Tree,V-SITE-VEGE,Point,Trees
+TLO26,"Live Oak 26""",Tree,V-SITE-VEGE,Point,Trees
+TLO27,"Live Oak 27""",Tree,V-SITE-VEGE,Point,Trees
+TLO28,"Live Oak 28""",Tree,V-SITE-VEGE,Point,Trees
+TLO29,"Live Oak 29""",Tree,V-SITE-VEGE,Point,Trees
+TLO30,"Live Oak 30""",Tree,V-SITE-VEGE,Point,Trees
+TLO31,"Live Oak 31""",Tree,V-SITE-VEGE,Point,Trees
+TLO32,"Live Oak 32""",Tree,V-SITE-VEGE,Point,Trees
+TLO33,"Live Oak 33""",Tree,V-SITE-VEGE,Point,Trees
+TLO34,"Live Oak 34""",Tree,V-SITE-VEGE,Point,Trees
+TLO35,"Live Oak 35""",Tree,V-SITE-VEGE,Point,Trees
+TLO36,"Live Oak 36""",Tree,V-SITE-VEGE,Point,Trees
+TMAP08,"Maple 8""",Tree,V-SITE-VEGE,Point,Trees
+TMAP09,"Maple 9""",Tree,V-SITE-VEGE,Point,Trees
+TMAP10,"Maple 10""",Tree,V-SITE-VEGE,Point,Trees
+TMAP11,"Maple 11""",Tree,V-SITE-VEGE,Point,Trees
+TMAP12,"Maple 12""",Tree,V-SITE-VEGE,Point,Trees
+TMAP13,"Maple 13""",Tree,V-SITE-VEGE,Point,Trees
+TMAP14,"Maple 14""",Tree,V-SITE-VEGE,Point,Trees
+TMAP15,"Maple 15""",Tree,V-SITE-VEGE,Point,Trees
+TMAP16,"Maple 16""",Tree,V-SITE-VEGE,Point,Trees
+TMAP17,"Maple 17""",Tree,V-SITE-VEGE,Point,Trees
+TMAP18,"Maple 18""",Tree,V-SITE-VEGE,Point,Trees
+TMAP19,"Maple 19""",Tree,V-SITE-VEGE,Point,Trees
+TMAP20,"Maple 20""",Tree,V-SITE-VEGE,Point,Trees
+TMAP21,"Maple 21""",Tree,V-SITE-VEGE,Point,Trees
+TMAP22,"Maple 22""",Tree,V-SITE-VEGE,Point,Trees
+TMAP23,"Maple 23""",Tree,V-SITE-VEGE,Point,Trees
+TMAP24,"Maple 24""",Tree,V-SITE-VEGE,Point,Trees
+TMAP25,"Maple 25""",Tree,V-SITE-VEGE,Point,Trees
+TMAP26,"Maple 26""",Tree,V-SITE-VEGE,Point,Trees
+TMAP27,"Maple 27""",Tree,V-SITE-VEGE,Point,Trees
+TMAP28,"Maple 28""",Tree,V-SITE-VEGE,Point,Trees
+TMAP29,"Maple 29""",Tree,V-SITE-VEGE,Point,Trees
+TMAP30,"Maple 30""",Tree,V-SITE-VEGE,Point,Trees
+TMAP31,"Maple 31""",Tree,V-SITE-VEGE,Point,Trees
+TMAP32,"Maple 32""",Tree,V-SITE-VEGE,Point,Trees
+TMAP33,"Maple 33""",Tree,V-SITE-VEGE,Point,Trees
+TMAP34,"Maple 34""",Tree,V-SITE-VEGE,Point,Trees
+TMAP35,"Maple 35""",Tree,V-SITE-VEGE,Point,Trees
+TMAP36,"Maple 36""",Tree,V-SITE-VEGE,Point,Trees
+TMAP06,"Maple 6""",Tree,V-SITE-VEGE,Point,Trees
+TMAP07,"Maple 7""",Tree,V-SITE-VEGE,Point,Trees
+TMAP05,"Maple 5""",Tree,V-SITE-VEGE,Point,Trees
+TMAP04,"Maple 4""",Tree,V-SITE-VEGE,Point,Trees
+TMES05,"Mesquite 5""",Tree,V-SITE-VEGE,Point,Trees
+TMES03,"Mesquite 3""",Tree,V-SITE-VEGE,Point,Trees
+TMES04,"Mesquite 4""",Tree,V-SITE-VEGE,Point,Trees
+TMES06,"Mesquite 6""",Tree,V-SITE-VEGE,Point,Trees
+TMES07,"Mesquite 7""",Tree,V-SITE-VEGE,Point,Trees
+TMES08,"Mesquite 8""",Tree,V-SITE-VEGE,Point,Trees
+TMES09,"Mesquite 9""",Tree,V-SITE-VEGE,Point,Trees
+TMES10,"Mesquite 10""",Tree,V-SITE-VEGE,Point,Trees
+TMES11,"Mesquite 11""",Tree,V-SITE-VEGE,Point,Trees
+TMES12,"Mesquite 12""",Tree,V-SITE-VEGE,Point,Trees
+TMES13,"Mesquite 13""",Tree,V-SITE-VEGE,Point,Trees
+TMES14,"Mesquite 14""",Tree,V-SITE-VEGE,Point,Trees
+TMES15,"Mesquite 15""",Tree,V-SITE-VEGE,Point,Trees
+TMES16,"Mesquite 16""",Tree,V-SITE-VEGE,Point,Trees
+TMES17,"Mesquite 17""",Tree,V-SITE-VEGE,Point,Trees
+TMES18,"Mesquite 18""",Tree,V-SITE-VEGE,Point,Trees
+TMES19,"Mesquite 19""",Tree,V-SITE-VEGE,Point,Trees
+TMES20,"Mesquite 20""",Tree,V-SITE-VEGE,Point,Trees
+TMES21,"Mesquite 21""",Tree,V-SITE-VEGE,Point,Trees
+TMES22,"Mesquite 22""",Tree,V-SITE-VEGE,Point,Trees
+TMES23,"Mesquite 23""",Tree,V-SITE-VEGE,Point,Trees
+TMES24,"Mesquite 24""",Tree,V-SITE-VEGE,Point,Trees
+TMES25,"Mesquite 25""",Tree,V-SITE-VEGE,Point,Trees
+TMES26,"Mesquite 26""",Tree,V-SITE-VEGE,Point,Trees
+TMES27,"Mesquite 27""",Tree,V-SITE-VEGE,Point,Trees
+TMES28,"Mesquite 28""",Tree,V-SITE-VEGE,Point,Trees
+TMES29,"Mesquite 29""",Tree,V-SITE-VEGE,Point,Trees
+TMES30,"Mesquite 30""",Tree,V-SITE-VEGE,Point,Trees
+TMES31,"Mesquite 31""",Tree,V-SITE-VEGE,Point,Trees
+TMES32,"Mesquite 32""",Tree,V-SITE-VEGE,Point,Trees
+TMES33,"Mesquite 33""",Tree,V-SITE-VEGE,Point,Trees
+TMES34,"Mesquite 34""",Tree,V-SITE-VEGE,Point,Trees
+TMES35,"Mesquite 35""",Tree,V-SITE-VEGE,Point,Trees
+TMES36,"Mesquite 36""",Tree,V-SITE-VEGE,Point,Trees
+TMIM06,"Mimosa 6""",Tree,V-SITE-VEGE,Point,Trees
+TMIM07,"Mimosa 7""",Tree,V-SITE-VEGE,Point,Trees
+TMIM08,"Mimosa 8""",Tree,V-SITE-VEGE,Point,Trees
+TMIM09,"Mimosa 9""",Tree,V-SITE-VEGE,Point,Trees
+TMIM10,"Mimosa 10""",Tree,V-SITE-VEGE,Point,Trees
+TMIM05,"Mimosa 5""",Tree,V-SITE-VEGE,Point,Trees
+TMIM04,"Mimosa 4""",Tree,V-SITE-VEGE,Point,Trees
+TMUL06,"Mulberry 6""",Tree,V-SITE-VEGE,Point,Trees
+TMUL07,"Mulberry 7""",Tree,V-SITE-VEGE,Point,Trees
+TMUL05,"Mulberry 5""",Tree,V-SITE-VEGE,Point,Trees
+TMUL04,"Mulberry 4""",Tree,V-SITE-VEGE,Point,Trees
+TMUL08,"Mulberry 8""",Tree,V-SITE-VEGE,Point,Trees
+TMUL09,"Mulberry 9""",Tree,V-SITE-VEGE,Point,Trees
+TMUL10,"Mulberry 10""",Tree,V-SITE-VEGE,Point,Trees
+TMUL11,"Mulberry 11""",Tree,V-SITE-VEGE,Point,Trees
+TMUL12,"Mulberry 12""",Tree,V-SITE-VEGE,Point,Trees
+TMUL13,"Mulberry 13""",Tree,V-SITE-VEGE,Point,Trees
+TMUL14,"Mulberry 14""",Tree,V-SITE-VEGE,Point,Trees
+TMUL15,"Mulberry 15""",Tree,V-SITE-VEGE,Point,Trees
+TMUL16,"Mulberry 16""",Tree,V-SITE-VEGE,Point,Trees
+TMUL22,"Mulberry 22""",Tree,V-SITE-VEGE,Point,Trees
+TMUL23,"Mulberry 23""",Tree,V-SITE-VEGE,Point,Trees
+TMUL24,"Mulberry 24""",Tree,V-SITE-VEGE,Point,Trees
+TMUL25,"Mulberry 25""",Tree,V-SITE-VEGE,Point,Trees
+TMUL26,"Mulberry 26""",Tree,V-SITE-VEGE,Point,Trees
+TMUL27,"Mulberry 27""",Tree,V-SITE-VEGE,Point,Trees
+TMUL28,"Mulberry 28""",Tree,V-SITE-VEGE,Point,Trees
+TMUL29,"Mulberry 29""",Tree,V-SITE-VEGE,Point,Trees
+TMUL30,"Mulberry 30""",Tree,V-SITE-VEGE,Point,Trees
+TMUL31,"Mulberry 31""",Tree,V-SITE-VEGE,Point,Trees
+TMUL32,"Mulberry 32""",Tree,V-SITE-VEGE,Point,Trees
+TMUL33,"Mulberry 33""",Tree,V-SITE-VEGE,Point,Trees
+TMUL34,"Mulberry 34""",Tree,V-SITE-VEGE,Point,Trees
+TMUL35,"Mulberry 35""",Tree,V-SITE-VEGE,Point,Trees
+TMUL36,"Mulberry 36""",Tree,V-SITE-VEGE,Point,Trees
+TMUL17,"Mulberry 17""",Tree,V-SITE-VEGE,Point,Trees
+TMUL18,"Mulberry 18""",Tree,V-SITE-VEGE,Point,Trees
+TMUL19,"Mulberry 19""",Tree,V-SITE-VEGE,Point,Trees
+TMUL20,"Mulberry 20""",Tree,V-SITE-VEGE,Point,Trees
+TMUL21,"Mulberry 21""",Tree,V-SITE-VEGE,Point,Trees
+TPCN06,"Pecan 6""",Tree,V-SITE-VEGE,Point,Trees
+TPCN07,"Pecan 7""",Tree,V-SITE-VEGE,Point,Trees
+TPCN05,"Pecan 5""",Tree,V-SITE-VEGE,Point,Trees
+TPCN04,"Pecan 4""",Tree,V-SITE-VEGE,Point,Trees
+TPCN15,"Pecan 15""",Tree,V-SITE-VEGE,Point,Trees
+TPCN14,"Pecan 14""",Tree,V-SITE-VEGE,Point,Trees
+TPALM14,"Palm 14""",Tree,V-SITE-VEGE,Point,Trees
+TPALM15,"Palm 15""",Tree,V-SITE-VEGE,Point,Trees
+TPALM16,"Palm 16""",Tree,V-SITE-VEGE,Point,Trees
+TPALM17,"Palm 17""",Tree,V-SITE-VEGE,Point,Trees
+TPALM18,"Palm 18""",Tree,V-SITE-VEGE,Point,Trees
+TPALM19,"Palm 19""",Tree,V-SITE-VEGE,Point,Trees
+TPCN10,"Pecan 10""",Tree,V-SITE-VEGE,Point,Trees
+TPCN11,"Pecan 11""",Tree,V-SITE-VEGE,Point,Trees
+TPCN12,"Pecan 12""",Tree,V-SITE-VEGE,Point,Trees
+TPCN08,"Pecan 8""",Tree,V-SITE-VEGE,Point,Trees
+TPCN09,"Pecan 9""",Tree,V-SITE-VEGE,Point,Trees
+TPALM08,"Palm 8""",Tree,V-SITE-VEGE,Point,Trees
+TPALM09,"Palm 9""",Tree,V-SITE-VEGE,Point,Trees
+TPALM10,"Palm 10""",Tree,V-SITE-VEGE,Point,Trees
+TPALM11,"Palm 11""",Tree,V-SITE-VEGE,Point,Trees
+TPALM12,"Palm 12""",Tree,V-SITE-VEGE,Point,Trees
+TPALM13,"Palm 13""",Tree,V-SITE-VEGE,Point,Trees
+TPALM06,"Palm 6""",Tree,V-SITE-VEGE,Point,Trees
+TPALM07,"Palm 7""",Tree,V-SITE-VEGE,Point,Trees
+TPALM05,"Palm 5""",Tree,V-SITE-VEGE,Point,Trees
+TPALM04,"Palm 4""",Tree,V-SITE-VEGE,Point,Trees
+TPCN18,"Pecan 18""",Tree,V-SITE-VEGE,Point,Trees
+TPCN19,"Pecan 19""",Tree,V-SITE-VEGE,Point,Trees
+TPCN13,"Pecan 13""",Tree,V-SITE-VEGE,Point,Trees
+TPCN22,"Pecan 22""",Tree,V-SITE-VEGE,Point,Trees
+TPCN23,"Pecan 23""",Tree,V-SITE-VEGE,Point,Trees
+TPCN26,"Pecan 26""",Tree,V-SITE-VEGE,Point,Trees
+TPCN27,"Pecan 27""",Tree,V-SITE-VEGE,Point,Trees
+TPCN29,"Pecan 29""",Tree,V-SITE-VEGE,Point,Trees
+TPCN28,"Pecan 28""",Tree,V-SITE-VEGE,Point,Trees
+TPCN24,"Pecan 24""",Tree,V-SITE-VEGE,Point,Trees
+TPCN25,"Pecan 25""",Tree,V-SITE-VEGE,Point,Trees
+TPCN20,"Pecan 20""",Tree,V-SITE-VEGE,Point,Trees
+TPCN21,"Pecan 21""",Tree,V-SITE-VEGE,Point,Trees
+TPALM20,"Palm 20""",Tree,V-SITE-VEGE,Point,Trees
+TPALM21,"Palm 21""",Tree,V-SITE-VEGE,Point,Trees
+TPALM22,"Palm 22""",Tree,V-SITE-VEGE,Point,Trees
+TPALM23,"Palm 23""",Tree,V-SITE-VEGE,Point,Trees
+TPALM24,"Palm 24""",Tree,V-SITE-VEGE,Point,Trees
+TPALM25,"Palm 25""",Tree,V-SITE-VEGE,Point,Trees
+TPCN17,"Pecan 17""",Tree,V-SITE-VEGE,Point,Trees
+TPCN16,"Pecan 16""",Tree,V-SITE-VEGE,Point,Trees
+TPEA05,"Peach 5""",Tree,V-SITE-VEGE,Point,Trees
+TPCN43,"Pecan 43""",Tree,V-SITE-VEGE,Point,Trees
+TPCN44,"Pecan 44""",Tree,V-SITE-VEGE,Point,Trees
+TPCN45,"Pecan 45""",Tree,V-SITE-VEGE,Point,Trees
+TPCN42,"Pecan 42""",Tree,V-SITE-VEGE,Point,Trees
+TPCN36,"Pecan 36""",Tree,V-SITE-VEGE,Point,Trees
+TPCN37,"Pecan 37""",Tree,V-SITE-VEGE,Point,Trees
+TPCN38,"Pecan 38""",Tree,V-SITE-VEGE,Point,Trees
+TPCN39,"Pecan 39""",Tree,V-SITE-VEGE,Point,Trees
+TPCN40,"Pecan 40""",Tree,V-SITE-VEGE,Point,Trees
+TPCN41,"Pecan 41""",Tree,V-SITE-VEGE,Point,Trees
+TPCN30,"Pecan 30""",Tree,V-SITE-VEGE,Point,Trees
+TPCN31,"Pecan 31""",Tree,V-SITE-VEGE,Point,Trees
+TPCN32,"Pecan 32""",Tree,V-SITE-VEGE,Point,Trees
+TPCN33,"Pecan 33""",Tree,V-SITE-VEGE,Point,Trees
+TPCN34,"Pecan 34""",Tree,V-SITE-VEGE,Point,Trees
+TPCN35,"Pecan 35""",Tree,V-SITE-VEGE,Point,Trees
+TPEA06,"Peach 6""",Tree,V-SITE-VEGE,Point,Trees
+TPEA03,"Peach 3""",Tree,V-SITE-VEGE,Point,Trees
+TPEA02,"Peach 2""",Tree,V-SITE-VEGE,Point,Trees
+TPEA04,"Peach 4""",Tree,V-SITE-VEGE,Point,Trees
+TPEAR06,"Pear 6""",Tree,V-SITE-VEGE,Point,Trees
+TPEAR07,"Pear 7""",Tree,V-SITE-VEGE,Point,Trees
+TPEAR08,"Pear 8""",Tree,V-SITE-VEGE,Point,Trees
+TPEAR09,"Pear 9""",Tree,V-SITE-VEGE,Point,Trees
+TPEAR10,"Pear 10""",Tree,V-SITE-VEGE,Point,Trees
+TPEAR11,"Pear 11""",Tree,V-SITE-VEGE,Point,Trees
+TPEAR12,"Pear 12""",Tree,V-SITE-VEGE,Point,Trees
+TPEAR13,"Pear 13""",Tree,V-SITE-VEGE,Point,Trees
+TPEAR14,"Pear 14""",Tree,V-SITE-VEGE,Point,Trees
+TPEAR15,"Pear 15""",Tree,V-SITE-VEGE,Point,Trees
+TPEAR05,"Pear 5""",Tree,V-SITE-VEGE,Point,Trees
+TPEAR04,"Pear 4""",Tree,V-SITE-VEGE,Point,Trees
+TPEA12,"Peach 12""",Tree,V-SITE-VEGE,Point,Trees
+TPEA13,"Peach 13""",Tree,V-SITE-VEGE,Point,Trees
+TPEA14,"Peach 14""",Tree,V-SITE-VEGE,Point,Trees
+TPEA15,"Peach 15""",Tree,V-SITE-VEGE,Point,Trees
+TPEA16,"Peach 16""",Tree,V-SITE-VEGE,Point,Trees
+TPEA17,"Peach 17""",Tree,V-SITE-VEGE,Point,Trees
+TPEA18,"Peach 18""",Tree,V-SITE-VEGE,Point,Trees
+TPEA19,"Peach 19""",Tree,V-SITE-VEGE,Point,Trees
+TPEA20,"Peach 20""",Tree,V-SITE-VEGE,Point,Trees
+TPEA07,"Peach 7""",Tree,V-SITE-VEGE,Point,Trees
+TPEA08,"Peach 8""",Tree,V-SITE-VEGE,Point,Trees
+TPEA09,"Peach 9""",Tree,V-SITE-VEGE,Point,Trees
+TPEA10,"Peach 10""",Tree,V-SITE-VEGE,Point,Trees
+TPEA11,"Peach 11""",Tree,V-SITE-VEGE,Point,Trees
+TPO06,"Post Oak 6""",Tree,V-SITE-VEGE,Point,Trees
+TPO07,"Post Oak 7""",Tree,V-SITE-VEGE,Point,Trees
+TPO08,"Post Oak 8""",Tree,V-SITE-VEGE,Point,Trees
+TPO09,"Post Oak 9""",Tree,V-SITE-VEGE,Point,Trees
+TPO10,"Post Oak 10""",Tree,V-SITE-VEGE,Point,Trees
+TPO11,"Post Oak 11""",Tree,V-SITE-VEGE,Point,Trees
+TPO12,"Post Oak 12""",Tree,V-SITE-VEGE,Point,Trees
+TPO13,"Post Oak 13""",Tree,V-SITE-VEGE,Point,Trees
+TPO14,"Post Oak 14""",Tree,V-SITE-VEGE,Point,Trees
+TPO15,"Post Oak 15""",Tree,V-SITE-VEGE,Point,Trees
+TPO16,"Post Oak 16""",Tree,V-SITE-VEGE,Point,Trees
+TPO17,"Post Oak 17""",Tree,V-SITE-VEGE,Point,Trees
+TPO05,"Post Oak 5""",Tree,V-SITE-VEGE,Point,Trees
+TPO04,"Post Oak 4""",Tree,V-SITE-VEGE,Point,Trees
+TPO30,"Post Oak 30""",Tree,V-SITE-VEGE,Point,Trees
+TPO31,"Post Oak 31""",Tree,V-SITE-VEGE,Point,Trees
+TPO32,"Post Oak 32""",Tree,V-SITE-VEGE,Point,Trees
+TPO33,"Post Oak 33""",Tree,V-SITE-VEGE,Point,Trees
+TPO34,"Post Oak 34""",Tree,V-SITE-VEGE,Point,Trees
+TPO35,"Post Oak 35""",Tree,V-SITE-VEGE,Point,Trees
+TPO36,"Post Oak 36""",Tree,V-SITE-VEGE,Point,Trees
+TPO18,"Post Oak 18""",Tree,V-SITE-VEGE,Point,Trees
+TPO19,"Post Oak 19""",Tree,V-SITE-VEGE,Point,Trees
+TPO20,"Post Oak 20""",Tree,V-SITE-VEGE,Point,Trees
+TPO21,"Post Oak 21""",Tree,V-SITE-VEGE,Point,Trees
+TPO22,"Post Oak 22""",Tree,V-SITE-VEGE,Point,Trees
+TPO23,"Post Oak 23""",Tree,V-SITE-VEGE,Point,Trees
+TPO24,"Post Oak 24""",Tree,V-SITE-VEGE,Point,Trees
+TPO25,"Post Oak 25""",Tree,V-SITE-VEGE,Point,Trees
+TPO26,"Post Oak 26""",Tree,V-SITE-VEGE,Point,Trees
+TPO27,"Post Oak 27""",Tree,V-SITE-VEGE,Point,Trees
+TPO28,"Post Oak 28""",Tree,V-SITE-VEGE,Point,Trees
+TPO29,"Post Oak 29""",Tree,V-SITE-VEGE,Point,Trees
+TPINE16,"Pine 16""",Tree,V-SITE-VEGE,Point,Trees
+TPINE17,"Pine 17""",Tree,V-SITE-VEGE,Point,Trees
+TPINE18,"Pine 18""",Tree,V-SITE-VEGE,Point,Trees
+TPINE19,"Pine 19""",Tree,V-SITE-VEGE,Point,Trees
+TPINE20,"Pine 20""",Tree,V-SITE-VEGE,Point,Trees
+TPINE21,"Pine 21""",Tree,V-SITE-VEGE,Point,Trees
+TPINE22,"Pine 22""",Tree,V-SITE-VEGE,Point,Trees
+TPINE23,"Pine 23""",Tree,V-SITE-VEGE,Point,Trees
+TPINE24,"Pine 24""",Tree,V-SITE-VEGE,Point,Trees
+TPINE25,"Pine 25""",Tree,V-SITE-VEGE,Point,Trees
+TPINE26,"Pine 26""",Tree,V-SITE-VEGE,Point,Trees
+TPINE27,"Pine 27""",Tree,V-SITE-VEGE,Point,Trees
+TPINE28,"Pine 28""",Tree,V-SITE-VEGE,Point,Trees
+TPINE29,"Pine 29""",Tree,V-SITE-VEGE,Point,Trees
+TPINE30,"Pine 30""",Tree,V-SITE-VEGE,Point,Trees
+TPINE02,"Pine 2""",Tree,V-SITE-VEGE,Point,Trees
+TPINE03,"Pine 3""",Tree,V-SITE-VEGE,Point,Trees
+TPINE04,"Pine 4""",Tree,V-SITE-VEGE,Point,Trees
+TPINE05,"Pine 5""",Tree,V-SITE-VEGE,Point,Trees
+TPINE06,"Pine 6""",Tree,V-SITE-VEGE,Point,Trees
+TPINE07,"Pine 7""",Tree,V-SITE-VEGE,Point,Trees
+TPINE08,"Pine 8""",Tree,V-SITE-VEGE,Point,Trees
+TPINE09,"Pine 9""",Tree,V-SITE-VEGE,Point,Trees
+TPINE10,"Pine 10""",Tree,V-SITE-VEGE,Point,Trees
+TPINE11,"Pine 11""",Tree,V-SITE-VEGE,Point,Trees
+TPINE12,"Pine 12""",Tree,V-SITE-VEGE,Point,Trees
+TPINE13,"Pine 13""",Tree,V-SITE-VEGE,Point,Trees
+TPINE14,"Pine 14""",Tree,V-SITE-VEGE,Point,Trees
+TPINE15,"Pine 15""",Tree,V-SITE-VEGE,Point,Trees
+TRO07,"Red Oak 7""",Tree,V-SITE-VEGE,Point,Trees
+TRO06,"Red Oak 6""",Tree,V-SITE-VEGE,Point,Trees
+TOAK13,"Oak 13""",Tree,V-SITE-VEGE,Point,Trees
+TOAK02,"Oak 2""",Tree,V-SITE-VEGE,Point,Trees
+TOAK01,"Oak 1""",Tree,V-SITE-VEGE,Point,Trees
+TOAK03,"Oak 3""",Tree,V-SITE-VEGE,Point,Trees
+TOAK04,"Oak 4""",Tree,V-SITE-VEGE,Point,Trees
+TOAK05,"Oak 5""",Tree,V-SITE-VEGE,Point,Trees
+TOAK06,"Oak 6""",Tree,V-SITE-VEGE,Point,Trees
+TOAK07,"Oak 7""",Tree,V-SITE-VEGE,Point,Trees
+TOAK08,"Oak 8""",Tree,V-SITE-VEGE,Point,Trees
+TOAK09,"Oak 9""",Tree,V-SITE-VEGE,Point,Trees
+TOAK10,"Oak 10""",Tree,V-SITE-VEGE,Point,Trees
+TOAK11,"Oak 11""",Tree,V-SITE-VEGE,Point,Trees
+TOAK12,"Oak 12""",Tree,V-SITE-VEGE,Point,Trees
+TOAK14,"Oak 14""",Tree,V-SITE-VEGE,Point,Trees
+TOAK15,"Oak 15""",Tree,V-SITE-VEGE,Point,Trees
+TOAK16,"Oak 16""",Tree,V-SITE-VEGE,Point,Trees
+TOAK17,"Oak 17""",Tree,V-SITE-VEGE,Point,Trees
+TOAK18,"Oak 18""",Tree,V-SITE-VEGE,Point,Trees
+TOAK19,"Oak 19""",Tree,V-SITE-VEGE,Point,Trees
+TOAK20,"Oak 20""",Tree,V-SITE-VEGE,Point,Trees
+TOAK21,"Oak 21""",Tree,V-SITE-VEGE,Point,Trees
+TOAK22,"Oak 22""",Tree,V-SITE-VEGE,Point,Trees
+TOAK23,"Oak 23""",Tree,V-SITE-VEGE,Point,Trees
+TOAK24,"Oak 24""",Tree,V-SITE-VEGE,Point,Trees
+TOAK25,"Oak 25""",Tree,V-SITE-VEGE,Point,Trees
+TOAK26,"Oak 26""",Tree,V-SITE-VEGE,Point,Trees
+TOAK27,"Oak 27""",Tree,V-SITE-VEGE,Point,Trees
+TOAK28,"Oak 28""",Tree,V-SITE-VEGE,Point,Trees
+TOAK29,"Oak 29""",Tree,V-SITE-VEGE,Point,Trees
+TOAK30,"Oak 30""",Tree,V-SITE-VEGE,Point,Trees
+TOAK31,"Oak 31""",Tree,V-SITE-VEGE,Point,Trees
+TOAK32,"Oak 32""",Tree,V-SITE-VEGE,Point,Trees
+TOAK33,"Oak 33""",Tree,V-SITE-VEGE,Point,Trees
+TOAK34,"Oak 34""",Tree,V-SITE-VEGE,Point,Trees
+TOAK35,"Oak 35""",Tree,V-SITE-VEGE,Point,Trees
+TOAK36,"Oak 36""",Tree,V-SITE-VEGE,Point,Trees
+TOAK37,"Oak 37""",Tree,V-SITE-VEGE,Point,Trees
+TOAK38,"Oak 38""",Tree,V-SITE-VEGE,Point,Trees
+TOAK39,"Oak 39""",Tree,V-SITE-VEGE,Point,Trees
+TOAK40,"Oak 40""",Tree,V-SITE-VEGE,Point,Trees
+TOAK46,"Oak 46""",Tree,V-SITE-VEGE,Point,Trees
+TOAK42,"Oak 42""",Tree,V-SITE-VEGE,Point,Trees
+TRO05,"Red Oak 5""",Tree,V-SITE-VEGE,Point,Trees
+TRO04,"Red Oak 4""",Tree,V-SITE-VEGE,Point,Trees
+TRO03,"Red Oak 3""",Tree,V-SITE-VEGE,Point,Trees
+TRO02,"Red Oak 2""",Tree,V-SITE-VEGE,Point,Trees
+TRO01,"Red Oak 1""",Tree,V-SITE-VEGE,Point,Trees
+TRO14,"Red Oak 14""",Tree,V-SITE-VEGE,Point,Trees
+TRO13,"Red Oak 13""",Tree,V-SITE-VEGE,Point,Trees
+TRO12,"Red Oak 12""",Tree,V-SITE-VEGE,Point,Trees
+TRO11,"Red Oak 11""",Tree,V-SITE-VEGE,Point,Trees
+TRO10,"Red Oak 10""",Tree,V-SITE-VEGE,Point,Trees
+TRO09,"Red Oak 9""",Tree,V-SITE-VEGE,Point,Trees
+TRO16,"Red Oak 16""",Tree,V-SITE-VEGE,Point,Trees
+TRO18,"Red Oak 18""",Tree,V-SITE-VEGE,Point,Trees
+TRO17,"Red Oak 17""",Tree,V-SITE-VEGE,Point,Trees
+TRO15,"Red Oak 15""",Tree,V-SITE-VEGE,Point,Trees
+TRO08,"Red Oak 8""",Tree,V-SITE-VEGE,Point,Trees
+TRO25,"Red Oak 25""",Tree,V-SITE-VEGE,Point,Trees
+TRO23,"Red Oak 23""",Tree,V-SITE-VEGE,Point,Trees
+TRO22,"Red Oak 22""",Tree,V-SITE-VEGE,Point,Trees
+TRO21,"Red Oak 21""",Tree,V-SITE-VEGE,Point,Trees
+TRO20,"Red Oak 20""",Tree,V-SITE-VEGE,Point,Trees
+TRO19,"Red Oak 19""",Tree,V-SITE-VEGE,Point,Trees
+TRO27,"Red Oak 27""",Tree,V-SITE-VEGE,Point,Trees
+TRO29,"Red Oak 29""",Tree,V-SITE-VEGE,Point,Trees
+TRO30,"Red Oak 30""",Tree,V-SITE-VEGE,Point,Trees
+TRO31,"Red Oak 31""",Tree,V-SITE-VEGE,Point,Trees
+TRO32,"Red Oak 32""",Tree,V-SITE-VEGE,Point,Trees
+TRO33,"Red Oak 33""",Tree,V-SITE-VEGE,Point,Trees
+TRO34,"Red Oak 34""",Tree,V-SITE-VEGE,Point,Trees
+TRO35,"Red Oak 35""",Tree,V-SITE-VEGE,Point,Trees
+TRO36,"Red Oak 36""",Tree,V-SITE-VEGE,Point,Trees
+TRO37,"Red Oak 37""",Tree,V-SITE-VEGE,Point,Trees
+TRO38,"Red Oak 38""",Tree,V-SITE-VEGE,Point,Trees
+TRO39,"Red Oak 39""",Tree,V-SITE-VEGE,Point,Trees
+TRO40,"Red Oak 40""",Tree,V-SITE-VEGE,Point,Trees
+TRO41,"Red Oak 41""",Tree,V-SITE-VEGE,Point,Trees
+TRO48,"Red Oak 48""",Tree,V-SITE-VEGE,Point,Trees
+TRO28,"Red Oak 28""",Tree,V-SITE-VEGE,Point,Trees
+TRO26,"Red Oak 26""",Tree,V-SITE-VEGE,Point,Trees
+TRO24,"Red Oak 24""",Tree,V-SITE-VEGE,Point,Trees
+TSG07,"Sweet gum 7""",Tree,V-SITE-VEGE,Point,Trees
+TSG14,"Sweet gum 14""",Tree,V-SITE-VEGE,Point,Trees
+TSG15,"Sweet gum 15""",Tree,V-SITE-VEGE,Point,Trees
+TSG16,"Sweet gum 16""",Tree,V-SITE-VEGE,Point,Trees
+TSG17,"Sweet gum 17""",Tree,V-SITE-VEGE,Point,Trees
+TSG18,"Sweet gum 18""",Tree,V-SITE-VEGE,Point,Trees
+TSG19,"Sweet gum 19""",Tree,V-SITE-VEGE,Point,Trees
+TSG20,"Sweet gum 20""",Tree,V-SITE-VEGE,Point,Trees
+TSG12,"Sweet gum 12""",Tree,V-SITE-VEGE,Point,Trees
+TSG13,"Sweet gum 13""",Tree,V-SITE-VEGE,Point,Trees
+TSG10,"Sweet gum 10""",Tree,V-SITE-VEGE,Point,Trees
+TSG11,"Sweet gum 11""",Tree,V-SITE-VEGE,Point,Trees
+TSG08,"Sweet gum 8""",Tree,V-SITE-VEGE,Point,Trees
+TSG09,"Sweet gum 9""",Tree,V-SITE-VEGE,Point,Trees
+TSG06,"Sweet gum 6""",Tree,V-SITE-VEGE,Point,Trees
+TSG05,"Sweet gum 5""",Tree,V-SITE-VEGE,Point,Trees
+TSG04,"Sweet gum 4""",Tree,V-SITE-VEGE,Point,Trees
+TSYC06,"Sycamore 6""",Tree,V-SITE-VEGE,Point,Trees
+TSYC07,"Sycamore 7""",Tree,V-SITE-VEGE,Point,Trees
+TSYC08,"Sycamore 8""",Tree,V-SITE-VEGE,Point,Trees
+TSYC09,"Sycamore 9""",Tree,V-SITE-VEGE,Point,Trees
+TSYC10,"Sycamore 10""",Tree,V-SITE-VEGE,Point,Trees
+TSYC11,"Sycamore 11""",Tree,V-SITE-VEGE,Point,Trees
+TSYC12,"Sycamore 12""",Tree,V-SITE-VEGE,Point,Trees
+TSYC13,"Sycamore 13""",Tree,V-SITE-VEGE,Point,Trees
+TSYC14,"Sycamore 14""",Tree,V-SITE-VEGE,Point,Trees
+TSYC15,"Sycamore 15""",Tree,V-SITE-VEGE,Point,Trees
+TSYC16,"Sycamore 16""",Tree,V-SITE-VEGE,Point,Trees
+TSYC17,"Sycamore 17""",Tree,V-SITE-VEGE,Point,Trees
+TSYC18,"Sycamore 18""",Tree,V-SITE-VEGE,Point,Trees
+TSYC19,"Sycamore 19""",Tree,V-SITE-VEGE,Point,Trees
+TSYC20,"Sycamore 20""",Tree,V-SITE-VEGE,Point,Trees
+TSYC05,"Sycamore 5""",Tree,V-SITE-VEGE,Point,Trees
+TSYC04,"Sycamore 4""",Tree,V-SITE-VEGE,Point,Trees
+TWAL06,"Walnut 6""",Tree,V-SITE-VEGE,Point,Trees
+TWAL07,"Walnut 7""",Tree,V-SITE-VEGE,Point,Trees
+TWAL08,"Walnut 8""",Tree,V-SITE-VEGE,Point,Trees
+TWAL09,"Walnut 9""",Tree,V-SITE-VEGE,Point,Trees
+TWAL10,"Walnut 10""",Tree,V-SITE-VEGE,Point,Trees
+TWAL11,"Walnut 11""",Tree,V-SITE-VEGE,Point,Trees
+TWAL12,"Walnut 12""",Tree,V-SITE-VEGE,Point,Trees
+TWAL13,"Walnut 13""",Tree,V-SITE-VEGE,Point,Trees
+TWAL14,"Walnut 14""",Tree,V-SITE-VEGE,Point,Trees
+TWAL15,"Walnut 15""",Tree,V-SITE-VEGE,Point,Trees
+TWAL16,"Walnut 16""",Tree,V-SITE-VEGE,Point,Trees
+TWAL17,"Walnut 17""",Tree,V-SITE-VEGE,Point,Trees
+TWAL18,"Walnut 18""",Tree,V-SITE-VEGE,Point,Trees
+TWAL19,"Walnut 19""",Tree,V-SITE-VEGE,Point,Trees
+TWAL20,"Walnut 20""",Tree,V-SITE-VEGE,Point,Trees
+TWAL21,"Walnut 21""",Tree,V-SITE-VEGE,Point,Trees
+TWAL22,"Walnut 22""",Tree,V-SITE-VEGE,Point,Trees
+TWAL23,"Walnut 23""",Tree,V-SITE-VEGE,Point,Trees
+TWAL24,"Walnut 24""",Tree,V-SITE-VEGE,Point,Trees
+TWAL25,"Walnut 25""",Tree,V-SITE-VEGE,Point,Trees
+TWAL26,"Walnut 26""",Tree,V-SITE-VEGE,Point,Trees
+TWAL27,"Walnut 27""",Tree,V-SITE-VEGE,Point,Trees
+TWAL28,"Walnut 28""",Tree,V-SITE-VEGE,Point,Trees
+TWAL29,"Walnut 29""",Tree,V-SITE-VEGE,Point,Trees
+TWAL30,"Walnut 30""",Tree,V-SITE-VEGE,Point,Trees
+TWAL05,"Walnut 5""",Tree,V-SITE-VEGE,Point,Trees
+TWAL04,"Walnut 4""",Tree,V-SITE-VEGE,Point,Trees
+TWIL07,"Willow 7""",Tree,V-SITE-VEGE,Point,Trees
+TWIL08,"Willow 8""",Tree,V-SITE-VEGE,Point,Trees
+TWIL09,"Willow 9""",Tree,V-SITE-VEGE,Point,Trees
+TWIL06,"Willow 6""",Tree,V-SITE-VEGE,Point,Trees
+TWIL05,"Willow 5""",Tree,V-SITE-VEGE,Point,Trees
+TWIL04,"Willow 4""",Tree,V-SITE-VEGE,Point,Trees
+TWIL10,"Willow 10""",Tree,V-SITE-VEGE,Point,Trees
+TWIL11,"Willow 11""",Tree,V-SITE-VEGE,Point,Trees
+TWIL13,"Willow 13""",Tree,V-SITE-VEGE,Point,Trees
+TWIL14,"Willow 14""",Tree,V-SITE-VEGE,Point,Trees
+TWIL15,"Willow 15""",Tree,V-SITE-VEGE,Point,Trees
+TWIL12,"Willow 12""",Tree,V-SITE-VEGE,Point,Trees
+TWIL16,"Willow 16""",Tree,V-SITE-VEGE,Point,Trees
+TWIL17,"Willow 17""",Tree,V-SITE-VEGE,Point,Trees
+TWIL18,"Willow 18""",Tree,V-SITE-VEGE,Point,Trees
+TWIL19,"Willow 19""",Tree,V-SITE-VEGE,Point,Trees
+TWIL20,"Willow 20""",Tree,V-SITE-VEGE,Point,Trees
+TWIL24,"Willow 24""",Tree,V-SITE-VEGE,Point,Trees
+TWIL25,"Willow 25""",Tree,V-SITE-VEGE,Point,Trees
+TWIL26,"Willow 26""",Tree,V-SITE-VEGE,Point,Trees
+TWIL32,"Willow 32""",Tree,V-SITE-VEGE,Point,Trees
+TWO08,"White Oak 8""",Tree,V-SITE-VEGE,Point,Trees
+TWO10,"White Oak 10""",Tree,V-SITE-VEGE,Point,Trees
+TWO11,"White Oak 11""",Tree,V-SITE-VEGE,Point,Trees
+TWO07,"White Oak 7""",Tree,V-SITE-VEGE,Point,Trees
+TWO04,"White Oak 4""",Tree,V-SITE-VEGE,Point,Trees
+TWO05,"White Oak 5""",Tree,V-SITE-VEGE,Point,Trees
+TWO03,"White Oak 3""",Tree,V-SITE-VEGE,Point,Trees
+TWO02,"White Oak 2""",Tree,V-SITE-VEGE,Point,Trees
+TWO09,"White Oak 9""",Tree,V-SITE-VEGE,Point,Trees
+TWO06,"White Oak 6""",Tree,V-SITE-VEGE,Point,Trees
+TWO12,"White Oak 12""",Tree,V-SITE-VEGE,Point,Trees
+TWO13,"White Oak 13""",Tree,V-SITE-VEGE,Point,Trees
+TWO14,"White Oak 14""",Tree,V-SITE-VEGE,Point,Trees
+TWO15,"White Oak 15""",Tree,V-SITE-VEGE,Point,Trees
+TWO16,"White Oak 16""",Tree,V-SITE-VEGE,Point,Trees
+TWO17,"White Oak 17""",Tree,V-SITE-VEGE,Point,Trees
+TWO18,"White Oak 18""",Tree,V-SITE-VEGE,Point,Trees
+TWO19,"White Oak 19""",Tree,V-SITE-VEGE,Point,Trees
+TWO21,"White Oak 21""",Tree,V-SITE-VEGE,Point,Trees
+TWO22,"White Oak 22""",Tree,V-SITE-VEGE,Point,Trees
+TWO23,"White Oak 23""",Tree,V-SITE-VEGE,Point,Trees
+TWO25,"White Oak 25""",Tree,V-SITE-VEGE,Point,Trees
+TWO26,"White Oak 26""",Tree,V-SITE-VEGE,Point,Trees
+TWO27,"White Oak 27""",Tree,V-SITE-VEGE,Point,Trees
+TWO28,"White Oak 28""",Tree,V-SITE-VEGE,Point,Trees
+TWO24,"White Oak 24""",Tree,V-SITE-VEGE,Point,Trees
+TWO20,"White Oak 20""",Tree,V-SITE-VEGE,Point,Trees
+TWO30,"White Oak 30""",Tree,V-SITE-VEGE,Point,Trees
+TWO31,"White Oak 31""",Tree,V-SITE-VEGE,Point,Trees
+TWO32,"White Oak 32""",Tree,V-SITE-VEGE,Point,Trees
+TWO33,"White Oak 33""",Tree,V-SITE-VEGE,Point,Trees
+TWO34,"White Oak 34""",Tree,V-SITE-VEGE,Point,Trees
+TWO35,"White Oak 35""",Tree,V-SITE-VEGE,Point,Trees
+TWO36,"White Oak 36""",Tree,V-SITE-VEGE,Point,Trees
+TWO37,"White Oak 37""",Tree,V-SITE-VEGE,Point,Trees
+TWO38,"White Oak 38""",Tree,V-SITE-VEGE,Point,Trees
+TWO39,"White Oak 39""",Tree,V-SITE-VEGE,Point,Trees
+TWO40,"White Oak 40""",Tree,V-SITE-VEGE,Point,Trees
+TWO41,"White Oak 41""",Tree,V-SITE-VEGE,Point,Trees
+TWO42,"White Oak 42""",Tree,V-SITE-VEGE,Point,Trees
+TWO51,"White Oak 51""",Tree,V-SITE-VEGE,Point,Trees
+TPCN62,"Pecan 62""",Tree,V-SITE-VEGE,Point,Trees
+TPCN52,"Pecan 52""",Tree,V-SITE-VEGE,Point,Trees
+TPCN54,"Pecan 54""",Tree,V-SITE-VEGE,Point,Trees
+TWIL30,"Willow 30""",Tree,V-SITE-VEGE,Point,Trees
+AC,AC Pad,CG11,V-SITE-STRC,Point,Improvements
+AKP,Key Pad,CG08,V-SITE-STRC,Point,Improvements
+AN,Antenna,CG08,V-COMM-STRC,Point,Improvements
+BOL,Bollard,Bollard,V-SITE-STRC-BOLLARD,Point,Improvements
+DUMPSTER,dumpster,CG08,V-SITE-STRC,3D Polyline,Improvements
+FP,Flag Pole,FLAGPOLE,V-SITE-STRC,Point,Improvements
+GP,guard post,SPT3,V-SITE-STRC-POST,Point,Improvements
+MB,Mail Box,Mailbox,V-SITE-STRC,Point,Improvements
+POSTM,Metal Post,CG64,V-SITE-STRC,Point,Improvements
+P,Pool,CG08,V-SITE-STRC-POOL,3D Polyline,Improvements
+SAT,Sattelite,CG08,V-COMM-STRC,Point,Improvements
+WP,Wood Post,CG64,V-SITE-STRC,Point,Improvements
+PED,Ped.,tp,E_Utility_Unknown_PED,Point,Improvements
+VLT,Vault,CG87,E_Utility_Unknown_Vault,Point,Improvements
+MH,MH,Mh,E_Utility_Unknown,Point,Improvements
+ARM,OH Line ARM,CG08,V-SITE-OVHD,2D Polyline,Improvements
+CO,Clean Out,Wastewater_Mainline_Cleanout_Ex,E_Utility_Sanitary Sewer_Cleanout,Point,Sewer
+SBPM,SBPM,SBPM,E_Utility_Sanitary Sewer_SBPM,Point,Sewer
+LFTS,LFTS,LFTS,E_Utility_Sanitary Sewer_LFTS,Point,Sewer
+FMV,FMV,FMV,E_Utility_Sanitary Sewer_FMV,Point,Sewer
+UGWWM,Waste Water Marker,UGWM,E_Utility_Sanitary Sewer_Marker,Point,Sewer
+SEW,Sewer Line,CG08,E_Utility_Sanitary_Sewer_Line,Point,Sewer
+SSMH,San. Sew. MH,Wastewater_Manhole_EX,E_Utility_Sanitary Sewer_Manhole Waste Water_MHW,Point,Sewer
+GT,Grease Trap,CG11,E_Utility_Sewer_Grease_Trap,Point,Sewer
+RR,Railroad,CG08,V-RAIL,3D Polyline,Rail Road
+RSW,Railroad Switch,CG08,V-RAIL,3D Polyline,Rail Road
+RRARM,Railroad Cross Arm,CG08,V-RAIL,3D Polyline,Rail Road
+RSF,Railroad Switch Frog,CG08,V-RAIL,3D Polyline,Rail Road
+SO,Stake Out Point,CORNER,V-STAK-PNTS,Point,Steak Out
+#EXTRA_JSON {"commands": ["ST", "PC", "PT", "END", "X", "-", "/"], "rules": []}

@@ -1,0 +1,1063 @@
+"""Import pipeline: options panel, per-format dialogs and the dispatcher used by the main window."""
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
+                               QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QRadioButton, QSpinBox,
+                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+
+from ..core import audit as AUD
+from ..core import crs as C
+from ..core import filecrs as FCRC
+from ..core import provenance as PROV
+from ..core import reference as REF
+from ..core import units as U
+from ..core.model import ImageryLayer, ImportBatch
+from ..core.settings import settings
+from ..fieldwork.utils_sort import natural_key
+from ..io import csv_points as CSV
+from . import theme
+from .crs_dialog import CRSPicker
+from .crs_extra import VerticalAndGroundPanel
+from .widgets import Banner, FormDialog, Hint, error_box, info_box, run_blocking
+
+CSV_EXT = {".csv", ".txt", ".pnt", ".pts", ".asc", ".dat", ".xyz_"}
+#: the extensions a folder-wide reference import will read, and the filter for the single-file one
+POINTS_EXT = (".csv", ".txt", ".pnt", ".pts", ".asc", ".dat", ".xyz", ".pnl")
+POINTS_FILTER = ("Point files (*.csv *.txt *.pnt *.pts *.asc *.dat *.xyz);;All files (*)")
+LANDXML_EXT = {".xml", ".landxml"}
+GIS_EXT = {".shp", ".gpkg", ".geojson", ".json"}
+KML_EXT = {".kml", ".kmz"}
+IMAGE_EXT = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
+
+IMPORT_FILTER = ("All supported (*.csv *.txt *.pnt *.pts *.asc *.dat *.xml *.landxml *.dxf *.shp *.gpkg *.geojson *.json "
+                 "*.kml *.kmz *.plb);;Point files (*.csv *.txt *.pnt *.pts *.asc *.dat);;LandXML (*.xml *.landxml);;DXF (*.dxf);;"
+                 "GIS (*.shp *.gpkg *.geojson *.json);;Google Earth (*.kml *.kmz);;Plumbline project (*.plb);;All files (*)")
+
+
+# ----------------------------------------------------------------------------- plan
+@dataclass
+class ImportPlan:
+    src_crs: object | None = None          # pyproj CRS; None => numbers already in project coordinates
+    geographic: bool = False               # batch holds lon / lat
+    assign_crs: C.ProjectCRS | None = None  # give a local project this CRS first
+    swap_xy: bool = False
+    scale_xy: float = 1.0
+    z_scale: float = 1.0
+    dup_policy: str = "renumber"
+    layer_override: str | None = None
+    process_linework: bool = False
+    reference_role: str | None = None      # stakeout | control | other -> a reference list, not field data
+
+
+def file_crs_from_info(info: dict):
+    try:
+        if info.get("epsg"):
+            return C.CRS.from_epsg(int(info["epsg"]))
+        if info.get("crs"):
+            return C.CRS.from_user_input(info["crs"])
+        if info.get("wkt"):
+            return C.CRS.from_wkt(info["wkt"])
+    except Exception:
+        return None
+    return None
+
+
+def make_batch_transform(project, plan: ImportPlan):
+    """-> fn(x, y) -> (x', y') that takes the batch's coordinates into project coordinates."""
+    pc = plan.assign_crs or project.crs
+    if plan.geographic:
+        src = plan.src_crs if plan.src_crs is not None else 4326
+        return lambda x, y: pc.from_lonlat(x, y, source=src)
+    if plan.src_crs is not None and not pc.is_local:
+        return pc.transform_from(plan.src_crs)
+    k = plan.scale_xy
+    return lambda x, y: (np.asarray(x, float) * k, np.asarray(y, float) * k)
+
+
+def apply_import(state, batch: ImportBatch, plan: ImportPlan, label: str, path=None,
+                 job_root=None) -> dict:
+    """Apply an imported batch to the project, and record where each point came from.
+
+    Every door into this program ends here, so this is where the provenance record is written -
+    the file, the folder, the import's name and the time (:mod:`plumbline.core.provenance`).
+    The point list's source columns, the Properties panel and the Check Fieldwork dock all read
+    that one record, and a batch that arrives without a file name simply has an empty one.
+    """
+    pr = state.project
+    src = Path(str(path or batch.info.get("path") or ""))
+    root = job_root if job_root is not None else (Path(pr.path).parent if getattr(pr, "path", None) else None)
+    folder = str(src.parent) if (src.name and len(src.parts) > 1) else ""
+    if plan.reference_role:
+        name = f"{REF.label_for(plan.reference_role)} points"
+    else:
+        name = PROV.set_label(label)
+    if batch.points:
+        PROV.stamp(batch.points, file=src.name, folder=PROV.short_folder(folder, root), set=name)
+    with state.edit(f"Import {label}"):
+        if plan.assign_crs is not None:
+            pr.assign_crs(plan.assign_crs)
+        if plan.reference_role:
+            REF.ensure_layers(pr)
+            REF.mark_batch(batch, plan.reference_role)
+        if plan.swap_xy:
+            batch.transform_xy(lambda x, y: (np.asarray(y, float), np.asarray(x, float)))
+        fn = make_batch_transform(pr, plan)
+        batch.transform_xy(fn, plan.z_scale)
+        stats = pr.apply_batch(batch, plan.dup_policy, plan.layer_override,
+                               reference_role=plan.reference_role)
+        # ... and what it landed as, which is the state the Point(s) Audit reads against (item 17).
+        # The ids exist by now - including the id of a point an overwrite landed *on*, which is
+        # the whole reason apply_batch hands them back - and it goes inside the edit, so undoing
+        # the import takes the baseline rows with it.
+        if not plan.reference_role:
+            AUD.record(pr, [pr.points[i] for i in stats.get("point_ids", ()) if i in pr.points])
+        # What coordinate system these numbers were in, written down against the file (item 6).
+        # This is inside the edit, so undoing the import takes the record with it, and it is what
+        # "change the CRS of a file afterwards" reads and rewrites.
+        if src.name:
+            if plan.src_crs is not None:
+                try:
+                    from .crs import ProjectCRS as _PC
+                    rec = FCRC.record_from_crs(_PC(plan.src_crs), method="chosen")
+                except Exception:
+                    rec = FCRC.make_from_project(pr, method="chosen")
+            elif plan.geographic:
+                rec = FCRC.make(key="", label="longitude / latitude (WGS 84)", unit="m", vunit="m",
+                                vertical="HAE", method="chosen")
+            else:
+                rec = FCRC.make_from_project(pr, method="project" if plan.assign_crs is None else "chosen")
+            FCRC.record(pr, src.name, rec)
+        if plan.process_linework:
+            stats["linework"] = pr.process_linework()["strings"]
+    return stats
+
+
+# ----------------------------------------------------------------------------- small CRS chooser
+class CRSChooser(QDialog):
+    def __init__(self, parent=None, title="Choose Coordinate System", allow_geographic=False, suggestions=()):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(900, 560)
+        lay = QVBoxLayout(self)
+        self.picker = CRSPicker(kinds=("projected", "geographic") if allow_geographic else ("projected",))
+        self.picker.set_suggestions(suggestions)
+        lay.addWidget(self.picker, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self._ok)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def _ok(self):
+        if not self.picker.current_key():
+            error_box(self, "Coordinate System", "Pick one from the list.")
+            return
+        self.accept()
+
+    def key(self) -> str:
+        return self.picker.current_key()
+
+
+# ----------------------------------------------------------------------------- options panel
+UNIT_CHOICES = [("Same as the project", None), ("US survey feet", "ftUS"), ("International feet", "ft"), ("Metres", "m")]
+
+
+class ImportOptionsPanel(QWidget):
+    """Where the numbers live (CRS / units), plausibility check, duplicates, layers."""
+
+    def __init__(self, state, geographic: bool = False, file_crs=None, file_unit: str | None = None,
+                 default_geo_crs: int = 4326, assume_project_crs: bool = False, parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.project = state.project
+        self.geographic = geographic
+        self.file_crs = file_crs
+        self.file_unit = file_unit
+        #: A CSV cannot say where it is, so the importer assumes the project's own system and only
+        #: reprojects when the user says the file is in a different one (change order, item 6).
+        #: Formats that carry their own CRS pass False, and the file's own answer is the default.
+        self.assume_project_crs = bool(assume_project_crs)
+        self.batch: ImportBatch | None = None
+        self._chosen = None                  # CRS the user picked via "Choose..."
+        self._assign = None                  # ProjectCRS to assign (local projects)
+        pc = self.project.crs
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+
+        g = QGroupBox("Where Are These Coordinates?")
+        gl = QVBoxLayout(g)
+        self.r_proj = QRadioButton()
+        self.r_other = QRadioButton("A different coordinate system:")
+        self.r_assign = QRadioButton()
+        row = QHBoxLayout()
+        row.addWidget(self.r_other)
+        self.lbl_other = QLabel("(none chosen)")
+        self.btn_other = QPushButton("Choose...")
+        row.addWidget(self.lbl_other, 1)
+        row.addWidget(self.btn_other)
+        if geographic:
+            self.r_proj.setVisible(False)
+            self.r_other.setText("Longitude / latitude in:")
+        if pc.is_local and not geographic:
+            self.r_proj.setText("Local coordinates - keep this project local (use the numbers as they are)")
+            self.r_assign.setText("")
+        else:
+            self.r_proj.setText(f"The project's system  ({pc.label})")
+        gl.addWidget(self.r_proj)
+        self.r_assign_row = QHBoxLayout()
+        self.r_assign_row.addWidget(self.r_assign)
+        self.lbl_assign = QLabel("")
+        self.lbl_assign.setWordWrap(True)
+        self.r_assign_row.addWidget(self.lbl_assign, 1)
+        self.btn_assign = QPushButton("Pick...")
+        self.r_assign_row.addWidget(self.btn_assign)
+        self.r_assign.setVisible(pc.is_local and not geographic)
+        self.lbl_assign.setVisible(pc.is_local and not geographic)
+        self.btn_assign.setVisible(pc.is_local and not geographic)
+        gl.addLayout(self.r_assign_row)
+        gl.addLayout(row)
+        form = QFormLayout()
+        self.cmb_units = QComboBox()
+        for lbl, v in UNIT_CHOICES:
+            self.cmb_units.addItem(lbl, v)
+        self.cmb_zunits = QComboBox()
+        for lbl, v in [("Same as horizontal", "same"), ("Metres", "m"), ("US survey feet", "ftUS"), ("International feet", "ft"),
+                       ("Same as the project's elevation unit", None)]:
+            self.cmb_zunits.addItem(lbl, v)
+        self.chk_swap = QCheckBox("Swap the two coordinate columns (northing and easting are the wrong way round)")
+        self.chk_swap.setVisible(not geographic)
+        form.addRow("Horizontal units in file:", self.cmb_units)
+        form.addRow("Elevation units in file:", self.cmb_zunits)
+        gl.addLayout(form)
+        gl.addWidget(self.chk_swap)
+        gl.addWidget(Hint("A CSV is assumed to be in the project's own system - pick \"a different "
+                          "coordinate system\" above only when it is not."))
+        lay.addWidget(g)
+
+        vg = QGroupBox("Heights and Ground Scale")
+        vgl = QVBoxLayout(vg)
+        self.vg = VerticalAndGroundPanel(vg)
+        self.vg.set_from(pc)
+        vgl.addWidget(self.vg)
+        lay.addWidget(vg)
+
+        self.fit = Banner("", "info")
+        self.fit.setVisible(False)
+        lay.addWidget(self.fit)
+
+        o = QGroupBox("Options")
+        of = QFormLayout(o)
+        self.cmb_dup = QComboBox()
+        for lbl, v in [("Renumber the new ones (keep both)", "renumber"), ("Skip the new ones", "skip"),
+                       ("Overwrite the existing ones", "overwrite"), ("Keep both with the same number", "keep")]:
+            self.cmb_dup.addItem(lbl, v)
+        self.ed_layer = QLineEdit()
+        self.ed_layer.setPlaceholderText("(blank = keep layers from the file / feature codes)")
+        self.chk_lw = QCheckBox("Build linework from feature codes after import")
+        of.addRow("If a point number already exists:", self.cmb_dup)
+        of.addRow("Put everything on layer:", self.ed_layer)
+        of.addRow("", self.chk_lw)
+        lay.addWidget(o)
+
+        self.btn_other.clicked.connect(self._choose_other)
+        self.btn_assign.clicked.connect(self._choose_assign)
+        for w in (self.r_proj, self.r_other, self.r_assign):
+            w.toggled.connect(self._refresh)
+        self.cmb_units.currentIndexChanged.connect(self._refresh)
+        self.cmb_zunits.currentIndexChanged.connect(self._refresh)
+        self.chk_swap.toggled.connect(self._refresh)
+        self._init_defaults(default_geo_crs)
+
+    # -- defaults
+    def _init_defaults(self, geo_default: int):
+        pc = self.project.crs
+        if self.geographic:
+            self._chosen = C.CRS.from_epsg(geo_default)
+            self.lbl_other.setText(self._chosen.name)
+            self.r_other.setChecked(True)
+            self.cmb_zunits.setCurrentIndex(self.cmb_zunits.findData("m"))
+            return
+        if self.file_unit:
+            i = self.cmb_units.findData(self.file_unit)
+            if i >= 0 and self.file_unit != pc.unit:
+                self.cmb_units.setCurrentIndex(i)
+        if pc.is_local:
+            if self.file_crs is not None and not self.file_crs.is_geographic:
+                try:
+                    self._assign = C.ProjectCRS(self.file_crs)
+                    self.lbl_assign.setText(f"Assign the file's system to the project: {self._assign.label}")
+                    self.r_assign.setChecked(True)
+                except Exception:
+                    self.r_proj.setChecked(True)
+            else:
+                self.lbl_assign.setText("Assign a coordinate system to this project (the numbers are already in it)")
+                self.r_proj.setChecked(True)
+        elif self.assume_project_crs:
+            # The numbers are taken to be in the project's system - no conversion, nothing moves.
+            # If the file itself says otherwise, that is said here and can be overridden just below.
+            self.r_proj.setChecked(True)
+            if self.file_crs is not None and self.file_crs != pc.crs:
+                self.lbl_other.setText(f"{self.file_crs.name}   (what the file claims - only used if you pick it)")
+        else:
+            if self.file_crs is not None and self.file_crs != pc.crs:
+                self._chosen = self.file_crs
+                self.lbl_other.setText(f"{self.file_crs.name}   (from the file)")
+                self.r_other.setChecked(True)
+            else:
+                self.r_proj.setChecked(True)
+
+    def _choose_other(self):
+        dlg = CRSChooser(self, "Coordinate system of the file", allow_geographic=True)
+        if dlg.exec():
+            k = dlg.key()
+            self._chosen = C.resolve_crs(k)
+            self.lbl_other.setText(f"{k}   {self._chosen.name}")
+            self.r_other.setChecked(True)
+            self._refresh()
+
+    def _choose_assign(self):
+        sug = []
+        if self.batch is not None and not self.batch.is_empty():
+            xy = self.batch.sample_xy(50)
+            if len(xy):
+                favs = [k for k, _ in C.default_favorites_records()]
+                sug = [(k, n) for k, n, _, _ in C.suggest_crs(float(np.median(xy[:, 0])), float(np.median(xy[:, 1])), favs)]
+        dlg = CRSChooser(self, "Coordinate system to assign to the project", suggestions=sug)
+        if dlg.exec():
+            k = dlg.key()
+            self._assign = C.ProjectCRS.from_epsg(int(k.split(":")[1])) if k.startswith("EPSG:") else C.ProjectCRS(k)
+            self.lbl_assign.setText(f"Assign to the project: {self._assign.label}")
+            self.r_assign.setChecked(True)
+            self._refresh()
+
+    # -- batch & plausibility
+    def set_batch(self, batch: ImportBatch):
+        self.batch = batch
+        self._refresh()
+
+    def plan(self) -> ImportPlan:
+        pc = self.project.crs
+        # Vertical datum and ground scale are properties of the project, not of the file: applying
+        # them here is what makes them "part of import" (change order, item 7).
+        self.vg.apply_to(pc)
+        p = ImportPlan(geographic=self.geographic, dup_policy=self.cmb_dup.currentData(),
+                       layer_override=self.ed_layer.text().strip() or None, process_linework=self.chk_lw.isChecked(),
+                       swap_xy=self.chk_swap.isChecked() and not self.geographic)
+        eff = self._assign if (self.r_assign.isChecked() and self._assign is not None) else pc
+        if self.r_other.isChecked() and self._chosen is not None:
+            p.src_crs = self._chosen
+        if self.r_assign.isChecked() and self._assign is not None:
+            p.assign_crs = self._assign
+        # horizontal scale when there is no CRS conversion doing it for us
+        hu = self.cmb_units.currentData()
+        if hu and p.src_crs is None and not self.geographic:
+            p.scale_xy = U.M_PER_UNIT[hu] / U.M_PER_UNIT[eff.unit]
+        # elevation scale
+        zu = self.cmb_zunits.currentData()
+        if zu == "same":
+            src_u = hu or (C.describe_crs(p.src_crs)["unit"] if (p.src_crs is not None and not p.src_crs.is_geographic) else eff.unit)
+        elif zu is None:
+            src_u = eff.vunit
+        else:
+            src_u = zu
+        p.z_scale = U.M_PER_UNIT.get(src_u, 1.0) / U.M_PER_UNIT.get(eff.vunit, 1.0)
+        return p
+
+    def _refresh(self):
+        pc = self.project.crs
+        self.btn_other.setEnabled(True)
+        if self.batch is None or self.batch.is_empty():
+            return
+        try:
+            plan = self.plan()
+            xy = self.batch.sample_xy(300)
+            if plan.swap_xy:
+                xy = xy[:, ::-1]
+            fn = make_batch_transform(self.project, plan)
+            x, y = fn(xy[:, 0], xy[:, 1])
+            eff = plan.assign_crs or pc
+            ok, tot = eff.area_of_use_ok(np.asarray(x), np.asarray(y))
+            if eff.is_local:
+                self.fit.setVisible(False)
+                return
+            self.fit.setVisible(True)
+            if ok == tot:
+                self.fit.set(f"Looks right: all {tot} sampled coordinates fall inside the area of use of {eff.authority}.", "info")
+            elif ok == 0:
+                self.fit.set(f"Probably wrong: none of {tot} sampled coordinates land inside the area of use of {eff.authority} after "
+                             f"conversion. Check the coordinate system, the units, or swap northing/easting.", "bad")
+            else:
+                self.fit.set(f"Only {ok} of {tot} sampled coordinates land inside the area of use of {eff.authority}.", "warn")
+        except C.LocalCRSError:
+            self.fit.setVisible(True)
+            self.fit.set("This project is local - assign a coordinate system to convert from lat/lon or another system.", "warn")
+        except Exception as ex:
+            self.fit.setVisible(True)
+            self.fit.set(f"Could not test the coordinates: {ex}", "warn")
+
+    def validate(self) -> str | None:
+        if self.r_other.isChecked() and self._chosen is None:
+            return "Choose the coordinate system the file uses."
+        if self.r_assign.isChecked() and self._assign is None:
+            return "Pick the coordinate system to assign to the project."
+        if self.project.crs.is_local and self.r_other.isChecked() and not self.geographic:
+            return ("This project uses local coordinates, so a file in another system cannot be converted. "
+                    "Either assign a coordinate system to the project, or import the numbers as local coordinates.")
+        if self.geographic and self.project.crs.is_local:
+            return "Longitude/latitude data needs a project coordinate system. Assign one first (Coordinates menu)."
+        return self.vg.validate()
+    
+
+
+class _ImportDialog(QDialog):
+    """Dialog shell: header text + panel + OK/Cancel (used by every format except CSV)."""
+
+    def __init__(self, parent, title, summary, panel: ImportOptionsPanel, messages=()):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumWidth(560)
+        lay = QVBoxLayout(self)
+        lay.addWidget(Banner(summary, "info"))
+        for m in list(messages)[:4]:
+            lay.addWidget(Banner(m, "warn"))
+        self.panel = panel
+        lay.addWidget(panel)
+        self.bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.bb.button(QDialogButtonBox.Ok).setText("Import")
+        self.bb.accepted.connect(self._ok)
+        self.bb.rejected.connect(self.reject)
+        lay.addWidget(self.bb)
+
+    def _ok(self):
+        err = self.panel.validate()
+        if err:
+            error_box(self, "Import", err)
+            return
+        self.accept()
+
+
+# ----------------------------------------------------------------------------- CSV dialog
+class CsvImportDialog(QDialog):
+    MAXPREV = 40
+
+    def __init__(self, state, path, parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.path = Path(path)
+        self.setWindowTitle(f"Import Points — {self.path.name}")
+        self.setMinimumSize(960, 700)
+        self.sniff = CSV.sniff(path)
+        root = QVBoxLayout(self)
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Delimiter:"))
+        self.cmb_delim = QComboBox()
+        for lbl, d in [("Comma", ","), ("Tab", "\t"), ("Semicolon", ";"), ("Space", " "), ("Pipe", "|")]:
+            self.cmb_delim.addItem(lbl, d)
+        self.cmb_delim.setCurrentIndex(max(0, self.cmb_delim.findData(self.sniff.delimiter)))
+        top.addWidget(self.cmb_delim)
+        top.addWidget(QLabel("Skip first"))
+        self.sp_skip = QSpinBox()
+        self.sp_skip.setRange(0, 1000)
+        self.sp_skip.setValue(1 if self.sniff.has_header else 0)
+        top.addWidget(self.sp_skip)
+        top.addWidget(QLabel("line(s) (headers)"))
+        top.addSpacing(16)
+        top.addWidget(QLabel("Format:"))
+        self.cmb_fmt = QComboBox()
+        self.cmb_fmt.addItem("Custom - set the column roles below", None)
+        for k, v in CSV.PRESETS.items():
+            self.cmb_fmt.addItem(k, v)
+        top.addWidget(self.cmb_fmt, 1)
+        root.addLayout(top)
+        # ---- what these points are.  A CSV is usually not our own field data: it is a stake-out
+        #      list, published control, or something another crew or agency handed over.  That
+        #      goes on its own reference layer and keeps its own point numbering.
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("These points are:"))
+        self.cmb_role = QComboBox()
+        # Field data first and selected by default: a file of shot points is this job's field data
+        # unless the user says otherwise (change order, item 6).  A stake-out list is the exception,
+        # and choosing it is one click.
+        for label, role in [("This job's field data - joins the fieldwork list", None),
+                            ("Stake-out - reference layer STAKE-OUT", "stakeout"),
+                            ("Control - reference layer CONTROL", "control"),
+                            ("Other reference - reference layer OTHER", "other")]:
+            self.cmb_role.addItem(label, role)
+        self.cmb_role.setCurrentIndex(0)
+        self.cmb_role.setToolTip("Reference points draw, snap and export with everything else, but they are kept\n"
+                                 "out of the fieldwork list and out of the data-quality checks - they are not our shots.\n"
+                                 "Each role has its own layer and its own point numbers.")
+        row2.addWidget(self.cmb_role, 1)
+        root.addLayout(row2)
+        self.tbl = QTableWidget()
+        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.horizontalHeader().setVisible(False)
+        self.tbl.setAlternatingRowColors(True)
+        root.addWidget(self.tbl, 1)
+        self.status = Banner("", "info")
+        root.addWidget(self.status)
+        self.panel = ImportOptionsPanel(state, geographic=False, assume_project_crs=True)
+        root.addWidget(self.panel)
+        self.bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.bb.button(QDialogButtonBox.Ok).setText("Import points")
+        self.bb.accepted.connect(self._ok)
+        self.bb.rejected.connect(self.reject)
+        root.addWidget(self.bb)
+        self.roles_cb: list[QComboBox] = []
+        self._building = False
+        self.cmb_delim.currentIndexChanged.connect(self._delimiter_changed)
+        self.sp_skip.valueChanged.connect(lambda: self._rebuild(keep_roles=True))
+        self.cmb_fmt.currentIndexChanged.connect(self._preset)
+        self.cmb_role.currentIndexChanged.connect(self._role_target_changed)
+        self._rebuild(keep_roles=False)
+        self._role_target_changed()
+
+    # -- table
+    def _load_rows(self):
+        text, _ = CSV.read_text(self.path)
+        lines = [l for l in text.splitlines() if l.strip() and not l.lstrip().startswith(("#", "//"))]
+        d = self.cmb_delim.currentData()
+        rows = [[c.strip() for c in CSV._split(l, d)] for l in lines[:self.MAXPREV + self.sp_skip.value()]]
+        return rows
+
+    def _delimiter_changed(self):
+        self._rebuild(keep_roles=False)
+
+    def _rebuild(self, keep_roles: bool):
+        self._building = True
+        old_roles = [cb.currentData() for cb in self.roles_cb] if keep_roles else None
+        rows = self._load_rows()
+        skip = self.sp_skip.value()
+        data = rows[skip:]
+        header = rows[skip - 1] if skip >= 1 and skip - 1 < len(rows) else None
+        n = max((len(r) for r in data), default=0)
+        n = max(n, len(old_roles or []))
+        if old_roles is None:
+            roles = CSV.guess_roles(header if (skip and header) else None, data)
+            roles += ["ignore"] * (n - len(roles))
+        else:
+            roles = (old_roles + ["ignore"] * n)[:n]
+        self.tbl.clear()
+        self.tbl.setRowCount(len(data) + 1)
+        self.tbl.setColumnCount(n)
+        self.roles_cb = []
+        for c in range(n):
+            cb = QComboBox()
+            for r in CSV.ROLES:
+                cb.addItem(CSV.ROLE_LABELS[r], r)
+            cb.setCurrentIndex(max(0, cb.findData(roles[c] if c < len(roles) else "ignore")))
+            cb.currentIndexChanged.connect(lambda _i, col=c: self._role_changed(col))
+            self.tbl.setCellWidget(0, c, cb)
+            self.roles_cb.append(cb)
+        for r, row in enumerate(data, start=1):
+            for c in range(n):
+                self.tbl.setItem(r, c, QTableWidgetItem(row[c] if c < len(row) else ""))
+        self.tbl.setRowHeight(0, 30)
+        self.tbl.resizeColumnsToContents()
+        for c in range(n):
+            self.tbl.setColumnWidth(c, max(self.tbl.columnWidth(c), 130))
+        self._building = False
+        self._geo_changed()
+        self._update_preview()
+
+    def _role_changed(self, col):
+        if self._building:
+            return
+        role = self.roles_cb[col].currentData()
+        if role not in ("ignore", "attr"):
+            self._building = True
+            for c, cb in enumerate(self.roles_cb):
+                if c != col and cb.currentData() == role:
+                    cb.setCurrentIndex(cb.findData("ignore"))
+            self._building = False
+        self.cmb_fmt.blockSignals(True)
+        self.cmb_fmt.setCurrentIndex(0)
+        self.cmb_fmt.blockSignals(False)
+        self._geo_changed()
+        self._update_preview()
+
+    def _preset(self):
+        roles = self.cmb_fmt.currentData()
+        if not roles:
+            return
+        self._building = True
+        for c, cb in enumerate(self.roles_cb):
+            cb.setCurrentIndex(cb.findData(roles[c] if c < len(roles) else "ignore"))
+        self._building = False
+        self._geo_changed()
+        self._update_preview()
+
+    def roles(self):
+        return [cb.currentData() for cb in self.roles_cb]
+
+    # -- where the points end up
+    def target_role(self) -> str | None:
+        """The reference role chosen, or None when the points are this job's field data."""
+        return self.cmb_role.currentData()
+
+    def _role_target_changed(self):
+        """One layer per role: a role fixes the layer, so the layer box steps aside."""
+        role = self.target_role()
+        self.panel.ed_layer.setEnabled(role is None)
+        self.panel.ed_layer.setPlaceholderText("(the layer of the chosen role)" if role
+                                              else "(blank = keep layers from the file / feature codes)")
+        self.panel.chk_lw.setEnabled(role is None)
+        if role:
+            self.panel.ed_layer.clear()
+            self.panel.chk_lw.setChecked(False)
+        self._update_preview()
+
+    def _geo_changed(self):
+        """Swap the options panel when the mapping says lat/lon."""
+        geo = "latitude" in self.roles() and "longitude" in self.roles()
+        if geo != self.panel.geographic:
+            lay = self.layout()
+            i = lay.indexOf(self.panel)
+            self.panel.setParent(None)
+            self.panel.deleteLater()
+            self.panel = ImportOptionsPanel(self.state, geographic=geo,
+                                            assume_project_crs=not geo)
+            lay.insertWidget(i, self.panel)
+
+    def _mapping(self) -> CSV.CsvMapping:
+        return CSV.CsvMapping(self.cmb_delim.currentData(), self.sp_skip.value(), self.roles())
+
+    def _update_preview(self):
+        if self._building:
+            return
+        try:
+            b = CSV.read_points(self.path, self._mapping(), limit=600)
+        except ValueError as ex:
+            self.status.set(str(ex), "warn")
+            return
+        extra = f" ({b.info.get('skipped', 0)} unreadable line(s) in the preview)" if b.info.get("skipped") else ""
+        role = self.target_role()
+        if role:
+            dest = (f"  They become {REF.ROLE_LABELS[role].lower()} reference points on layer "
+                    f"{REF.layer_for(role)}, with their own point numbers - not this job's field data.")
+        else:
+            dest = "  They join this job's field data (the fieldwork list)."
+        self.status.set(f"Preview: {len(b.points)} point(s) read from the first lines{extra}.{dest}",
+                        "info" if b.points else "warn")
+        self.panel.set_batch(b)
+
+    def _ok(self):
+        try:
+            self.batch = CSV.read_points(self.path, self._mapping())
+        except ValueError as ex:
+            error_box(self, "Import Points", str(ex))
+            return
+        if not self.batch.points:
+            error_box(self, "Import Points", "No readable points - check the delimiter, header lines and column roles.")
+            return
+        err = self.panel.validate()
+        if err:
+            error_box(self, "Import Points", err)
+            return
+        self.plan = self.panel.plan()
+        self.plan.reference_role = self.target_role()
+        if self.plan.reference_role:
+            self.plan.layer_override = None        # the role's own layer is the layer
+        self.accept()
+
+
+# ----------------------------------------------------------------------------- GIS layer dialog
+class GisLayerDialog(QDialog):
+    def __init__(self, state, path, parent=None):
+        super().__init__(parent)
+        from pyogrio import read_info
+        from ..io import gis_io
+        self.path = str(path)
+        self.state = state
+        self.setWindowTitle(f"Import GIS Data — {Path(path).name}")
+        self.setMinimumWidth(640)
+        lay = QVBoxLayout(self)
+        layers = gis_io.list_gis_layers(path)
+        form = QFormLayout()
+        self.cmb_layer = QComboBox()
+        for n, g in layers:
+            self.cmb_layer.addItem(f"{n}   [{g}]", n)
+        form.addRow("Layer:", self.cmb_layer)
+        self.chk_all = QCheckBox(f"Import all {len(layers)} layers of this file (point number / description / elevation fields are guessed)")
+        self.chk_all.setVisible(len(layers) > 1)
+        self.chk_all.setChecked(len(layers) > 1)
+        self.layer_names = [n for n, _ in layers]
+        form.addRow("", self.chk_all)
+        self.cmb_num = QComboBox()
+        self.cmb_desc = QComboBox()
+        self.cmb_z = QComboBox()
+        form.addRow("Point number field:", self.cmb_num)
+        form.addRow("Description / code field:", self.cmb_desc)
+        form.addRow("Elevation field:", self.cmb_z)
+        lay.addLayout(form)
+        self.info_lbl = Banner("", "info")
+        lay.addWidget(self.info_lbl)
+        self.panel_holder = QVBoxLayout()
+        lay.addLayout(self.panel_holder)
+        self.panel: ImportOptionsPanel | None = None
+        self.bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.bb.button(QDialogButtonBox.Ok).setText("Import")
+        self.bb.accepted.connect(self._ok)
+        self.bb.rejected.connect(self.reject)
+        lay.addWidget(self.bb)
+        self._read_info = read_info
+        self._gis = gis_io
+        self.cmb_layer.currentIndexChanged.connect(self._layer_changed)
+        self.chk_all.toggled.connect(self._all_toggled)
+        self._layer_changed()
+        self._all_toggled(self.chk_all.isChecked())
+
+    def _all_toggled(self, on):
+        for w in (self.cmb_layer, self.cmb_num, self.cmb_desc, self.cmb_z):
+            w.setEnabled(not on)
+
+    def _layer_changed(self):
+        name = self.cmb_layer.currentData()
+        info = self._read_info(self.path, layer=name)
+        fields = [str(f) for f in info["fields"]]
+        guess = self._gis.guess_fields(fields)
+        for cmb, role in ((self.cmb_num, "number"), (self.cmb_desc, "description"), (self.cmb_z, "elevation")):
+            cmb.clear()
+            cmb.addItem("(none)", None)
+            for f in fields:
+                cmb.addItem(f, f)
+            cmb.setCurrentIndex(max(0, cmb.findData(guess.get(role))))
+        crs = None
+        try:
+            crs = C.CRS.from_user_input(info["crs"]) if info.get("crs") else None
+        except Exception:
+            crs = None
+        geographic = bool(crs is not None and crs.is_geographic)
+        self.info_lbl.set(f"{info.get('features', '?'):,} feature(s), {info.get('geometry_type', '')}.  "
+                          f"File coordinate system: {crs.name if crs else 'NOT STATED - you must say which one it is'}", "info" if crs else "warn")
+        if self.panel is not None:
+            self.panel.setParent(None)
+            self.panel.deleteLater()
+        unit = C.describe_crs(crs)["unit"] if crs is not None and not geographic else None
+        self.panel = ImportOptionsPanel(self.state, geographic=geographic, file_crs=crs, file_unit=unit)
+        self.panel_holder.addWidget(self.panel)
+
+    def _ok(self):
+        err = self.panel.validate()
+        if err:
+            error_box(self, "Import", err)
+            return
+        self.all_layers = self.chk_all.isChecked() and self.chk_all.isVisible()
+        self.layer = self.cmb_layer.currentData()
+        self.fields = {k: v for k, v in (("number", self.cmb_num.currentData()), ("description", self.cmb_desc.currentData()),
+                                         ("elevation", self.cmb_z.currentData())) if v}
+        self.plan = self.panel.plan()
+        self.accept()
+
+
+# ----------------------------------------------------------------------------- dispatcher
+class Importer:
+    def __init__(self, window):
+        self.w = window
+        self.state = window.state
+
+    def import_path(self, path) -> bool:
+        p = Path(path)
+        ext = p.suffix.lower()
+        try:
+            if ext == ".plb":
+                self.w.open_project_path(str(p))
+                return True
+            if ext in LANDXML_EXT:
+                return self._landxml(p)
+            if ext == ".dxf":
+                return self._dxf(p)
+            if ext in GIS_EXT:
+                return self._gis(p)
+            if ext in KML_EXT:
+                return self._kml(p)
+            from .. import plugins
+            for spec in plugins.registry.importers:
+                if ext in spec.extensions:
+                    return self._plugin(p, spec)
+            if ext in IMAGE_EXT:
+                return self.w.add_imagery_file(str(p))
+            if ext in CSV_EXT or True:
+                return self._csv(p)
+        except Exception as ex:
+            import traceback
+            error_box(self.w, "Import Failed", f"{p.name} could not be imported:\n{ex}", traceback.format_exc())
+            self.state.log(f"Import of {p.name} failed: {ex}", "error")
+        return False
+
+    def _job_folder(self):
+        """The job folder this window is working in, when there is one (folders read relative to it)."""
+        try:
+            return self.w._job_folder()
+        except Exception:
+            return None
+
+    # -- shared tail
+    def _finish(self, batch: ImportBatch, plan: ImportPlan, label: str, path: Path):
+        first = not self.state.project.points and not self.state.project.entities
+        stats = apply_import(self.state, batch, plan, label, path, job_root=self._job_folder())
+        word = (f"{REF.ROLE_LABELS[plan.reference_role].lower()} reference points"
+                if plan.reference_role else "points")
+        bits = [f"{stats['points']:,} {word}"] if stats["points"] else []
+        for k, lab in (("polylines", "polylines"), ("texts", "texts"), ("surfaces", "surfaces")):
+            if stats.get(k):
+                bits.append(f"{stats[k]:,} {lab}")
+        msg = f"Imported {', '.join(bits) or 'nothing'} from {path.name}."
+        if stats.get("renumbered"):
+            msg += f" {stats['renumbered']} point number(s) already existed and were renumbered."
+        if stats.get("skipped"):
+            msg += f" {stats['skipped']} duplicate(s) skipped."
+        self.state.log(msg, "ok")
+        for m in batch.messages:
+            self.state.log(f"{path.name}: {m}", "warn")
+        self.state.zoom_extents()
+        return True
+
+    def _csv(self, p: Path) -> bool:
+        dlg = CsvImportDialog(self.state, p, self.w)
+        if not dlg.exec():
+            return False
+        return self._finish(dlg.batch, dlg.plan, f"points ({p.name})", p)
+
+    def _generic(self, p: Path, batch: ImportBatch, title: str, geographic=False, file_crs=None, unit=None, label="") -> bool:
+        if batch.is_empty():
+            error_box(self.w, title, "\n".join(batch.messages) or "Nothing importable was found in this file.")
+            return False
+        panel = ImportOptionsPanel(self.state, geographic=geographic, file_crs=file_crs, file_unit=unit)
+        panel.set_batch(batch)
+        dlg = _ImportDialog(self.w, title, f"{p.name}: {batch.summary()}", panel, batch.messages)
+        if not dlg.exec():
+            return False
+        return self._finish(batch, panel.plan(), label or p.name, p)
+
+    def _landxml(self, p: Path) -> bool:
+        from ..io import landxml
+        batch = run_blocking(self.w, f"Reading {p.name} ...", landxml.read_landxml, str(p))
+        return self._generic(p, batch, "Import LandXML", file_crs=file_crs_from_info(batch.info), unit=batch.info.get("units"),
+                             label=f"LandXML ({p.name})")
+
+    def _dxf(self, p: Path) -> bool:
+        from ..io import dxf_io
+        batch = run_blocking(self.w, f"Reading {p.name} ...", dxf_io.read_dxf, str(p))
+        return self._generic(p, batch, "Import DXF", unit=batch.info.get("units"), label=f"DXF ({p.name})")
+
+    def _gis(self, p: Path) -> bool:
+        from ..io import gis_io
+        dlg = GisLayerDialog(self.state, p, self.w)
+        if not dlg.exec():
+            return False
+        if dlg.all_layers:
+            batch = ImportBatch()
+            for name in dlg.layer_names:
+                b = run_blocking(self.w, f"Reading {p.name} / {name} ...", gis_io.read_gis, str(p), name, None)
+                batch.points += b.points
+                batch.polylines += b.polylines
+                batch.texts += b.texts
+                batch.messages += [f"{name}: {m}" for m in b.messages]
+                batch.info = batch.info or b.info
+        else:
+            batch = run_blocking(self.w, f"Reading {p.name} ...", gis_io.read_gis, str(p), dlg.layer, dlg.fields)
+        if batch.is_empty():
+            error_box(self.w, "Import GIS", "The layer has no usable geometry.")
+            return False
+        return self._finish(batch, dlg.plan, f"GIS ({p.name})", p)
+
+    def _kml(self, p: Path) -> bool:
+        from ..io import kml_io
+        from ..core.settings import user_dir
+        batch = kml_io.read_kml(str(p), cache_dir=user_dir())
+        ov = batch.info.get("overlays", [])
+        added = 0
+        if ov:
+            for o in ov:
+                if o.get("file") and self.w.add_kml_overlay(o):
+                    added += 1
+        if batch.is_empty():
+            if added:
+                self.state.log(f"Added {added} image overlay(s) from {p.name}.", "ok")
+                return True
+            error_box(self.w, "Import KML/KMZ", "\n".join(batch.messages) or "Nothing importable was found.")
+            return False
+        ok = self._generic(p, batch, "Import KML / KMZ", geographic=True, label=f"KML ({p.name})")
+        if added:
+            self.state.log(f"Added {added} image overlay(s) from {p.name}.", "ok")
+        return ok
+
+    # -- a whole folder of reference points, one role for all of it
+    def import_reference_folder(self, folder, role: str | None, recursive: bool = False) -> dict:
+        """Read every point file in a folder and put the lot on one reference role's layer.
+
+        No dialog per file: the role was chosen once.  A file that cannot be read is skipped and
+        named in the log - it is never imported half-guessed, because a control list with the
+        northing and easting columns swapped is worse than no control list.
+        """
+        files = reference_folder_files(folder, recursive)
+        tally = dict(files=0, points=0, duplicates=0, skipped=0, failed=0, unreadable=[])
+        for f in files:
+            try:
+                sn = CSV.sniff(f)
+                m = CSV.CsvMapping(sn.delimiter, 1 if sn.has_header else 0, list(sn.roles))
+                batch = CSV.read_points(f, m)
+            except Exception as ex:
+                tally["failed"] += 1
+                tally["unreadable"].append((f.name, str(ex)))
+                continue
+            if not batch.points:
+                tally["failed"] += 1
+                tally["unreadable"].append((f.name, "no readable points"))
+                continue
+            plan = ImportPlan(reference_role=role, dup_policy="renumber")
+            label = (f"{REF.label_for(role)} points ({f.name})" if role
+                     else f"points ({f.name})")
+            stats = apply_import(self.state, batch, plan, label, f, job_root=self._job_folder())
+            tally["files"] += 1
+            tally["points"] += stats.get("points", 0)
+            tally["duplicates"] += stats.get("duplicates", 0)
+            tally["skipped"] += stats.get("skipped", 0)
+        self.record_reference_folder(folder, role, tally)
+        for name, why in tally["unreadable"]:
+            self.state.log(f"{name}: skipped ({why})", "warn")
+        if tally["points"]:
+            self.state.zoom_extents()
+        return tally
+
+    def record_reference_folder(self, folder, role: str, tally: dict):
+        """Keep the folder on the job.
+
+        The job remembers which folder its reference data came from - so the next import, the
+        Fieldwork Manager and every file dialog start there, and so a project opened a month
+        later still says where the stake-out list lived.
+        """
+        pr = self.state.project
+        hist = [r for r in pr.settings.get("reference_imports", [])
+                if not (r.get("folder") == str(folder) and r.get("role") == role)]
+        hist.append(dict(folder=str(folder), role=role, files=int(tally.get("files", 0)),
+                         points=int(tally.get("points", 0)), when=time.strftime("%Y-%m-%d %H:%M")))
+        pr.settings["reference_imports"] = hist[-20:]
+        pr.settings["data_folder"] = str(folder)
+        pr.touch()
+
+    def _plugin(self, p: Path, spec) -> bool:
+        from ..plugins import PluginAPI
+        api = PluginAPI(self.state.project, self.state, log=lambda s: self.state.log(s))
+        batch = spec.func(str(p), api)
+        return self._generic(p, batch, f"Import - {spec.name}", label=f"{spec.name} ({p.name})")
+
+
+# ------------------------------------------------------------ a folder of reference points
+def reference_folder_files(folder, recursive: bool = True) -> list[Path]:
+    """The point files in a folder, in the order a person would read them.
+
+    ``crew 2`` comes before ``crew 10`` (natural sort, see fieldwork/utils_sort), because a folder
+    of downloads is read in name order and string order gets that wrong.
+    """
+    root = Path(folder)
+    if not root.is_dir():
+        return []
+    found = root.rglob("*")  # always include sub-folders (recursive default=True)
+    return sorted((p for p in found if p.is_file() and p.suffix.lower() in POINTS_EXT),
+                  key=lambda p: natural_key(str(p.relative_to(root))))
+
+
+class ReferenceFolderDialog(FormDialog):
+    """Survey > Import Points from Folder - one reference role for a whole folder of point files.
+
+    One dialog for the folder, not one dialog per file: a download folder can hold a dozen crew
+    files, and the question ("what are these?") has one answer.
+    """
+
+    def __init__(self, state, folder: Path, parent=None):
+        super().__init__(parent, "Import Points from Folder",
+                         "Every point file in the folder is read and given the reference role "
+                         "chosen here, so each role ends up on its own layer.  Files that cannot "
+                         "be read are left alone and reported - nothing is guessed silently.",
+                         "Import", 640)
+        self.state = state
+        self.folder = Path(folder)
+        self.cmb_role = QComboBox()
+        # Field data first (change order, item 6): a folder of downloads is the crew's own work
+        # far more often than it is somebody else's reference list.
+        self.cmb_role.addItem("This job's field data - joins the fieldwork list", None)
+        for role in REF.ROLES:
+            self.cmb_role.addItem(f"{REF.ROLE_LABELS[role]} - layer {REF.layer_for(role)}", role)
+        self.chk_sub = QCheckBox("Include sub-folders")
+        self.chk_sub.setChecked(True)
+        self.chk_sub.setChecked(True)
+        self.lbl_files = QLabel("")
+        self.lbl_files.setWordWrap(True)
+        self.lbl_files.setTextFormat(Qt.PlainText)
+        self.form.addRow("Folder:", QLabel(str(self.folder)))
+        self.form.addRow("These points are:", self.cmb_role)
+        self.form.addRow("", self.chk_sub)
+        # Table of files with checkboxes for selection
+        self.chk_table = QTableWidget()
+        self.form.addRow("Files:", self.chk_table)
+        self.cmb_role.currentIndexChanged.connect(self._refresh_files)
+        self.chk_sub.toggled.connect(self._refresh_files)
+        self._refresh_files()
+
+    def files(self) -> list:
+        return reference_folder_files(self.folder, self.chk_sub.isChecked())
+
+    def role(self) -> str:
+        return self.cmb_role.currentData()
+
+    def _refresh_files(self):
+        files = self.files()
+        self._selected_files = []  # track which files user checked
+        if not files:
+            self.chk_table.setVisible(False)
+            self.lbl_files.setText("No point files (.csv, .txt, .pts, .xyz ...) found here.")
+            return
+        self.chk_table.setVisible(True)
+        # Build a table with checkboxes
+        self.chk_table.setRowCount(len(files))
+        self.chk_table.setColumnCount(2)
+        self.chk_table.setHorizontalHeaderLabels(["", "File"])
+        self.chk_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        for row, f in enumerate(files):
+            # Checkbox in column 0
+            chk = QCheckBox()
+            chk.setChecked(True)  # check all by default
+            self.chk_table.setCellWidget(row, 0, chk)
+            # File name in column 1 - use setItem not setCellWidget
+            item = QTableWidgetItem(f.name)
+            self.chk_table.setItem(row, 1, item)
+        # Adjust column widths
+        self.chk_table.resizeColumnsToContents()
+
+    def selected_files(self) -> list[Path]:
+        """Return the list of files the user checked (checked = True)."""
+        result = []
+        for row in range(self.chk_table.rowCount()):
+            chk = self.chk_table.cellWidget(row, 0)
+            if chk is not None and chk.isChecked():
+                fname = self.chk_table.cellWidget(row, 1)
+                if fname is not None:
+                    name = fname.text()
+                    # find the Path matching this name
+                    for p in self.files():
+                        if p.name == name:
+                            result.append(p)
+                            break
+        return result
+
+    def validate(self):
+        return None if self.files() else "There are no point files in this folder."
+
+
+def describe_folder_import(tally: dict) -> str:
+    """One line for the log / the status bar after a folder import."""
+    bits = [f"{tally.get('points', 0):,} point(s) from {tally.get('files', 0)} file(s)"]
+    if tally.get("duplicates"):
+        bits.append(f"{tally['duplicates']:,} duplicate number(s) (renumbered inside the role)")
+    if tally.get("failed"):
+        bits.append(f"{tally['failed']} file(s) skipped")
+    return ", ".join(bits)

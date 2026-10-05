@@ -1,0 +1,6 @@
+<?xml version="1.0"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>Example SAF 1.00014 Ground clampToGround</name><Placemark><name>PRS843728484041</name><Point><altitudeMode>clampToGround</altitudeMode><coordinates>-95.34541332472088,32.17211587195462,0</coordinates></Point></Placemark>
+<Placemark><name>907</name><Point><altitudeMode>clampToGround</altitudeMode><coordinates>-95.40788886341494,32.23367402979113,0</coordinates></Point></Placemark>
+<Placemark><name>908</name><Point><altitudeMode>clampToGround</altitudeMode><coordinates>-95.40671424337076,32.23484285952942,0</coordinates></Point></Placemark>
+<Placemark><name>909</name><Point><altitudeMode>clampToGround</altitudeMode><coordinates>-95.40685396443568,32.235573449047436,0</coordinates></Point></Placemark>
+<Placemark><name>910</name><Point><altitudeMode>clampToGround</altitudeMode><coordinates>-95.40737318967422,32.23412833288132,0</coordinates></Point></Placemark>
+</Document></kml>
