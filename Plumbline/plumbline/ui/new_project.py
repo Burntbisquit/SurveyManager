@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel,
-                               QLineEdit, QRadioButton, QVBoxLayout, QWidget)
+                               QLineEdit, QRadioButton, QScrollArea, QVBoxLayout, QWidget)
 
 from ..core import crs as C
 from ..core import units as U
@@ -44,35 +44,44 @@ from .widgets import Hint, error_box
 #: of every zone are present, because picking the metre code by mistake is a 3.28x
 #: error rather than a rounding error.
 def _texas_rows() -> list[tuple[object, str]]:
-    """Every Texas system in the library, newest realisation first, per zone.
+    """Texas State Plane NAD83(2011) in US survey feet, per zone.
 
-    Keys are ints for real EPSG codes and strings for the international-foot systems the
-    program builds itself, so the caller must use the key as an opaque value, not an int.
+    Other eras and units can be searched via the EPSG register.
     """
-    order = {"2011": 0, "1986": 1, "1927": 2}
-    unit = {"USft": 0, "m": 1, "ft": 2}
-    unit_word = {"m": "meters", "USft": "US survey feet", "ft": "international feet"}
     zones = ["North Central", "North", "Central", "South Central", "South"]
     rows = []
     for key, info in C.TEXAS_ZONES.items():
-        if info["state"] != "TX":
-            continue
-        rows.append((key, f"{info['name']}  -  {unit_word[info['units']]}"))
+        if info.get("state") == "TX" and info.get("era") == "2011" and info.get("units") == "USft":
+            rows.append((key, f"{info['name']}  -  US survey feet"))
     rows.sort(key=lambda t: (zones.index(C.TEXAS_ZONES[t[0]]["zone"])
-                             if C.TEXAS_ZONES[t[0]]["zone"] in zones else 9,
-                             order.get(C.TEXAS_ZONES[t[0]]["era"], 9),
-                             unit.get(C.TEXAS_ZONES[t[0]]["units"], 9)))
+                             if C.TEXAS_ZONES[t[0]]["zone"] in zones else 9))
     return rows
 
 
 class NewProjectDialog(QDialog):
+    _no_autofit = True
+
     def __init__(self, parent=None, name: str = "Untitled", job_hint: str = ""):
         super().__init__(parent)
         self.setWindowTitle("New Project")
-        self.setMinimumSize(800, 600)
+        self.resize(780, 640)
+        self.setMinimumSize(720, 500)
         self.crs: C.ProjectCRS | None = None
 
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 12, 14, 12)
+        outer.setSpacing(8)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        inner = QWidget()
+        root = QVBoxLayout(inner)
+        root.setSpacing(10)
+        root.setContentsMargins(4, 4, 10, 4)
 
         # ---- 1. name
         form = QFormLayout()
@@ -131,26 +140,27 @@ class NewProjectDialog(QDialog):
         ph = QVBoxLayout(self.picker_holder)
         ph.setContentsMargins(24, 0, 0, 0)
         self.picker = CRSPicker(kinds=("projected",))
+        self.picker.setMinimumHeight(220)
         ph.addWidget(self.picker)
         self.picker_holder.setVisible(False)
-        root.addWidget(self.picker_holder, 1)
+        root.addWidget(self.picker_holder)
 
         # ---- 3b. vertical datum and ground scale - the other two parts of the same decision
-        root.addWidget(QLabel("<b>Heights and ground scale</b>"))
+        self.lbl_heights = QLabel("<b>Heights and ground scale</b>")
+        root.addWidget(self.lbl_heights)
         self.extra = VerticalAndGroundPanel(self)
         root.addWidget(self.extra)
 
-        root.addWidget(Hint(
-            "Nothing is assumed. A project with no coordinate system behaves exactly like one with a "
-            "coordinate system until you ask it where it is - then it tells you to select CRS.\n"
-            "Every Texas zone is listed in each realisation it exists in (NAD27 / NAD83 / NAD83(2011)) and each "
-            "unit (metres, US survey feet, international feet).  Nothing is converted behind your back."))
+        root.addStretch(1)
+
+        scroll.setWidget(inner)
+        outer.addWidget(scroll, 1)
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.button(QDialogButtonBox.Ok).setText("Create")
         self.buttons.accepted.connect(self._accept)
         self.buttons.rejected.connect(self.reject)
-        root.addWidget(self.buttons)
+        outer.addWidget(self.buttons)
 
         self.r_unassigned.toggled.connect(self._sync)
         self.r_crs.toggled.connect(self._sync)
@@ -160,12 +170,15 @@ class NewProjectDialog(QDialog):
 
     # ------------------------------------------------------------------ state
     def _sync(self):
-        self.unit_row.setVisible(self.r_unassigned.isChecked())
+        unassigned = self.r_unassigned.isChecked()
+        self.unit_row.setVisible(unassigned)
         self.texas.setVisible(self.r_crs.isChecked())
         self.picker_holder.setVisible(self.r_other.isChecked())
         if self.r_other.isChecked():
             self.picker.setFocus()
-        self.extra.set_unassigned(self.r_unassigned.isChecked())
+        self.lbl_heights.setVisible(not unassigned)
+        self.extra.setVisible(not unassigned)
+        self.extra.set_unassigned(unassigned)
 
     def _accept(self):
         if self.r_unassigned.isChecked():
@@ -190,12 +203,13 @@ class NewProjectDialog(QDialog):
                 error_box(self, "New Project", f"{key} could not be loaded:\n{ex}")
                 return
 
-        reason = self.extra.validate()
-        if reason:
-            error_box(self, "New Project", reason)
-            return
-        if self.crs is not None:
-            self.extra.apply_to(self.crs)
+        if not self.r_unassigned.isChecked():
+            reason = self.extra.validate()
+            if reason:
+                error_box(self, "New Project", reason)
+                return
+            if self.crs is not None:
+                self.extra.apply_to(self.crs)
         reason = self.setup.validate() if self.setup.enabled else None
         if reason:
             error_box(self, "New Project", reason)

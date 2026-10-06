@@ -13,6 +13,14 @@ def _strip_trailing_digits(token: str):
         return m.group(1), m.group(2)
     return token, ""
 
+def _strip_leading_digits(token: str):
+    """Return (number_str, base) where base is token without leading digits. If no leading digits, number_str=''."""
+    import re
+    m = re.match(r'^(\d+)(.*)$', token)
+    if m:
+        return m.group(1), m.group(2)
+    return "", token
+
 def _is_command(tok: str, command_set=None) -> bool:
     cs = command_set if command_set is not None else COMMAND_SET
     # If still default, try to refresh from global (in case set_command_set_global was called)
@@ -58,8 +66,18 @@ def _classify_tokens_sequential(raw_tokens, f2f_set, command_set=None, rules=Non
                     res.append({"raw": tok, "norm": low, "type": "code", "status": "line_instance", "base": base_low, "line_num": num})
                     last_was_valid_code_idx = len(res)-1
                 else:
-                    res.append({"raw": tok, "norm": low, "type": "code", "status": "unknown", "error": "UnknownCode"})
-                    last_was_valid_code_idx = None
+                    # Look for codes by removing number in front (e.g. 30rcp -> 30 + rcp)
+                    lead_num, lead_base = _strip_leading_digits(tok)
+                    lead_base_low = lead_base.strip().casefold()
+                    base2, num2 = _strip_trailing_digits(lead_base)
+                    base2_low = base2.strip().casefold()
+                    if lead_num and lead_base and (lead_base_low in f2f_set or (num2 and base2 and base2_low in f2f_set)):
+                        matched_base = lead_base_low if lead_base_low in f2f_set else base2_low
+                        res.append({"raw": tok, "norm": low, "type": "code", "status": "line_instance" if num2 else "exact", "base": matched_base, "line_num": num2, "lead_num": lead_num})
+                        last_was_valid_code_idx = len(res)-1
+                    else:
+                        res.append({"raw": tok, "norm": low, "type": "code", "status": "unknown", "error": "UnknownCode"})
+                        last_was_valid_code_idx = None
     return res
 
 def _extract_tokens(code_part: str):

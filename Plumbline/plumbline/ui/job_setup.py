@@ -67,11 +67,7 @@ class JobSetupPanel(QWidget):
             self.cmb_style.setItemData(self.cmb_style.count() - 1, t.description, Qt.ItemDataRole.ToolTipRole)
         form.addRow("Folder style:", self.cmb_style)
 
-        # Field Data/ is created empty: naming the folders inside it is the office's business.
-        # A note in the folder says so, and the field-data side reads every file under it.
         self.sp_weeks = None                       # kept as a name so old callers fail loudly
-        form.addRow(QLabel("Field Data/ is created empty - name the folders inside it your way "
-                           "(Week 1, Stage 2, a date).  A note in the folder explains."))
         root.addLayout(form)
 
         self.lbl_preview = QLabel()
@@ -111,13 +107,8 @@ class JobSetupPanel(QWidget):
     def _refresh_preview(self):
         template = JT.TEMPLATES.get(self.cmb_style.currentData(), JT.JOB_TEMPLATE)
         here = self.folder_path()
-        rows = [f"{here}/   <- the job folder is named after the job",
-                f"  {here.name}{JT.PROJECT_EXT}   <- the project file lives here"]
-        for rel in template.all_paths():
-            rows.append("  " + rel + "/")
-            if len(rows) >= 10:
-                rows.append("  ...")
-                break
+        rows = [f"Job folder: {here}/ ({here.name}{JT.PROJECT_EXT})",
+                f"Folders:    {', '.join(template.all_paths())}"]
         self.lbl_preview.setText("\n".join(rows))
 
     # -- results ---------------------------------------------------------------------

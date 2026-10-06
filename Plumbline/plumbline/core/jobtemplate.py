@@ -411,13 +411,8 @@ def create_job(root, name: str, template: JobTemplate | str = JOB_TEMPLATE,
                     creation.folders.append(p)
                 done += 1
 
-        check("explaining the Field Data folder", 0.66)
-        # Field Data/ is created empty, so a note in it says what belongs there and that the
-        # naming inside it is the office's own.  Without it an empty folder looks like a bug.
-        note = paths.field_data / FIELD_DATA_NOTE
-        if paths.field_data.is_dir() and not note.exists():
-            note.write_text(FIELD_DATA_NOTE_TEXT, encoding="utf-8")
-            creation.files.append(note)
+        check("setting up the Field Data folder", 0.66)
+        # Field Data/ is created empty - name the folders inside it your way.
 
         if not starter_files:
             if progress is not None:

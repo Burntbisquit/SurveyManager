@@ -18,6 +18,7 @@ ROLE_LABELS = {"number": "Point #", "northing": "Northing (Y)", "easting": "East
 
 PRESETS = {
     "P, N, E, Z, D   (Point, Northing, Easting, Elev, Desc)": ["number", "northing", "easting", "elevation", "description"],
+    "Fieldwork .fwk   (OID, Point, Northing, Easting, Elev, Desc)": ["ignore", "number", "northing", "easting", "elevation", "description"],
     "P, E, N, Z, D   (Point, Easting, Northing, Elev, Desc)": ["number", "easting", "northing", "elevation", "description"],
     "P, N, E, Z": ["number", "northing", "easting", "elevation"],
     "P, E, N, Z": ["number", "easting", "northing", "elevation"],
@@ -133,7 +134,16 @@ def guess_roles(header: list[str] | None, rows: list[list[str]]) -> list[str]:
         vals = [r[i] for r in rows[:50] if i < len(r) and r[i].strip() != ""]
         numeric_cols.append(bool(vals) and sum(_is_num(v) for v in vals) / len(vals) > 0.9)
     guess = ["ignore"] * n
-    if n >= 4 and not numeric_cols[0] or (n >= 4 and numeric_cols[0] and numeric_cols[1] and numeric_cols[2] and numeric_cols[3]):
+    if n >= 6 and numeric_cols[0] and numeric_cols[2] and numeric_cols[3] and numeric_cols[4]:
+        # .fwk format with leading OID column: ignore OID, then Point, Northing, Easting, Elevation, Description, ignore rest
+        guess[0] = "ignore"
+        guess[1] = "number"
+        guess[2] = "northing"
+        guess[3] = "easting"
+        guess[4] = "elevation"
+        if n >= 6:
+            guess[5] = "description"
+    elif n >= 4 and not numeric_cols[0] or (n >= 4 and numeric_cols[0] and numeric_cols[1] and numeric_cols[2] and numeric_cols[3]):
         guess[0] = "number"
         guess[1:4] = ["northing", "easting", "elevation"]
         if n >= 5:

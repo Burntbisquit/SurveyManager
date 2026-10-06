@@ -406,6 +406,9 @@ class RenderOptions:
     max_segments: int = 0              # 0 = all line segments; otherwise draw an evenly thinned subset
     selected: frozenset = frozenset()  # point ids to highlight
     sel_rgb: tuple = (0, 229, 255)
+    error_point_ids: frozenset = frozenset()
+    hide_non_error_points: bool = False
+    dim_non_error_points: bool = False
 
 
 def _quads(pa: np.ndarray, pb: np.ndarray, width: float):
@@ -587,31 +590,45 @@ def render_orbit(scene: Scene, cam: Camera, W: int, H: int, opts: RenderOptions 
     sel_items = None
     if opts.points and len(scene.pts_xyz):
         idx = np.arange(len(scene.pts_xyz))
-        if opts.max_points and len(idx) > opts.max_points:
+        if opts.hide_non_error_points and opts.error_point_ids:
+            err_arr = np.fromiter(opts.error_point_ids, np.int64, len(opts.error_point_ids))
+            err_mask = np.isin(scene.pts_id[idx], err_arr)
+            if opts.selected:
+                sel_arr = np.fromiter(opts.selected, np.int64, len(opts.selected))
+                err_mask |= np.isin(scene.pts_id[idx], sel_arr)
+            idx = idx[err_mask]
+        elif opts.max_points and len(idx) > opts.max_points:
             idx = idx[:: int(math.ceil(len(idx) / opts.max_points))]
-        S = cam.project(scene.pts_xyz[idx], W, H)
-        ok = (S[:, 2] > near) & np.isfinite(S[:, 0]) & np.isfinite(S[:, 1])
-        ok &= (S[:, 0] > -10) & (S[:, 0] < W + 10) & (S[:, 1] > -10) & (S[:, 1] < H + 10)
-        sel = np.isin(scene.pts_id[idx], np.fromiter(opts.selected, np.int64, len(opts.selected))) if opts.selected else np.zeros(len(idx), bool)
-        keep = np.nonzero(ok)[0]
-        if len(keep):
-            S = S[keep]
-            n = nearness(S[:, 2])
-            selk = sel[keep]
-            vis = visible(S[:, 0], S[:, 1], n) | selk                    # a selected point shows even behind terrain
-            keep, S, n, selk = keep[vis], S[vis], n[vis], selk[vis]
-            half = opts.point_px / 2.0 * (np.clip(cam.distance / S[:, 2], 0.55, 2.2) if persp else 1.0)
-            half = np.where(selk, np.maximum(half * 1.7, 5.0), half)
-            cx, cy = S[:, 0], H - S[:, 1]
-            T, R_ = np.column_stack([cx, cy + half]), np.column_stack([cx + half, cy])
-            B_, L_ = np.column_stack([cx, cy - half]), np.column_stack([cx - half, cy])
-            tri = np.concatenate([np.stack([T, R_, B_], axis=1), np.stack([T, B_, L_], axis=1)])
-            rgb = scene.pts_rgb[idx][keep].astype(float) / 255.0
-            rgb = np.where(selk[:, None], np.array(opts.sel_rgb, float) / 255.0, rgb)
-            c = np.ones((len(tri), 3, 4))
-            c[..., :3] = np.concatenate([rgb, rgb])[:, None, :]
-            key = np.where(selk, -1e30, -n)                              # selected markers are painted last
-            add(tri, c, np.concatenate([key, key]))
+        if len(idx):
+            S = cam.project(scene.pts_xyz[idx], W, H)
+            ok = (S[:, 2] > near) & np.isfinite(S[:, 0]) & np.isfinite(S[:, 1])
+            ok &= (S[:, 0] > -10) & (S[:, 0] < W + 10) & (S[:, 1] > -10) & (S[:, 1] < H + 10)
+            sel = np.isin(scene.pts_id[idx], np.fromiter(opts.selected, np.int64, len(opts.selected))) if opts.selected else np.zeros(len(idx), bool)
+            err = np.isin(scene.pts_id[idx], np.fromiter(opts.error_point_ids, np.int64, len(opts.error_point_ids))) if opts.error_point_ids else np.zeros(len(idx), bool)
+            keep = np.nonzero(ok)[0]
+            if len(keep):
+                S = S[keep]
+                n = nearness(S[:, 2])
+                selk = sel[keep]
+                errk = err[keep]
+                vis = visible(S[:, 0], S[:, 1], n) | selk | errk                    # selected and error points show even behind terrain
+                keep, S, n, selk, errk = keep[vis], S[vis], n[vis], selk[vis], errk[vis]
+                half = opts.point_px / 2.0 * (np.clip(cam.distance / S[:, 2], 0.55, 2.2) if persp else 1.0)
+                half = np.where(selk, np.maximum(half * 1.7, 5.0), half)
+                half = np.where(errk & ~selk, np.maximum(half * 1.3, 4.0), half)
+                cx, cy = S[:, 0], H - S[:, 1]
+                T, R_ = np.column_stack([cx, cy + half]), np.column_stack([cx + half, cy])
+                B_, L_ = np.column_stack([cx, cy - half]), np.column_stack([cx - half, cy])
+                tri = np.concatenate([np.stack([T, R_, B_], axis=1), np.stack([T, B_, L_], axis=1)])
+                rgb = scene.pts_rgb[idx][keep].astype(float) / 255.0
+                if opts.dim_non_error_points and opts.error_point_ids:
+                    dim_mask = ~(errk | selk)
+                    rgb[dim_mask] = rgb[dim_mask] * 0.25 + 0.15
+                rgb = np.where(selk[:, None], np.array(opts.sel_rgb, float) / 255.0, rgb)
+                c = np.ones((len(tri), 3, 4))
+                c[..., :3] = np.concatenate([rgb, rgb])[:, None, :]
+                key = np.where(selk, -1e30, np.where(errk, -1e20, -n))                              # selected & error markers are painted last
+                add(tri, c, np.concatenate([key, key]))
 
     if o_xy:
         xy = np.ascontiguousarray(np.concatenate(o_xy))

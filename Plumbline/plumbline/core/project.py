@@ -64,11 +64,7 @@ class Project:
         self._next_id = 1
         self.revision = 0
         self._pa_cache = None
-        self.ensure_layer("POINTS", (255, 255, 255))
-        self.ensure_layer("0", (230, 230, 230))
-        for fc in self.codes:                      # make sure code layers exist with their colours
-            if fc.layer:
-                self.ensure_layer(fc.layer, fc.color, fc.linetype if fc.kind != "point" else "CONTINUOUS")
+        # Layers start empty and populate from fieldwork processed through fieldbook using fieldbook settings
 
     # ------------------------------------------------------------------ basics
     @property
@@ -92,7 +88,10 @@ class Project:
         lay = self.layers.get(name)
         if lay is None:
             if color is None:
-                color = PALETTE[len(self.layers) % len(PALETTE)]
+                from .layer_definitions import get_layer_definition
+                ld = get_layer_definition(name)
+                color = ld.color
+                linetype = ld.linetype
             lay = self.layers[name] = Layer(name, tuple(color), linetype)
         return lay
 
@@ -122,6 +121,7 @@ class Project:
         number = str(number) if number not in (None, "") else self.next_point_number()
         p = SurveyPoint(self.new_id(), number, float(x), float(y), NAN if z is None else float(z), desc,
                         layer or "POINTS", attrs or {})
+        p.set_original_state()
         self.ensure_layer(p.layer)
         self.points[p.id] = p
         self.touch()

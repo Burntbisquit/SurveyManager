@@ -184,8 +184,8 @@ def build_real_world_sample(dest_root, source_fwk, source_f2f=None, source_repor
                     d = date_of(B.source_folder(src))
                     if d:
                         dates.add(d)
-                fname = f"Week {week} Crew {crew} {sense}.fwk"
-                B.write_working_file(crew_dir / fname, crows, width=8)
+                fname = f"Week {week} Crew {crew} {sense}.csv"
+                B.write_point_csv(crew_dir / fname, crows)
                 report["files"].append(str((crew_dir / fname).relative_to(paths.root)))
             report["crews"].append({"crew": crew, "initials": sorted(initials),
                                     "dates": sorted(dates),

@@ -9,6 +9,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+
+pytest.importorskip("PySide6")
 from PySide6.QtWidgets import QApplication
 
 from plumbline.core import crs as C
@@ -21,6 +23,16 @@ from test_ui import pump  # noqa: F401  (shares the offscreen QApplication)
 @pytest.fixture(scope="module")
 def app():
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def _restore_proj_state():
+    was_net = bool(settings().get("proj_network", False))
+    yield
+    settings().set("proj_network", was_net)
+    VD.allow_downloads(was_net)
+    C.set_proj_network(was_net)
+    C.clear_transform_cache()
 
 
 @pytest.fixture()
@@ -123,6 +135,7 @@ def test_allow_downloads_is_written_to_settings_and_comes_back(app, make_state):
     finally:
         settings().set("proj_network", was)
         VD.allow_downloads(was)
+        C.set_proj_network(was)
 
 
 # ------------------------------------------------------------------------------ legacy zone

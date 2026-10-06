@@ -157,6 +157,17 @@ def value(point, key: str) -> str:
     if key == "imported":
         when = rec["when"]
         return f"{when[:10]} {when[11:16]}" if len(when) >= 16 else when
+    if key == "modified":
+        return "Yes" if getattr(point, "is_modified", False) else "No"
+    if key == "orig_coords":
+        if getattr(point, "is_modified", False):
+            import math
+            z_str = "" if math.isnan(point.orig_z) else f", Z {point.orig_z:,.3f}"
+            return f"N {point.orig_y:,.3f}, E {point.orig_x:,.3f}{z_str}"
+        return ""
+    if key == "delta_xy":
+        d = getattr(point, "delta_xy", 0.0)
+        return f"{d:.3f}" if d > 0.0001 else ""
     return ""
 
 

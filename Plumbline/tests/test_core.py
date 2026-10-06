@@ -545,7 +545,7 @@ def test_world_file_image_corners(tmp_path):
 
 
 def test_geotiff_corners_and_crs(tmp_path):
-    import rasterio
+    rasterio = pytest.importorskip("rasterio")
     from rasterio.transform import from_origin
     f = tmp_path / "g.tif"
     data = (np.arange(30 * 50).reshape(1, 30, 50) % 255).astype("uint8").repeat(3, axis=0)

@@ -133,7 +133,7 @@ def pad_row(row) -> list[str]:
 
 
 def read_working_file(path) -> list[list[str]] | None:
-    """Read a consolidated field-data file (.fwk) into 15-wide working rows.
+    """Read a consolidated field-data file (.fwk) or crew point file (.csv) into 15-wide working rows.
 
     Column count is not trusted: a 5-column file, an 8-column file and a
     15-column file with Corr_* metadata all arrive here and all leave as 15.
@@ -146,10 +146,21 @@ def read_working_file(path) -> list[list[str]] | None:
         try:
             rows: list[list[str]] = []
             with open(path, "r", encoding=enc, errors="strict", newline="") as fh:
-                for raw in csv.reader(fh):
-                    if not any(str(c).strip() for c in raw):
+                for idx, raw in enumerate(csv.reader(fh), start=1):
+                    non_empty = [c for c in raw if str(c).strip()]
+                    if not non_empty:
                         continue
-                    rows.append(pad_row(raw))
+                    # 5-column point CSV: [Point, Northing, Easting, Elevation, Description]
+                    # Check that coordinates (raw[1] and raw[2]) are numeric to avoid misinterpreting code tables
+                    if len(raw) == 5 and to_float(raw[1]) is not None and to_float(raw[2]) is not None:
+                        pt = raw[0].strip()
+                        nor = raw[1].strip()
+                        eas = raw[2].strip()
+                        ele = raw[3].strip()
+                        desc = raw[4].strip()
+                        rows.append(pad_row([str(idx), pt, nor, eas, ele, desc, "", path.name]))
+                    else:
+                        rows.append(pad_row(raw))
             return rows or None
         except UnicodeDecodeError as exc:               # try the next encoding
             last_error = exc
@@ -180,12 +191,25 @@ def write_working_file(path, rows, parent="", source="", width=WORKING_WIDTH) ->
     return written
 
 
+def write_point_csv(path, rows) -> int:
+    """Write standard 5-column point CSV: Point, Northing, Easting, Elevation, Description."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        w = csv.writer(fh)
+        for r in rows:
+            w.writerow([r[PTNUM], r[NOR], r[EAS], r[ELE], r[DESC]])
+            written += 1
+    return written
+
+
 # --------------------------------------------------------------------------------------------- source-file sniffing
 def read_point_file(path) -> tuple[list[list[str]], dict]:
     """Read *any* of the field-file flavours and return (working rows, info).
 
-    Recognised: a consolidated .fwk (8 or 15 columns), a headerless 5-column
-    point CSV (N,E,Z,Desc,Code or Pt,N,E,Z,Desc), and a Carlson F2F code table
+    Recognised: a consolidated .fwk (8 or 15 columns), a 5-column point CSV
+    (Pt,N,E,Z,Desc or N,E,Z,Desc), and a Carlson F2F code table
     (handled by :func:`feature_codes_from_f2f`, not here).
 
     ``info["kind"]`` says which one it was, so the caller can tell the user what
@@ -198,11 +222,16 @@ def read_point_file(path) -> tuple[list[list[str]], dict]:
 
     first = rows[0]
     looks_headered = first[OID].strip().casefold() in ("code", "oid", "seq", "sequence", "#")
+
+    if looks_headered:
+        raise ValueError(f"{path.name} looks like a Carlson F2F code table, not a job file - "
+                         f"use feature_codes_from_f2f() instead")
+
     non_empty = [r for r in rows if any(c for c in r)]
 
-    # 5-column point list: N,E,Z in the first three numeric slots, no point number.
-    if not looks_headered and all(to_float(r[0]) is not None for r in non_empty[:5]) \
-            and len({len([c for c in r if c]) for r in non_empty[:20]}) == 1:
+    # 4-column point list: N,E,Z in the first three numeric slots, no point number.
+    if all(to_float(r[0]) is not None and to_float(r[1]) is not None for r in non_empty[:5]) \
+            and not any(r[4] for r in non_empty[:20]) and (any(to_float(r[0]) > 1000 for r in non_empty[:5]) or all(not r[5] for r in non_empty[:20])):
         out = []
         for i, r in enumerate(non_empty, start=1):
             n, e, z = to_float(r[0]), to_float(r[1]), to_float(r[2])
@@ -212,10 +241,6 @@ def read_point_file(path) -> tuple[list[list[str]], dict]:
             out.append(working_row(i, str(i), n, e, z if z is not None else "",
                                    desc, source=path.name))
         return out, {"kind": "points-5col", "path": str(path), "rows": len(out)}
-
-    if looks_headered:
-        raise ValueError(f"{path.name} looks like a Carlson F2F code table, not a job file - "
-                         f"use feature_codes_from_f2f() instead")
 
     for i, r in enumerate(rows):                         # keep OIDs stable and numeric
         if not r[OID].strip():
@@ -515,7 +540,7 @@ FLAG_TITLES = {
     "UnknownCode": "Unknown code",
     "EmptyDescription": "No description",
     "OrphanCommand": "Orphan command",
-    "MisplacedAfterSeparator": "Text before the separator",
+    "MisplacedAfterSeparator": "Potential code in descriptor",
     "SeparatorSpacingError": "Spacing at the separator",
     "LineOrderError": "Line command out of order",
 }
@@ -713,7 +738,7 @@ def report_rows(project, result: dict, project_crs_label: str = "") -> list:
             found["exact"].append(sorted(idxs))
         elif "look-alike" in name:
             found["similar"].append(sorted(idxs))
-        elif "top of each other" in name:
+        elif "top of each other" in name or "close points" in name or "close" in name:
             found["close"].append(sorted(idxs))
     out = ICO.build_check_report_rows(rows, found["exact"], found["similar"], found["close"])
     # Description flags, one row per flagged OID (the same shape the field window writes).
@@ -745,7 +770,7 @@ def write_report(path, rows) -> bool:
     return ICO.write_unified_report(Path(path), rows)
 
 
-def check_project(project, f2f=None, fieldbook_path=None) -> dict:
+def check_project(project, f2f=None, fieldbook_path=None, ne_tol: float | None = None, elev_tol: float | None = None) -> dict:
     """Run the field-data checks over a project's own points, as findings a dock can show.
 
     *f2f* is the field book's code set and *fieldbook_path* the file it came from (the parser
@@ -764,7 +789,7 @@ def check_project(project, f2f=None, fieldbook_path=None) -> dict:
         out["findings"].append({"level": "info", "check": "no field points", "rows": [],
                                 "message": "The project has no field points to check."})
         return out
-    found = run_checks(rows)
+    found = run_checks(rows, ne_tol=ne_tol, elev_tol=elev_tol)
     flags = describe_flags(rows, f2f, fieldbook_path=fieldbook_path) if f2f else {}
     oid_to_row = {str(r[OID]): i for i, r in enumerate(rows)}
 
@@ -774,17 +799,17 @@ def check_project(project, f2f=None, fieldbook_path=None) -> dict:
     exact, similar, close = found["exact"], found["similar"], found["close"]
     if exact:
         out["findings"].append({
-            "level": "error", "check": "duplicate numbers", "rows": rows_of(exact),
+            "level": "error", "check": "duplicate numbers", "rows": rows_of(exact), "groups": exact,
             "message": f"{len(exact)} point number(s) are used more than once - "
                        f"{_group_words(rows, exact)}."})
     if similar:
         out["findings"].append({
-            "level": "warn", "check": "look-alike numbers", "rows": rows_of(similar),
+            "level": "warn", "check": "look-alike numbers", "rows": rows_of(similar), "groups": similar,
             "message": f"{len(similar)} group(s) of numbers differ by a transposition or a "
                        f"repeated digit - {_group_words(rows, similar)}."})
     if close:
         out["findings"].append({
-            "level": "warn", "check": "points on top of each other", "rows": rows_of(close),
+            "level": "warn", "check": "Close Points", "rows": rows_of(close), "groups": close,
             "message": f"{len(close)} group(s) of different numbers are within the closeness "
                        f"tolerance of each other - {_group_words(rows, close)}."})
     if flags:
@@ -800,8 +825,9 @@ def check_project(project, f2f=None, fieldbook_path=None) -> dict:
                     rec["sample"] = str(parsed.get("raw", "") or "")
         for name, rec in sorted(by_flag.items(), key=lambda kv: (-len(kv[1]["rows"]), kv[0])):
             title = FLAG_TITLES.get(name, name)
+            lvl = "error" if name == "UnknownCode" else "warn"
             out["findings"].append({
-                "level": "warn", "check": title, "flag": name, "rows": sorted(rec["rows"]),
+                "level": lvl, "check": title, "flag": name, "rows": sorted(rec["rows"]),
                 "message": f"{len(rec['rows'])} description(s) flagged {title.lower()}"
                            + (f" (e.g. {rec['sample']!r})" if rec["sample"] else "") + "."})
     out["flags"] = flags

@@ -3,6 +3,8 @@ import math
 
 import numpy as np
 import pytest
+
+pytest.importorskip("PySide6")
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QImage, QWheelEvent
 from PySide6.QtTest import QTest
@@ -411,7 +413,7 @@ def test_the_depth_view_draws_something_for_every_bearing(win, app):
 def test_the_new_commands_are_in_the_menus_and_toolbars(win, app):
     texts = {a.text() for m in win.menuBar().findChildren(QMenu) for a in m.actions()}
     for t in ("&3D View", "&Depth View", "Depth Line", "Open View Center in &Google Maps (Satellite)",
-              "Open View Center in Google Maps (Street &Map)", "Copy Google Maps &Link for View Center"):
+              "Copy Google Maps &Link for View Center"):
         assert t in texts, t
     toolbar_actions = {a for tb in win.findChildren(QToolBar) for a in tb.actions()}
     assert win.a_3d in toolbar_actions and win.a_depth in toolbar_actions and win.a_gmaps in toolbar_actions

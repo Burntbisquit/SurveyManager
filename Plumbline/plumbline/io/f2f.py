@@ -342,3 +342,78 @@ def describe_stats(stats: dict, *, mention_kept: bool = True) -> str:
         line += (f" Entity types not recognised: {', '.join(stats['unknown_entity_types'])}"
                  f" - those codes are points.")
     return line
+
+
+DEFAULT_COMMANDS = ["ST", "PC", "PT", "END", "X", "-", "/"]
+DEFAULT_COMMAND_LABELS = [
+    "Start Line",
+    "Start Curve",
+    "End Curve",
+    "End Line",
+    "Close",
+    "Multicode separator",
+    "Description separator",
+]
+
+
+def read_fwb_extra(path: Path | str) -> dict:
+    """Read extra rules/commands stored in .fwb or F2F file (#EXTRA_JSON)."""
+    import json
+    path = Path(path)
+    if not path.exists():
+        return {"commands": list(DEFAULT_COMMANDS), "rules": []}
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="ignore") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith("#EXTRA_JSON"):
+                    j = line[len("#EXTRA_JSON"):].strip()
+                    data = json.loads(j)
+                    if isinstance(data, dict):
+                        return {
+                            "commands": data.get("commands", list(DEFAULT_COMMANDS)),
+                            "rules": data.get("rules", []),
+                        }
+    except Exception:
+        pass
+    return {"commands": list(DEFAULT_COMMANDS), "rules": []}
+
+
+def write_fwb(dest_path: Path | str, table: F2FTable, mapping: ColumnMap | None = None,
+              only: set | None = None, commands: list | None = None,
+              rules: list | None = None) -> Path:
+    """Write a converted Field Book (.fwb) CSV containing all converted code rows
+    and the trailing #EXTRA_JSON line with line commands and correction rules.
+    """
+    import json
+    dest = Path(dest_path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    m = mapping or auto_map(table)
+    headers = ["Code", "Description", "Symbol", "Layer", "Entity Type", "Category"]
+    rows = []
+    for i, row in enumerate(table.rows):
+        if only is not None and i not in only:
+            continue
+        code = _cell(row, m.code).upper()
+        if not code:
+            continue
+        category = _cell(row, m.category) or (table.categories[i] if i < len(table.categories) else "") or "Default"
+        entity = _cell(row, m.entity)
+        kind, _break, _ = kind_for_entity(entity)
+        entity_name = "Point" if kind == "point" else "3D Polyline" if kind == "line" else "Polygon" if kind == "polygon" else (entity or "Point")
+        layer = _cell(row, m.layer) or CATEGORY_LAYERS.get(category.casefold(), "")
+        if not layer and category:
+            layer = f"V-{category.upper()}"
+        symbol = _cell(row, m.symbol) or "CG08"
+        rows.append([code, _cell(row, m.description), symbol, layer, entity_name, category])
+
+    with open(dest, "w", encoding="utf-8", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(headers)
+        w.writerows(rows)
+        extras = {
+            "commands": commands if commands is not None else list(DEFAULT_COMMANDS),
+            "rules": rules if rules is not None else [],
+        }
+        fh.write(f"#EXTRA_JSON {json.dumps(extras, ensure_ascii=False)}\n")
+    return dest

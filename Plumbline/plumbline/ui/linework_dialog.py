@@ -1,0 +1,258 @@
+"""Interactive UI dialogs for point recoding and field-to-finish linework editing."""
+from __future__ import annotations
+
+import math
+from typing import Sequence
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
+                               QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
+                               QLabel, QLineEdit, QMessageBox, QPushButton,
+                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+
+from ..core import point_linework_coder as PLC
+from ..core.model import Polyline, SurveyPoint
+from ..core.settings import settings
+from .widgets import Hint, hline
+
+
+class JoinPointsDialog(QDialog):
+    """Dialog to join selected points into a coded linework string by recoding point descriptions."""
+
+    def __init__(self, state, point_ids: Sequence[int], parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.point_ids = list(point_ids)
+        self.setWindowTitle("Create Linework from Points (Recode)")
+        self.resize(680, 480)
+        lay = QVBoxLayout(self)
+
+        pr = state.project
+        self.points = [pr.points[pid] for pid in self.point_ids if pid in pr.points]
+
+        lay.addWidget(QLabel(f"<b>Recode {len(self.points)} point(s) into a linework figure:</b>"))
+
+        # Setup form
+        form = QFormLayout()
+        self.cmb_code = QComboBox()
+        self.cmb_code.setEditable(True)
+        # Populate with existing line codes in project
+        line_codes = [c.code for c in pr.codes if c.kind in ("line", "polygon")]
+        if not line_codes:
+            line_codes = ["EP", "TC", "TOC", "BC", "FL", "CL", "BLDG", "FNC", "WALL", "RW"]
+        self.cmb_code.addItems(sorted(set(line_codes)))
+        self.cmb_code.setCurrentText("EP")
+        self.cmb_code.currentTextChanged.connect(self._update_preview)
+        form.addRow("Feature Code:", self.cmb_code)
+
+        self.le_string = QLineEdit("1")
+        self.le_string.setPlaceholderText("String ID (e.g. 1, 2, A)")
+        self.le_string.textChanged.connect(self._update_preview)
+        form.addRow("String Number:", self.le_string)
+
+        self.chk_closed = QCheckBox("Closed Figure (e.g. Building, Pad, Pond)")
+        self.chk_closed.toggled.connect(self._update_preview)
+        form.addRow("", self.chk_closed)
+        lay.addLayout(form)
+
+        lay.addWidget(QLabel("<b>Point Description Preview:</b>"))
+        self.tbl = QTableWidget(len(self.points), 4)
+        self.tbl.setHorizontalHeaderLabels(["Point #", "Current Desc", "Role in String", "New Desc"])
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.setAlternatingRowColors(True)
+        hh = self.tbl.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.Stretch)
+        lay.addWidget(self.tbl, 1)
+
+        lay.addWidget(Hint("Modifies underlying point descriptions so that linework will reprocess identically "
+                           "when ported to Carlson, Civil 3D, or other survey CAD packages."))
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        b_apply = QPushButton("Apply & Generate Linework")
+        b_apply.setProperty("accent", True)
+        b_apply.clicked.connect(self._apply)
+        b_cancel = QPushButton("Cancel")
+        b_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(b_apply)
+        btn_row.addWidget(b_cancel)
+        lay.addLayout(btn_row)
+
+        self._update_preview()
+
+    def _update_preview(self):
+        code = self.cmb_code.currentText().strip().upper()
+        str_id = self.le_string.text().strip()
+        closed = self.chk_closed.isChecked()
+        prefix = f"{code}{str_id}"
+        n = len(self.points)
+
+        for r, p in enumerate(self.points):
+            self.tbl.setItem(r, 0, QTableWidgetItem(str(p.number)))
+            self.tbl.setItem(r, 1, QTableWidgetItem(str(p.desc)))
+
+            if r == 0:
+                role = "Start (ST)"
+                token = f"{prefix} ST"
+            elif r == n - 1:
+                role = "Close (CLS)" if closed else "End (END)"
+                token = f"{prefix} CLS" if closed else f"{prefix} END"
+            else:
+                role = "Vertex"
+                token = prefix
+
+            self.tbl.setItem(r, 2, QTableWidgetItem(role))
+            new_desc = PLC.update_point_token(p.desc or "", code, token)
+            self.tbl.setItem(r, 3, QTableWidgetItem(new_desc))
+
+    def _apply(self):
+        code = self.cmb_code.currentText().strip().upper()
+        str_id = self.le_string.text().strip()
+        closed = self.chk_closed.isChecked()
+        pr = self.state.project
+
+        with self.state.edit("Create Linework from Points", kinds=("points", "entities")):
+            PLC.join_points_to_string(self.points, code, str_id, closed=closed)
+            pr.touch()
+            if hasattr(pr, "process_linework"):
+                res = pr.process_linework()
+                self.state.log(f"Linework generated: {res.get('strings', 0)} string(s).", "ok")
+        self.accept()
+
+
+class EditLineworkCodingDialog(QDialog):
+    """Interactive editor to inspect and modify point coding for an existing line string."""
+
+    def __init__(self, state, polyline_entity: Polyline, parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.entity = polyline_entity
+        self.setWindowTitle(f"Edit Linework String (Polyline {polyline_entity.id})")
+        self.resize(760, 520)
+        lay = QVBoxLayout(self)
+
+        pr = state.project
+        # Identify member points in the polyline string
+        pt_numbers = (polyline_entity.attrs or {}).get("points", [])
+        if pt_numbers:
+            self.points = [pr.point_by_number(num) for num in pt_numbers if pr.point_by_number(num) is not None]
+        else:
+            # Match by vertex coordinates
+            self.points = []
+            for v in polyline_entity.verts:
+                # Find closest point
+                for p in pr.points.values():
+                    if abs(p.x - v[0]) < 0.005 and abs(p.y - v[1]) < 0.005:
+                        self.points.append(p)
+                        break
+
+        lay.addWidget(QLabel(f"<b>Linework String: {polyline_entity.layer} ({len(self.points)} Points)</b>"))
+
+        self.tbl = QTableWidget(len(self.points), 4)
+        self.tbl.setHorizontalHeaderLabels(["Point #", "Current Description", "Role", "New Description"])
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.setAlternatingRowColors(True)
+        hh = self.tbl.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.Stretch)
+
+        self.edits = []
+        for r, p in enumerate(self.points):
+            self.tbl.setItem(r, 0, QTableWidgetItem(str(p.number)))
+            self.tbl.setItem(r, 1, QTableWidgetItem(str(p.desc)))
+            role = "Start" if r == 0 else ("End / Close" if r == len(self.points) - 1 else "Vertex")
+            self.tbl.setItem(r, 2, QTableWidgetItem(role))
+            ed = QLineEdit(p.desc)
+            self.tbl.setCellWidget(r, 3, ed)
+            self.edits.append((p, ed))
+
+        lay.addWidget(self.tbl, 1)
+
+        # Quick actions
+        act_row = QHBoxLayout()
+        b_rev = QPushButton("Reverse Direction")
+        b_rev.setToolTip("Swap start/end codes to reverse line drawing direction")
+        b_rev.clicked.connect(self._reverse)
+
+        b_close = QPushButton("Toggle Close/Open")
+        b_close.setToolTip("Switch between closed figure (CLS) and open string (END)")
+        b_close.clicked.connect(self._toggle_close)
+
+        b_recode = QPushButton("Change Code Prefix...")
+        b_recode.setToolTip("Batch update the feature code prefix across all member points")
+        b_recode.clicked.connect(self._change_code)
+
+        act_row.addWidget(b_rev)
+        act_row.addWidget(b_close)
+        act_row.addWidget(b_recode)
+        act_row.addStretch(1)
+        lay.addLayout(act_row)
+
+        lay.addWidget(Hint("Edits modify the point descriptions directly so porting to Carlson or Civil 3D stays faithful."))
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        b_apply = QPushButton("Apply & Reprocess")
+        b_apply.setProperty("accent", True)
+        b_apply.clicked.connect(self._apply)
+        b_cancel = QPushButton("Cancel")
+        b_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(b_apply)
+        btn_row.addWidget(b_cancel)
+        lay.addLayout(btn_row)
+
+    def _reverse(self):
+        PLC.reverse_string_coding(self.points)
+        self.points = self.points[::-1]
+        self._refresh_table()
+
+    def _toggle_close(self):
+        if not self.points:
+            return
+        last = self.points[-1]
+        if "CLS" in (last.desc or "").upper().split():
+            PLC.open_string_coding(last)
+        else:
+            PLC.close_string_coding(last)
+        self._refresh_table()
+
+    def _change_code(self):
+        new_code, ok = QMessageBox.getText(self, "Change Code", "New Feature Code Prefix (e.g. EP2, TOC1):") if hasattr(QMessageBox, "getText") else (None, False)
+        if not ok or not new_code:
+            from PySide6.QtWidgets import QInputDialog
+            new_code, ok = QInputDialog.getText(self, "Change Code", "New Feature Code Prefix (e.g. EP2, TOC1):")
+            if not ok or not new_code:
+                return
+        tokens = (self.points[0].desc or "").split()
+        old_prefix = tokens[0] if tokens else ""
+        PLC.change_string_code(self.points, old_prefix, new_code.strip().upper())
+        self._refresh_table()
+
+    def _refresh_table(self):
+        self.edits = []
+        self.tbl.setRowCount(len(self.points))
+        for r, p in enumerate(self.points):
+            self.tbl.setItem(r, 0, QTableWidgetItem(str(p.number)))
+            self.tbl.setItem(r, 1, QTableWidgetItem(str(p.desc)))
+            role = "Start" if r == 0 else ("End / Close" if r == len(self.points) - 1 else "Vertex")
+            self.tbl.setItem(r, 2, QTableWidgetItem(role))
+            ed = QLineEdit(p.desc)
+            self.tbl.setCellWidget(r, 3, ed)
+            self.edits.append((p, ed))
+
+    def _apply(self):
+        pr = self.state.project
+        with self.state.edit("Edit Linework Coding", kinds=("points", "entities")):
+            for p, ed in self.edits:
+                new_desc = ed.text().strip()
+                if new_desc != p.desc:
+                    p.desc = new_desc
+            pr.touch()
+            if hasattr(pr, "process_linework"):
+                pr.process_linework()
+        self.accept()

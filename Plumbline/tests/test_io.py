@@ -29,6 +29,21 @@ def test_csv_pnezd_with_spaces_in_description(tmp_path):
     assert math.isnan(b.points[2].z) and b.points[2].desc == "TREE 18 OAK"
 
 
+def test_fwk_sniffing_and_presets(tmp_path):
+    f = tmp_path / "Consolidated.fwk"
+    f.write_text("1,907,6782975.096,2924911.800,484.245,58CIRST,2026-7-22-AE,AE_GPS.csv\n"
+                 "2,908,6782980.100,2924920.200,484.300,MONC,2026-7-22-AE,AE_GPS.csv\n")
+    sn = CSV.sniff(f)
+    assert sn.roles == ["ignore", "number", "northing", "easting", "elevation", "description", "ignore", "ignore"]
+    b = CSV.read_points(f, CSV.CsvMapping(",", 0, sn.roles))
+    assert len(b.points) == 2
+    assert b.points[0].number == "907"
+    assert b.points[0].y == 6782975.096
+    assert b.points[0].x == 2924911.800
+    assert b.points[0].z == 484.245
+    assert b.points[0].desc == "58CIRST"
+
+
 def test_csv_header_tab_and_headerless_space(tmp_path):
     f = tmp_path / "h.csv"
     f.write_text("Point\tX\tY\tElev\tDesc\n10\t1000.5\t2000.5\t12.5\tGS\n11\t1010.5\t2010.5\t12.7\tGS\n")

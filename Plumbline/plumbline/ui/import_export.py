@@ -25,11 +25,11 @@ from ..io import csv_points as CSV
 from . import theme
 from .crs_dialog import CRSPicker
 from .crs_extra import VerticalAndGroundPanel
-from .widgets import Banner, FormDialog, Hint, error_box, info_box, run_blocking
+from .widgets import Banner, FormDialog, Hint, error_box, info_box, run_blocking, fmt_coord
 
 CSV_EXT = {".csv", ".txt", ".pnt", ".pts", ".asc", ".dat", ".xyz_"}
 #: the extensions a folder-wide reference import will read, and the filter for the single-file one
-POINTS_EXT = (".csv", ".txt", ".pnt", ".pts", ".asc", ".dat", ".xyz", ".pnl")
+POINTS_EXT = (".csv", ".txt", ".pnt", ".pts", ".asc", ".dat", ".xyz", ".pnl", ".fwk")
 POINTS_FILTER = ("Point files (*.csv *.txt *.pnt *.pts *.asc *.dat *.xyz);;All files (*)")
 LANDXML_EXT = {".xml", ".landxml"}
 GIS_EXT = {".shp", ".gpkg", ".geojson", ".json"}
@@ -230,12 +230,11 @@ class ImportOptionsPanel(QWidget):
         for lbl, v in [("Same as horizontal", "same"), ("Metres", "m"), ("US survey feet", "ftUS"), ("International feet", "ft"),
                        ("Same as the project's elevation unit", None)]:
             self.cmb_zunits.addItem(lbl, v)
-        self.chk_swap = QCheckBox("Swap the two coordinate columns (northing and easting are the wrong way round)")
-        self.chk_swap.setVisible(not geographic)
+        self.chk_swap = QCheckBox("Swap the two coordinate columns")
+        self.chk_swap.setVisible(False)
         form.addRow("Horizontal units in file:", self.cmb_units)
         form.addRow("Elevation units in file:", self.cmb_zunits)
         gl.addLayout(form)
-        gl.addWidget(self.chk_swap)
         gl.addWidget(Hint("A CSV is assumed to be in the project's own system - pick \"a different "
                           "coordinate system\" above only when it is not."))
         lay.addWidget(g)
@@ -244,6 +243,7 @@ class ImportOptionsPanel(QWidget):
         vgl = QVBoxLayout(vg)
         self.vg = VerticalAndGroundPanel(vg)
         self.vg.set_from(pc)
+        self.vg.setEnabled(False)
         vgl.addWidget(self.vg)
         lay.addWidget(vg)
 
@@ -372,6 +372,11 @@ class ImportOptionsPanel(QWidget):
     def _refresh(self):
         pc = self.project.crs
         self.btn_other.setEnabled(True)
+        if self.r_proj.isChecked():
+            self.vg.set_from(pc)
+            self.vg.setEnabled(False)
+        else:
+            self.vg.setEnabled(True)
         if self.batch is None or self.batch.is_empty():
             return
         try:
@@ -891,14 +896,15 @@ class Importer:
         return ok
 
     # -- a whole folder of reference points, one role for all of it
-    def import_reference_folder(self, folder, role: str | None, recursive: bool = False) -> dict:
-        """Read every point file in a folder and put the lot on one reference role's layer.
+    def import_reference_folder(self, folder, role: str | None, recursive: bool = False,
+                                selected_files: list[Path] | None = None) -> dict:
+        """Read point files in a folder and put the lot on one reference role's layer.
 
         No dialog per file: the role was chosen once.  A file that cannot be read is skipped and
         named in the log - it is never imported half-guessed, because a control list with the
         northing and easting columns swapped is worse than no control list.
         """
-        files = reference_folder_files(folder, recursive)
+        files = reference_folder_files(folder, recursive) if selected_files is None else list(selected_files)
         tally = dict(files=0, points=0, duplicates=0, skipped=0, failed=0, unreadable=[])
         for f in files:
             try:
@@ -966,6 +972,134 @@ def reference_folder_files(folder, recursive: bool = True) -> list[Path]:
                   key=lambda p: natural_key(str(p.relative_to(root))))
 
 
+class FolderPointsPreviewDialog(QDialog):
+    """Preview all points parsed from selected CSV / point files."""
+
+    def __init__(self, files: list[Path], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Preview Selected Points")
+        self.resize(940, 600)
+        self.setMinimumSize(780, 440)
+        self.files = list(files)
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(8)
+
+        # Load points from files
+        self.all_points, self.errors = self._load_points()
+
+        # Top summary and filter
+        top = QHBoxLayout()
+        count_text = f"<b>{len(self.all_points):,} points</b> from {len(self.files)} selected file(s)"
+        self.lbl_summary = QLabel(count_text)
+        top.addWidget(self.lbl_summary)
+        top.addStretch(1)
+
+        top.addWidget(QLabel("Filter:"))
+        self.ed_filter = QLineEdit()
+        self.ed_filter.setPlaceholderText("Filter by #, description, or file...")
+        self.ed_filter.setClearButtonEnabled(True)
+        self.ed_filter.setFixedWidth(280)
+        top.addWidget(self.ed_filter)
+        lay.addLayout(top)
+
+        if self.errors:
+            err_msg = "; ".join(f"{name}: {err}" for name, err in self.errors)
+            lay.addWidget(Banner(f"Some files could not be read: {err_msg}", "warn"))
+
+        # Table
+        self.table = QTableWidget()
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(["Point #", "Northing", "Easting", "Elevation", "Description", "Source File", "Subfolder"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        lay.addWidget(self.table, 1)
+
+        self.lbl_status = QLabel("")
+        lay.addWidget(self.lbl_status)
+
+        # Close button
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.rejected.connect(self.accept)
+        lay.addWidget(bb)
+
+        self.ed_filter.textChanged.connect(self._populate_table)
+        self._populate_table()
+
+    def _load_points(self):
+        pts = []
+        errs = []
+        for f in self.files:
+            try:
+                sn = CSV.sniff(f)
+                m = CSV.CsvMapping(sn.delimiter, 1 if sn.has_header else 0, list(sn.roles))
+                batch = CSV.read_points(f, m)
+                if not batch.points:
+                    errs.append((f.name, "no points"))
+                else:
+                    for p in batch.points:
+                        folder_name = f.parent.name if f.parent and f.parent.name else ""
+                        pts.append((str(p.number), p.y, p.x, p.z, str(p.desc or ""), f.name, folder_name))
+            except Exception as ex:
+                errs.append((f.name, str(ex)))
+        return pts, errs
+
+    def _populate_table(self):
+        query = self.ed_filter.text().strip().lower()
+        if query:
+            filtered = [
+                pt for pt in self.all_points
+                if query in pt[0].lower() or query in pt[4].lower() or query in pt[5].lower() or query in pt[6].lower()
+            ]
+        else:
+            filtered = self.all_points
+
+        # Cap display to 3,000 rows for smooth UI performance if there are tens of thousands of points
+        max_rows = 3000
+        display_rows = filtered[:max_rows]
+        self.table.setRowCount(len(display_rows))
+
+        for row, (num, y, x, z, desc, fname, fol) in enumerate(display_rows):
+            item_num = QTableWidgetItem(num)
+            item_num.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.table.setItem(row, 0, item_num)
+
+            item_y = QTableWidgetItem(fmt_coord(y, 3))
+            item_y.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.table.setItem(row, 1, item_y)
+
+            item_x = QTableWidgetItem(fmt_coord(x, 3))
+            item_x.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.table.setItem(row, 2, item_x)
+
+            item_z = QTableWidgetItem(fmt_coord(z, 3) if math.isfinite(z) else "-")
+            item_z.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.table.setItem(row, 3, item_z)
+
+            item_desc = QTableWidgetItem(desc)
+            self.table.setItem(row, 4, item_desc)
+
+            item_file = QTableWidgetItem(fname)
+            self.table.setItem(row, 5, item_file)
+
+            item_fol = QTableWidgetItem(fol)
+            self.table.setItem(row, 6, item_fol)
+
+        if len(filtered) > max_rows:
+            self.lbl_status.setText(f"Showing first {max_rows:,} of {len(filtered):,} points matching filter ({len(self.all_points):,} total)")
+        elif query:
+            self.lbl_status.setText(f"Showing {len(filtered):,} of {len(self.all_points):,} points matching \"{query}\"")
+        else:
+            self.lbl_status.setText(f"Showing all {len(self.all_points):,} points")
+
+
 class ReferenceFolderDialog(FormDialog):
     """Survey > Import Points from Folder - one reference role for a whole folder of point files.
 
@@ -978,7 +1112,7 @@ class ReferenceFolderDialog(FormDialog):
                          "Every point file in the folder is read and given the reference role "
                          "chosen here, so each role ends up on its own layer.  Files that cannot "
                          "be read are left alone and reported - nothing is guessed silently.",
-                         "Import", 640)
+                         "Import", 700)
         self.state = state
         self.folder = Path(folder)
         self.cmb_role = QComboBox()
@@ -989,68 +1123,165 @@ class ReferenceFolderDialog(FormDialog):
             self.cmb_role.addItem(f"{REF.ROLE_LABELS[role]} - layer {REF.layer_for(role)}", role)
         self.chk_sub = QCheckBox("Include sub-folders")
         self.chk_sub.setChecked(True)
-        self.chk_sub.setChecked(True)
-        self.lbl_files = QLabel("")
-        self.lbl_files.setWordWrap(True)
-        self.lbl_files.setTextFormat(Qt.PlainText)
+
         self.form.addRow("Folder:", QLabel(str(self.folder)))
         self.form.addRow("These points are:", self.cmb_role)
         self.form.addRow("", self.chk_sub)
+
+        # File list header with Select All / Select None / Preview Points buttons and count
+        file_head_widget = QWidget()
+        file_head_lay = QHBoxLayout(file_head_widget)
+        file_head_lay.setContentsMargins(0, 0, 0, 0)
+        self.lbl_file_count = QLabel("Point files found:")
+        file_head_lay.addWidget(self.lbl_file_count)
+        file_head_lay.addStretch(1)
+        self.btn_select_all = QPushButton("Select All")
+        self.btn_select_none = QPushButton("Select None")
+        self.btn_preview = QPushButton("Preview Points...")
+        self.btn_preview.setToolTip("View all points and coordinates from the selected files before importing")
+        file_head_lay.addWidget(self.btn_select_all)
+        file_head_lay.addWidget(self.btn_select_none)
+        file_head_lay.addWidget(self.btn_preview)
+        self.form.addRow(file_head_widget)
+
         # Table of files with checkboxes for selection
         self.chk_table = QTableWidget()
-        self.form.addRow("Files:", self.chk_table)
+        self.chk_table.setColumnCount(4)
+        self.chk_table.setHorizontalHeaderLabels(["", "File", "Subfolder / Path", "Size"])
+        self.chk_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.chk_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.chk_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.chk_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.chk_table.setMinimumHeight(220)
+        self.chk_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.chk_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.form.addRow(self.chk_table)
+
+        self.lbl_none = QLabel("No point files (.csv, .txt, .pts, .xyz ...) found in this folder.")
+        self.lbl_none.setStyleSheet("color: #888; font-style: italic;")
+        self.lbl_none.setVisible(False)
+        self.form.addRow(self.lbl_none)
+
+        self._file_paths: list[Path] = []
+        self._checkboxes: list[QCheckBox] = []
+
+        self.btn_select_all.clicked.connect(self._select_all)
+        self.btn_select_none.clicked.connect(self._select_none)
+        self.btn_preview.clicked.connect(self._preview_points)
+        self.chk_table.cellClicked.connect(self._cell_clicked)
+        self.chk_table.cellDoubleClicked.connect(self._cell_double_clicked)
         self.cmb_role.currentIndexChanged.connect(self._refresh_files)
         self.chk_sub.toggled.connect(self._refresh_files)
         self._refresh_files()
 
-    def files(self) -> list:
+    def files(self) -> list[Path]:
         return reference_folder_files(self.folder, self.chk_sub.isChecked())
 
-    def role(self) -> str:
+    def role(self) -> str | None:
         return self.cmb_role.currentData()
 
     def _refresh_files(self):
         files = self.files()
-        self._selected_files = []  # track which files user checked
+        self._file_paths = list(files)
+        self._checkboxes = []
         if not files:
             self.chk_table.setVisible(False)
-            self.lbl_files.setText("No point files (.csv, .txt, .pts, .xyz ...) found here.")
+            self.lbl_none.setVisible(True)
+            self.btn_select_all.setEnabled(False)
+            self.btn_select_none.setEnabled(False)
+            self.btn_preview.setEnabled(False)
+            self.lbl_file_count.setText("No point files found.")
             return
+
         self.chk_table.setVisible(True)
-        # Build a table with checkboxes
+        self.lbl_none.setVisible(False)
+        self.btn_select_all.setEnabled(True)
+        self.btn_select_none.setEnabled(True)
+        self.btn_preview.setEnabled(True)
         self.chk_table.setRowCount(len(files))
-        self.chk_table.setColumnCount(2)
-        self.chk_table.setHorizontalHeaderLabels(["", "File"])
-        self.chk_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+
         for row, f in enumerate(files):
-            # Checkbox in column 0
+            # Column 0: Checkbox centered
             chk = QCheckBox()
-            chk.setChecked(True)  # check all by default
-            self.chk_table.setCellWidget(row, 0, chk)
-            # File name in column 1 - use setItem not setCellWidget
-            item = QTableWidgetItem(f.name)
-            self.chk_table.setItem(row, 1, item)
-        # Adjust column widths
-        self.chk_table.resizeColumnsToContents()
+            chk.setChecked(True)
+            chk.toggled.connect(self._update_count)
+            self._checkboxes.append(chk)
+            chk_widget = QWidget()
+            chk_lay = QHBoxLayout(chk_widget)
+            chk_lay.addWidget(chk)
+            chk_lay.setAlignment(Qt.AlignCenter)
+            chk_lay.setContentsMargins(4, 2, 4, 2)
+            self.chk_table.setCellWidget(row, 0, chk_widget)
+
+            # Column 1: File name
+            item_name = QTableWidgetItem(f.name)
+            self.chk_table.setItem(row, 1, item_name)
+
+            # Column 2: Relative path or parent folder
+            try:
+                rel = str(f.relative_to(self.folder).parent)
+                if rel == ".":
+                    rel = "(root)"
+            except Exception:
+                rel = str(f.parent)
+            item_rel = QTableWidgetItem(rel)
+            self.chk_table.setItem(row, 2, item_rel)
+
+            # Column 3: File size
+            try:
+                sz = f.stat().st_size
+                sz_str = f"{sz:,} B" if sz < 1024 else f"{sz / 1024:.1f} KB"
+            except Exception:
+                sz_str = ""
+            item_sz = QTableWidgetItem(sz_str)
+            item_sz.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.chk_table.setItem(row, 3, item_sz)
+
+        self._update_count()
+
+    def _cell_clicked(self, row: int, col: int):
+        if col > 0 and 0 <= row < len(self._checkboxes):
+            chk = self._checkboxes[row]
+            chk.setChecked(not chk.isChecked())
+
+    def _cell_double_clicked(self, row: int, col: int):
+        if 0 <= row < len(self._file_paths):
+            f = self._file_paths[row]
+            dlg = FolderPointsPreviewDialog([f], self)
+            dlg.exec()
+
+    def _select_all(self):
+        for chk in self._checkboxes:
+            chk.setChecked(True)
+
+    def _select_none(self):
+        for chk in self._checkboxes:
+            chk.setChecked(False)
+
+    def _preview_points(self):
+        sel = self.selected_files()
+        if not sel:
+            error_box(self, "Preview Points", "Please select at least one point file to preview.")
+            return
+        dlg = FolderPointsPreviewDialog(sel, self)
+        dlg.exec()
+
+    def _update_count(self):
+        sel = sum(1 for c in self._checkboxes if c.isChecked())
+        tot = len(self._checkboxes)
+        self.lbl_file_count.setText(f"Point files found ({sel} of {tot} selected):")
+        self.btn_preview.setEnabled(sel > 0)
 
     def selected_files(self) -> list[Path]:
-        """Return the list of files the user checked (checked = True)."""
-        result = []
-        for row in range(self.chk_table.rowCount()):
-            chk = self.chk_table.cellWidget(row, 0)
-            if chk is not None and chk.isChecked():
-                fname = self.chk_table.cellWidget(row, 1)
-                if fname is not None:
-                    name = fname.text()
-                    # find the Path matching this name
-                    for p in self.files():
-                        if p.name == name:
-                            result.append(p)
-                            break
-        return result
+        """Return the list of files the user checked."""
+        return [p for p, chk in zip(self._file_paths, self._checkboxes) if chk.isChecked()]
 
     def validate(self):
-        return None if self.files() else "There are no point files in this folder."
+        if not self.files():
+            return "There are no point files in this folder."
+        if not self.selected_files():
+            return "Please select at least one file to import."
+        return None
 
 
 def describe_folder_import(tally: dict) -> str:

@@ -15,6 +15,8 @@
 2. **Get the project folder** - download the workspace and extract it (Step 2).
 3. **Set it up** - type five commands in PowerShell (Step 3), or double-click `install_windows.bat`.
 4. **Start it** - double-click `Plumbline.bat` (Step 4).
+5. **Keep it current** - from then on, double-click `Update and Run Plumbline.bat`: it fetches the latest code with git,
+   reuses the setup, reinstalls the libraries only when `requirements.txt` changed, and starts Plumbline (Step 5).
 
 You need Windows 10 or 11 (64-bit), an internet connection for step 3, and about 1 GB of disk space.
 
@@ -127,6 +129,11 @@ On a Windows-on-ARM laptop (Snapdragon) still choose the 64-bit (AMD64) installe
 (OneDrive, Desktop, Documents): the install is slow there and very long paths can make it fail.
 Do not move or rename the folder after step 3 (if you do, just repeat Step 3).
 
+**With git instead of the zip:** if you have [git](https://git-scm.com/download/win) you can clone the project
+(`git clone https://github.com/Burntbisquit/working.git`, then use the `working\Plumbline` folder inside it as the project
+folder). A clone is what makes the one-click update in Step 5 able to fetch new code; a zip copy works too - the updater
+just tells you it cannot check for updates.
+
 ## Step 3 - Set it up by typing
 
 Open PowerShell **in the project folder**: in File Explorer open the folder (the one with `README.md`), click the address
@@ -196,6 +203,34 @@ Double-click **`Plumbline.bat`** (it works with the `.venv` you just made), or t
 * In the Welcome window click **Open the sample project (synthetic site)**, then follow the *10-minute tour* in `README.md`.
 * Handy: drag a `.plb` project onto `Plumbline.bat` to open it. To start it from the desktop, right-click `Plumbline.bat`, choose
   **Send to**, then **Desktop (create shortcut)** (on Windows 11: **Show more options** first).
+
+---
+
+## Step 5 - Keeping Plumbline current (one click)
+
+From now on, the only file you need day to day is **`Update and Run Plumbline.bat`** in the project folder. Double-click it
+(you can also drag a `.plb` project onto it - it updates first, then opens that project). It does four things:
+
+1. **Fetches the latest code** with `git pull --ff-only`. This only works when the project folder is a git clone and git is
+   installed; with a zip copy, without git, or with no internet, it prints a one-line reason and carries on with the copy
+   on your disk - Plumbline still starts.
+2. **Reuses the `.venv` folder.** The private environment you set up in Step 3 is kept; it is only built (same way as
+   `install_windows.bat`) when the folder does not have one yet.
+3. **Installs libraries only when they changed.** At the end of every install it saves a copy of `requirements.txt` as
+   `requirements.installed.txt` inside `.venv`. Next time it compares the two files byte by byte; when they are the same,
+   pip does not run at all and a normal start takes seconds. When an update did change `requirements.txt`, it installs
+   what changed and runs the `plumbline doctor` health check before starting.
+4. **Starts Plumbline**, exactly like `Plumbline.bat` does.
+
+A normal day looks like this: *Checking for updates ... Already up to date. requirements.txt has not changed since the
+last install - keeping the libraries that are already in .venv. Starting Plumbline ...*
+
+**If it says "Could not update"** you keep working with the copy on disk - nothing is broken. It means there was no
+internet, or files you changed are in the way of the update. Try again later; if your own changes are the problem and you
+do not need them any more, `git stash` in a PowerShell window in the project folder and double-click the file again.
+
+**If pip or the doctor check fail** after an update, the window explains itself like `install_windows.bat` does; the
+Troubleshooting table below covers the usual causes. Your job folders are never touched by any of this.
 
 ---
 

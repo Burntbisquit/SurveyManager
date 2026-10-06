@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("PySide6")
+
 from plumbline.core import audit as AUD
 from plumbline.core import crs as C
 from plumbline.core import reference as REF
@@ -338,7 +340,6 @@ def test_the_audit_opens_from_the_reports_menu(win, app, auto):
     opened = [w for w in app.topLevelWidgets() if type(w).__name__ == "ReportViewer"]
     assert opened, "the Point(s) Audit did not open a report viewer"
     assert opened[-1].report.title == "Point(s) Audit"
-    reports_menu = next(m.menu() for m in win.menuBar().actions()
-                        if m.text().replace("&", "") == "Reports")
+    reports_menu = next((m for m in getattr(win, "_top_menus", []) if m.title().replace("&", "") == "Reports"), None) or next(m.menu() for m in list(win.menuBar().actions()) if m.text().replace("&", "") == "Reports")
     labels = [a.text().replace("&", "") for a in reports_menu.actions()]
     assert "Point(s) Audit..." in labels
