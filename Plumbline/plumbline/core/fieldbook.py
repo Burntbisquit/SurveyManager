@@ -59,6 +59,13 @@ def place_fieldbook_in_project(src_path: Path | str, project, custom_dest_name: 
     if not src.exists():
         raise FileNotFoundError(f"Source field book not found: {src}")
 
+    # Validate the candidate before moving any active field books out of the way. A failed
+    # selection must leave the project's current field book untouched.
+    table = f2f.read(src)
+    codes, _stats = f2f.convert(table)
+    if not codes:
+        raise ValueError(f"{src.name} contains no usable field codes.")
+
     # Determine project root
     if hasattr(project, "path") and project.path:
         p = Path(project.path)

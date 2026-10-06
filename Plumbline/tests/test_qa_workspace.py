@@ -1,6 +1,8 @@
 """Tests for the holistic QA & Point Resolution Workspace and advanced linework cleanup tools."""
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from plumbline.core.model import Polyline, SurveyPoint
@@ -104,6 +106,39 @@ def test_merge_point_descriptions():
     # Multiple code prefixes
     d3 = merge_point_descriptions(["EP1 ST", "TC1 ST"])
     assert d3 == "EP1 ST - TC1 ST"
+
+
+def test_keep_and_ignore_stack_choices_do_not_submit_a_merge_description(win, app):
+    from plumbline.ui.qa_workspace import ClosePointsResolveDialog
+
+    pr = win.state.project
+    p1 = pr.add_point(1.0, 1.0, 10.0, number="1", desc="EP ST")
+    p2 = pr.add_point(1.01, 1.01, 11.0, number="2", desc="EP END")
+    dialog = ClosePointsResolveDialog(win.state, [p1, p2])
+
+    dialog.combos[0].setCurrentText("Keep Point")
+    dialog.combos[1].setCurrentText("Ignore")
+    result = dialog.get_result()
+
+    assert result["merge_points"] == []
+    assert result["keep_points"] == [p1]
+    assert result["ignore_points"] == [p2]
+    assert result["merged_desc"] == ""
+    assert not result["average_coords"]
+
+
+def test_merge_close_keeps_known_elevation_when_other_is_missing(win):
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    pr = win.state.project
+    missing = pr.add_point(10.0, 20.0, math.nan, number="701", desc="EP ST")
+    known = pr.add_point(10.01, 20.01, 42.5, number="702", desc="EP END")
+    dialog = FixPointErrorsDialog(win.state, win)
+
+    dialog._action_merge_close([missing, known], average=True)
+
+    assert missing.z == pytest.approx(42.5)
+    assert known.id not in pr.points
 
 
 # ------------------------------------------------------------------ Close Points Popup and Resolution
@@ -281,6 +316,7 @@ def test_fix_point_errors_dialog_opens_and_resolves(win, app, auto):
 
 # ------------------------------------------------------------------ Fix Linework Dialog UI
 def test_fix_linework_dialog_opens_and_resolves(win, app, auto):
+    from plumbline.core.featurecodes import FeatureCode
     from plumbline.ui.qa_workspace import (
         BowtieRepairDialog,
         FixLineworkDialog,
@@ -288,6 +324,8 @@ def test_fix_linework_dialog_opens_and_resolves(win, app, auto):
     )
 
     pr = win.state.project
+    pr.codes.add(FeatureCode(code="TOC", kind="line", layer="TOPO"))
+    pr.settings["f2f_path"] = "test-office-standard.csv"
     # Plant a linework error (missing END)
     p_l1 = pr.add_point(300, 400, 50, number="8001", desc="TOC ST")
     p_l2 = pr.add_point(310, 410, 50, number="8002", desc="TOC")
@@ -375,6 +413,7 @@ def test_potential_code_in_descriptor_corrections_ui(win, app, auto):
     pr = win.state.project
     pr.codes.codes["rcp"] = "Reinforced Concrete Pipe"
     pr.codes.codes["mh"] = "Manhole"
+    pr.settings["f2f_path"] = "test-office-standard.csv"
     p_sep1 = pr.add_point(700, 800, 50, number="7701", desc="MH / 30rcp")
     p_sep2 = pr.add_point(710, 810, 50, number="7702", desc="NOTES / 30rcp")
 
@@ -468,6 +507,7 @@ def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkey
     pr.codes.codes["RCP"] = "Reinforced Concrete Pipe"
     pr.codes.codes["MH"] = "Manhole"
     pr.codes.codes["EC"] = "Edge of Concrete"
+    pr.settings["f2f_path"] = "test-office-standard.csv"
 
     p_unk = pr.add_point(850, 950, 50, number="8801", desc="BADCODE1 ST")
 
@@ -543,6 +583,77 @@ def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkey
     dlg._save_and_exit()
 
 
+def test_qa_workbench_uses_selected_vocabulary_and_fieldbook_path(win, monkeypatch):
+    from plumbline.fieldwork import bridge as FB
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    pr = win.state.project
+    pr.add_point(80.0, 90.0, 10.0, number="88001", desc="OFFICE_CODE")
+    selected_path = "/standards/selected-job.fwb"
+    monkeypatch.setattr(FB, "vocabulary_for", lambda _project: {
+        "source": "none", "label": "", "codes": set(), "path": selected_path,
+        "why": "selected file has no valid code vocabulary",
+    })
+    checked = []
+
+    def fake_check_project(project, f2f=None, fieldbook_path=None, ne_tol=None, elev_tol=None):
+        checked.append({"f2f": f2f, "fieldbook_path": fieldbook_path})
+        return {"rows": [], "ids": [], "findings": [], "stats": {}, "flags": {}, "line_issues": []}
+
+    monkeypatch.setattr(FB, "check_project", fake_check_project)
+    dialog = FixPointErrorsDialog(win.state, win)
+
+    assert dialog.code_set == set()  # built-in project defaults are not a substitute vocabulary
+    assert checked
+    assert checked[-1] == {"f2f": set(), "fieldbook_path": selected_path}
+
+
+def test_qa_fixes_and_rollbacks_rebuild_derived_linework(win):
+    from plumbline.core.featurecodes import FeatureCode
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    pr = win.state.project
+    pr.codes.add(FeatureCode(code="QA", kind="line", layer="QA", breakline=True))
+    start = pr.add_point(0.0, 0.0, 10.0, number="99101", desc="QA ST")
+    end = pr.add_point(10.0, 0.0, 20.0, number="99102", desc="QA END")
+    duplicate = pr.add_point(100.0, 100.0, 30.0, number="99101", desc="OTHER")
+    pr.process_linework()
+
+    def line_start():
+        line = next(e for e in pr.entities.values()
+                    if getattr(e, "derived", "") == "linework" and e.attrs.get("code") == "QA")
+        return tuple(float(v) for v in line.verts[0])
+
+    initial_line_start = line_start()
+    win.state.set_dirty(False)
+    dialog = FixPointErrorsDialog(win.state, win)
+    finding = next(f for f in dialog.active_findings
+                   if "duplicate" in f.get("check", "").lower()
+                   and {start.id, duplicate.id}.issubset(set(f.get("pids", []))))
+    dialog._open_inline_editor(finding)
+
+    dialog._apply_fix("Move QA line vertex", lambda: setattr(start, "x", 2.0),
+                      resolved_points=[start.id])
+    assert start.x == pytest.approx(2.0)
+    assert line_start()[0] == pytest.approx(2.0)
+
+    dialog._undo_issue()
+    assert start.x == pytest.approx(0.0)
+    assert line_start() == pytest.approx(initial_line_start)
+
+    dialog._redo_issue()
+    assert start.x == pytest.approx(2.0)
+    assert line_start()[0] == pytest.approx(2.0)
+
+    dialog._action_discard_issue()
+    assert start.x == pytest.approx(0.0)
+    assert line_start() == pytest.approx(initial_line_start)
+    assert dialog.resolved_findings == []
+    assert dialog.history_undo == []
+    assert not dialog.dirty
+    assert not win.state.dirty
+
+
 # ------------------------------------------------------------------ Initial View Staging & Issue-Scoped Undo/Redo
 def test_initial_view_staging_and_issue_scoped_undo_redo(win, app, auto):
     from PySide6.QtGui import QColor
@@ -552,6 +663,7 @@ def test_initial_view_staging_and_issue_scoped_undo_redo(win, app, auto):
     pr.codes.codes["RCP"] = "Reinforced Concrete Pipe"
     pr.codes.codes["MH"] = "Manhole"
     pr.codes.codes["EC"] = "Edge of Concrete"
+    pr.settings["f2f_path"] = "test-office-standard.csv"
 
     # Setup 3 distinct issues:
     # 1. Close Points (p1, p2)

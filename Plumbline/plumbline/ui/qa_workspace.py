@@ -18,6 +18,7 @@ Features:
 from __future__ import annotations
 
 import csv
+import math
 import re
 from typing import Sequence
 
@@ -91,6 +92,18 @@ def unit_name_for(project) -> str:
         "m": "Metre",
     }
     return labels.get(u, str(u))
+
+
+def _average_finite(values: Sequence[float]) -> float:
+    """Average known elevations without letting a missing value erase the rest."""
+    finite = []
+    for value in values:
+        if value is None:
+            continue
+        elevation = float(value)
+        if math.isfinite(elevation):
+            finite.append(elevation)
+    return sum(finite) / len(finite) if finite else float("nan")
 
 
 # ------------------------------------------------------------------ Stack Resolution Popup Dialog
@@ -187,22 +200,20 @@ class ClosePointsResolveDialog(QDialog):
         self._update_preview()
 
     def _update_preview(self):
-        merged_descs = []
-        has_merge = False
-        for r, p in enumerate(self.points):
-            cmb = self.combos[r]
-            act = cmb.currentText()
-            if "Merge" in act:
-                has_merge = True
-                merged_descs.append(p.desc or "")
+        merge_points = [p for r, p in enumerate(self.points)
+                        if "Merge" in self.combos[r].currentText()]
 
-        if has_merge:
+        if len(merge_points) > 1:
             self.ed_preview_desc.setEnabled(True)
             self.chk_avg_coords.setEnabled(True)
-            self.ed_preview_desc.setText(merge_point_descriptions(merged_descs))
+            self.ed_preview_desc.setText(merge_point_descriptions([p.desc or "" for p in merge_points]))
         else:
+            # A single target is not a merge. Clear any stale preview so Keep/Ignore/Delete
+            # choices cannot accidentally apply a description left over from an earlier choice.
             self.ed_preview_desc.setEnabled(False)
             self.chk_avg_coords.setEnabled(False)
+            preview_desc = (merge_points[0].desc or "") if merge_points else ""
+            self.ed_preview_desc.setText(preview_desc)
 
     def get_result(self) -> dict:
         target_p = None
@@ -241,8 +252,8 @@ class ClosePointsResolveDialog(QDialog):
             "renumber_points": pts_renumber,
             "keep_points": pts_keep,
             "ignore_points": pts_ignore,
-            "merged_desc": self.ed_preview_desc.text().strip(),
-            "average_coords": self.chk_avg_coords.isChecked(),
+            "merged_desc": self.ed_preview_desc.text().strip() if len(pts_merge) > 1 else "",
+            "average_coords": self.chk_avg_coords.isChecked() and len(pts_merge) > 1,
             "action": 0 if len(pts_merge) > 1 else (2 if pts_delete else 3),
         }
 
@@ -278,7 +289,9 @@ class BaseQAWorkbenchDialog(QDialog):
         self.current_edit_finding: dict | None = None
         self.current_selected_stack: list[int] = []
         self.issue_snapshot: dict[int, tuple] | None = None
+        self.issue_metadata_snapshot: dict | None = None
         self.issue_dirty = False
+        self.fieldbook_path = ""
 
         self._build_ui()
 
@@ -680,12 +693,8 @@ class BaseQAWorkbenchDialog(QDialog):
         pr = self.state.project
         from ..fieldwork import bridge as FB
         v = FB.vocabulary_for(pr)
-        self.code_set = set(v.get("codes", []))
-        if not self.code_set and hasattr(pr, "codes") and pr.codes:
-            if hasattr(pr.codes, "codes"):
-                self.code_set = {str(k).casefold() for k in pr.codes.codes.keys()}
-            else:
-                self.code_set = {str(getattr(c, "code", c)).casefold() for c in pr.codes}
+        self.code_set = {str(code).casefold() for code in v.get("codes", [])}
+        self.fieldbook_path = str(v.get("path") or "")
 
         n = len(self.code_set)
         if v["source"] == "none" and not self.code_set:
@@ -706,7 +715,9 @@ class BaseQAWorkbenchDialog(QDialog):
 
         from ..fieldwork import bridge as FB
         ne_tol = getattr(self, "close_tol", 0.05)
-        self.result = FB.check_project(pr, self.code_set, ne_tol=ne_tol)
+        self.result = FB.check_project(pr, f2f=self.code_set,
+                                       fieldbook_path=self.fieldbook_path or None,
+                                       ne_tol=ne_tol)
         self._populate_findings()
         self._sync_view_flags()
 
@@ -897,10 +908,33 @@ class BaseQAWorkbenchDialog(QDialog):
         )
 
     # ------------------------------------------------------------------ Inline Detail View (Page 1)
-    def _open_inline_editor(self, finding: dict):
-        self.current_edit_finding = finding
+    def _capture_issue_session(self, finding: dict):
+        """Remember the state at issue entry so Discard can undo applied fixes too."""
         self.issue_snapshot = self._take_snapshot()
+        self.issue_metadata_snapshot = {
+            "finding": {
+                "status": finding.get("status", "active"),
+                "resolutions": list(finding.get("resolutions", [])),
+                "resolved_history": list(finding.get("resolved_history", [])),
+                "resolved_pids": set(finding.get("resolved_pids", set())),
+                "history_undo": list(finding.get("history_undo", [])),
+                "history_redo": list(finding.get("history_redo", [])),
+                "redo_resolved_history": list(finding.get("redo_resolved_history", [])),
+            },
+            "resolved_findings": list(self.resolved_findings),
+            "history_undo": list(self.history_undo),
+            "history_redo": list(self.history_redo),
+            "dirty": self.dirty,
+            "app_dirty": self.state.dirty,
+        }
         self.issue_dirty = False
+
+    def _open_inline_editor(self, finding: dict, *, start_session: bool | None = None):
+        if start_session is None:
+            start_session = (self.stack.currentIndex() != 1 or self.current_edit_finding is not finding)
+        if start_session:
+            self._capture_issue_session(finding)
+        self.current_edit_finding = finding
         chk = finding.get("check", "Issue")
         self.lbl_edit_title.setText(f"<b>Fix {chk}</b>")
 
@@ -1079,6 +1113,8 @@ class BaseQAWorkbenchDialog(QDialog):
 
     def _show_summary_page(self):
         self.current_edit_finding = None
+        self.issue_snapshot = None
+        self.issue_metadata_snapshot = None
         self.issue_dirty = False
         if hasattr(self, "w_close_tol_bar"):
             self.w_close_tol_bar.hide()
@@ -1098,14 +1134,35 @@ class BaseQAWorkbenchDialog(QDialog):
         self._show_summary_page()
 
     def _action_discard_issue(self):
-        if hasattr(self, "issue_snapshot") and self.issue_snapshot:
+        if self.issue_snapshot is not None:
             self._restore_snapshot(self.issue_snapshot)
-        f = self.current_edit_finding
-        if f:
-            f.setdefault("history_undo", []).clear()
-            f.setdefault("history_redo", []).clear()
-            f.setdefault("resolutions", []).clear()
-            f["status"] = "active"
+
+        finding = self.current_edit_finding
+        session = self.issue_metadata_snapshot
+        if session is not None:
+            if finding is not None:
+                for key, value in session["finding"].items():
+                    if isinstance(value, set):
+                        value = set(value)
+                    elif isinstance(value, list):
+                        value = list(value)
+                    finding[key] = value
+            self.resolved_findings[:] = session["resolved_findings"]
+            self.history_undo[:] = session["history_undo"]
+            self.history_redo[:] = session["history_redo"]
+            self.dirty = session["dirty"]
+            self.state.set_dirty(session["app_dirty"])
+        elif finding is not None:
+            finding.setdefault("history_undo", []).clear()
+            finding.setdefault("history_redo", []).clear()
+            finding.setdefault("resolutions", []).clear()
+            finding["status"] = "active"
+
+        if finding is not None:
+            self.btn_issue_undo.setEnabled(bool(finding.get("history_undo")))
+            self.btn_issue_redo.setEnabled(bool(finding.get("history_redo")))
+        self.btn_undo.setEnabled(bool(self.history_undo))
+        self.btn_redo.setEnabled(bool(self.history_redo))
         self.issue_dirty = False
         self._show_summary_page()
 
@@ -1310,6 +1367,7 @@ class BaseQAWorkbenchDialog(QDialog):
                 p = SurveyPoint(id=pid, number=num, x=x, y=y, z=z, desc=desc, layer=layer, attrs=dict(attrs))
                 pr.points[pid] = p
 
+        pr.process_linework()
         pr.touch()
         self.state.set_dirty(True)
         self.state.refresh(("points", "entities"))
@@ -1352,7 +1410,7 @@ class BaseQAWorkbenchDialog(QDialog):
             self.resolved_findings.pop()
         self.run_check()
         self.lbl_status.setText(f"Undo: {desc}")
-        self._open_inline_editor(f)
+        self._open_inline_editor(f, start_session=False)
 
     def _redo_issue(self):
         f = self.current_edit_finding
@@ -1382,7 +1440,7 @@ class BaseQAWorkbenchDialog(QDialog):
         self.btn_undo.setEnabled(True)
         self.run_check()
         self.lbl_status.setText(f"Redo: {desc}")
-        self._open_inline_editor(f)
+        self._open_inline_editor(f, start_session=False)
 
     def _undo(self):
         if self.stack.currentIndex() == 1 and self.current_edit_finding:
@@ -1427,6 +1485,7 @@ class BaseQAWorkbenchDialog(QDialog):
 
         self._push_undo(resolution_desc)
         fix_fn()
+        pr.process_linework()
         self.state.project.touch()
         self.state.set_dirty(True)
         self.state.refresh(("points", "entities"))
@@ -1447,7 +1506,7 @@ class BaseQAWorkbenchDialog(QDialog):
         self.run_check()
 
         if stay_on_edit_page and cur_finding:
-            self._open_inline_editor(cur_finding)
+            self._open_inline_editor(cur_finding, start_session=False)
         else:
             self._show_summary_page()
 
@@ -1560,7 +1619,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             key = self.current_edit_finding.get("key", "")
             match = next((f for f in self.active_findings if f.get("key", "") == key), None)
             if match:
-                self._open_inline_editor(match)
+                self._open_inline_editor(match, start_session=False)
 
     def _filter_finding(self, finding: dict) -> bool:
         chk = finding.get("check", "").lower()
@@ -2143,11 +2202,11 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
         pts_to_remove = [p for p in merge_pts if p.id != target_p.id] + delete_pts
 
         def do_it():
-            if avg_coords and merge_pts:
+            if avg_coords and len(merge_pts) > 1:
                 target_p.x = sum(p.x for p in merge_pts) / len(merge_pts)
                 target_p.y = sum(p.y for p in merge_pts) / len(merge_pts)
-                target_p.z = sum(p.z for p in merge_pts) / len(merge_pts)
-            if merged_desc:
+                target_p.z = _average_finite([p.z for p in merge_pts])
+            if len(merge_pts) > 1 and merged_desc:
                 target_p.desc = merged_desc
             for p in renumber_pts:
                 all_nums = [int(pt.number) for pt in pr.points.values() if pt.number.isdigit()]
@@ -2227,7 +2286,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             if average and pts:
                 p_primary.x = sum(p.x for p in pts) / len(pts)
                 p_primary.y = sum(p.y for p in pts) / len(pts)
-                p_primary.z = sum(p.z for p in pts) / len(pts)
+                p_primary.z = _average_finite([p.z for p in pts])
             p_primary.desc = merged_desc
             if pts_del:
                 self.state.project.remove_points([p.id for p in pts_del if p.id in self.state.project.points])
@@ -2276,7 +2335,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
         def do_it():
             p_keep.x = sum(p.x for p in pts) / len(pts)
             p_keep.y = sum(p.y for p in pts) / len(pts)
-            p_keep.z = sum(p.z for p in pts) / len(pts)
+            p_keep.z = _average_finite([p.z for p in pts])
             if pts_del:
                 self.state.project.remove_points([p.id for p in pts_del if p.id in self.state.project.points])
 
@@ -2408,7 +2467,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             if finding:
                 finding["pids"] = [p.id for p in to_skip]
                 finding["numbers"] = [str(p.number) for p in to_skip]
-                self._open_inline_editor(finding)
+                self._open_inline_editor(finding, start_session=False)
 
     def _action_correct_all_separator_corrections(self):
         if hasattr(self, "sep_corrections") and self.sep_corrections:
@@ -2602,7 +2661,6 @@ class FixLineworkDialog(BaseQAWorkbenchDialog):
 
         def do_it():
             PLC.swap_parallel_line_codes(pts, c1, c2)
-            self.state.project.process_linework()
 
         self._apply_fix(f"Swapped parallel line codes {c1} <-> {c2}", do_it, resolved_points=pids, stay_on_edit_page=True)
 
@@ -2618,7 +2676,6 @@ class FixLineworkDialog(BaseQAWorkbenchDialog):
             s1 = pts[:mid]
             s2 = pts[mid:]
             PLC.merge_and_reclass_strings(self.state.project, s1, s2, target_code=t_code, new_string_id=t_id)
-            self.state.project.process_linework()
 
         self._apply_fix(f"Reclassed and merged to {t_code}{t_id}", do_it, resolved_points=pids, stay_on_edit_page=True)
 
@@ -2628,7 +2685,6 @@ class FixLineworkDialog(BaseQAWorkbenchDialog):
         def do_it():
             for p in pts:
                 p.desc = PLC.fix_line_command_order(p.desc or "")
-            self.state.project.process_linework()
 
         self._apply_fix(f"Standardized line command order on {len(pts)} point(s)", do_it, resolved_points=pids, stay_on_edit_page=True)
 
@@ -2637,7 +2693,6 @@ class FixLineworkDialog(BaseQAWorkbenchDialog):
 
         def do_it():
             PLC.reverse_string_coding(pts)
-            self.state.project.process_linework()
 
         self._apply_fix(f"Reversed line direction on {len(pts)} point(s)", do_it, resolved_points=pids, stay_on_edit_page=True)
 

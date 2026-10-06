@@ -108,6 +108,53 @@ def test_datum_strategies_and_operations():
     assert inv(*auto(MESQ_E, MESQ_N)) == pytest.approx((MESQ_E, MESQ_N), abs=1e-5)
 
 
+def test_proj_transform_falls_back_only_for_invalid_array_members(monkeypatch):
+    class FakeTransformer:
+        source_crs = C.CRS.from_epsg(4326)
+        target_crs = C.CRS.from_epsg(3857)
+        accuracy = 0.0
+
+        def transform(self, x, y, direction=None):
+            x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+            return np.where(x < 0, np.nan, x + 10.0), y + 20.0
+
+    fallback = C.CoordTransform(
+        lambda x, y: (np.asarray(x) + 100.0, np.asarray(y) + 200.0),
+        lambda x, y: (np.asarray(x) - 100.0, np.asarray(y) - 200.0),
+        "no datum shift",
+    )
+    monkeypatch.setattr(C, "_null_datum", lambda *_args: fallback)
+
+    transform = C._proj_transform(FakeTransformer(), "fake projection")
+    x, y = transform(np.array([1.0, -1.0, 2.0]), np.array([2.0, 3.0, 4.0]))
+    assert x == pytest.approx([11.0, 99.0, 12.0])
+    assert y == pytest.approx([22.0, 203.0, 24.0])
+
+
+def test_projection_only_fallback_does_not_recurse(monkeypatch):
+    calls = []
+
+    class InvalidTransformer:
+        accuracy = None
+
+        def transform(self, x, y, direction=None):
+            calls.append(1)
+            x_array = np.asarray(x, dtype=float)
+            return np.full_like(x_array, np.nan), np.full_like(x_array, np.nan)
+
+    class TransformerFactory:
+        @staticmethod
+        def from_crs(*_args, **_kwargs):
+            return InvalidTransformer()
+
+    monkeypatch.setattr(C, "Transformer", TransformerFactory)
+    projection_only = C._null_datum(C.CRS.from_epsg(2276), C.CRS.from_epsg(32138))
+    x, y = projection_only(100.0, 200.0)
+
+    assert math.isnan(float(x)) and math.isnan(float(y))
+    assert len(calls) == 2  # unproject + project; neither step starts another fallback
+
+
 def test_transform_between_ftus_and_metres():
     a = C.ProjectCRS.from_epsg(2276)
     b = C.ProjectCRS.from_epsg(32138)

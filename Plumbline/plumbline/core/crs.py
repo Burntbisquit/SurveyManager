@@ -408,31 +408,57 @@ def compose(*steps: CoordTransform) -> CoordTransform:
     return CoordTransform(fwd, inv, " -> ".join(s.description for s in steps), max(acc) if acc else None)
 
 
-def _proj_transform(t: Transformer, description: str) -> CoordTransform:
+def _proj_transform(t: Transformer, description: str, *, fallback_on_invalid: bool = True) -> CoordTransform:
     acc = t.accuracy if (t.accuracy is not None and t.accuracy >= 0) else None
+    null_datum = None
 
-    def _is_invalid(val):
-        if isinstance(val, (int, float)):
-            return not math.isfinite(val)
-        if isinstance(val, np.ndarray):
-            return np.any(~np.isfinite(val))
+    def _fallback():
+        nonlocal null_datum
+        if null_datum is None:
+            null_datum = _null_datum(t.source_crs, t.target_crs)
+        return null_datum
+
+    def _run(x, y, direction=None):
+        if direction is None:
+            rx, ry = t.transform(x, y)
+        else:
+            rx, ry = t.transform(x, y, direction=direction)
+
         try:
-            arr = np.asarray(val, dtype=float)
-            return np.any(~np.isfinite(arr))
-        except Exception:
-            return False
+            rx_array, ry_array = np.broadcast_arrays(np.asarray(rx, dtype=float),
+                                                    np.asarray(ry, dtype=float))
+            invalid = ~(np.isfinite(rx_array) & np.isfinite(ry_array))
+        except (TypeError, ValueError):
+            return rx, ry
+
+        if not fallback_on_invalid or not np.any(invalid):
+            return rx, ry
+
+        fallback = _fallback()
+        fallback_transform = fallback if direction is None else fallback.inverse()
+        if invalid.ndim == 0:
+            return fallback_transform(x, y)
+
+        # PROJ can return a mix of valid and invalid results for an array (for example,
+        # coordinates on both sides of a projection's area of use). Preserve every valid
+        # result and use the no-datum operation only for the failing coordinate pairs.
+        x_array, y_array = np.broadcast_arrays(np.asarray(x, dtype=float),
+                                               np.asarray(y, dtype=float))
+        if x_array.shape != invalid.shape:
+            x_array = np.broadcast_to(x_array, invalid.shape)
+            y_array = np.broadcast_to(y_array, invalid.shape)
+        out_x = rx_array.copy()
+        out_y = ry_array.copy()
+        fallback_x, fallback_y = fallback_transform(x_array[invalid], y_array[invalid])
+        out_x[invalid] = np.asarray(fallback_x, dtype=float).reshape(-1)
+        out_y[invalid] = np.asarray(fallback_y, dtype=float).reshape(-1)
+        return out_x, out_y
 
     def fwd(x, y):
-        rx, ry = t.transform(x, y)
-        if _is_invalid(rx) or _is_invalid(ry):
-            return _null_datum(t.source_crs, t.target_crs)(x, y)
-        return rx, ry
+        return _run(x, y)
 
     def inv(x, y):
-        rx, ry = t.transform(x, y, direction=TransformDirection.INVERSE)
-        if _is_invalid(rx) or _is_invalid(ry):
-            return _null_datum(t.source_crs, t.target_crs).inv(x, y)
-        return rx, ry
+        return _run(x, y, TransformDirection.INVERSE)
 
     return CoordTransform(fwd, inv, description, acc)
 
@@ -446,10 +472,10 @@ def _null_datum(src: CRS, dst: CRS) -> CoordTransform:
     steps = []
     if src.is_projected:
         steps.append(_proj_transform(Transformer.from_crs(src, _geo_of(src), always_xy=True),
-                                     f"unproject {src.name}"))
+                                     f"unproject {src.name}", fallback_on_invalid=False))
     if dst.is_projected:
         steps.append(_proj_transform(Transformer.from_crs(_geo_of(dst), dst, always_xy=True),
-                                     f"project {dst.name}"))
+                                     f"project {dst.name}", fallback_on_invalid=False))
     ct = compose(*steps)
     ct.description = f"{src.name} -> {dst.name} (no datum shift)"
     ct.accuracy = None
