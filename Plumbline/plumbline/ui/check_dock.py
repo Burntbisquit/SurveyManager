@@ -43,19 +43,360 @@ no check at all.
 """
 from __future__ import annotations
 
+import difflib
+import math
 from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
-                               QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QDialog, QFileDialog, QGroupBox,
+                               QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+                               QMessageBox, QPushButton, QRadioButton, QTableWidget,
+                               QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..core import provenance as PROV
+from ..core.settings import settings
 from .widgets import Banner, Hint
 
-COLS = ("Level", "Check", "Finding", "Points")
+COLS = ("Level", "Check", "Finding", "Points", "Action")
 COLORS = {"error": "#ff6b6b", "warn": "#f0b429", "info": "#8a94a1"}
+
+
+def auto_fix_descriptions(state, code_set: set) -> int:
+    """Batch auto-repair common safe description issues across the project.
+
+    Fixes:
+    - Lowercase/mixed-case code prefixes matching code table in uppercase
+    - Code joined with parameter without space (e.g. IPF1/2 -> IPF 1/2 if IPF is in code table)
+    - Trailing commas, semicolons, or periods on descriptions
+    Returns the count of points updated.
+    """
+    pr = state.project
+    if not code_set or not pr.points:
+        return 0
+
+    upper_codes = {str(c).upper(): str(c) for c in code_set}
+    fixed_count = 0
+    with state.edit("Auto-Fix Descriptions", kinds=("points",)):
+        for p in pr.points.values():
+            if not p.desc:
+                continue
+            orig = str(p.desc)
+            clean = orig.strip().rstrip(",;.")
+            tokens = clean.split()
+            if not tokens:
+                continue
+            head = tokens[0]
+            rest = " ".join(tokens[1:])
+
+            # Case 1: Exact case mismatch (e.g., 'ipf' vs 'IPF')
+            if head.upper() in upper_codes and head != upper_codes[head.upper()]:
+                head = upper_codes[head.upper()]
+                new_desc = f"{head} {rest}".strip()
+                if new_desc != orig:
+                    p.desc = new_desc
+                    fixed_count += 1
+                continue
+
+            # Case 2: Code joined with size/number (e.g. IPF1/2 -> IPF 1/2, REBAR5/8 -> REBAR 5/8)
+            matched_code = None
+            for c in sorted(upper_codes.keys(), key=len, reverse=True):
+                if head.upper().startswith(c) and len(head) > len(c):
+                    remainder = head[len(c):]
+                    if remainder[0].isdigit() or remainder[0] in ("/", "-", "#"):
+                        matched_code = upper_codes[c]
+                        head_fixed = f"{matched_code} {remainder}"
+                        new_desc = f"{head_fixed} {rest}".strip()
+                        if new_desc != orig:
+                            p.desc = new_desc
+                            fixed_count += 1
+                        break
+            if matched_code:
+                continue
+
+            # Case 3: Trailing punctuation cleaned
+            if clean != orig:
+                p.desc = clean
+                fixed_count += 1
+
+        if fixed_count:
+            pr.touch()
+    return fixed_count
+
+
+class DuplicateResolveDialog(QDialog):
+    """Interactive resolution dialog for duplicate point numbers or coordinate conflicts."""
+
+    def __init__(self, state, point_ids: list[int], parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.point_ids = point_ids
+        self.setWindowTitle("Resolve Duplicate Points")
+        self.resize(700, 420)
+        lay = QVBoxLayout(self)
+
+        pr = state.project
+        self.points = [pr.points[pid] for pid in point_ids if pid in pr.points]
+
+        lay.addWidget(QLabel(f"<b>{len(self.points)} Duplicate / Conflicting Point(s) Found:</b>"))
+
+        self.tbl = QTableWidget(len(self.points), 5)
+        ne = settings().get("coord_order") == "NE"
+        if ne:
+            self.tbl.setHorizontalHeaderLabels(["Pt #", "Northing", "Easting", "Elevation", "Description"])
+        else:
+            self.tbl.setHorizontalHeaderLabels(["Pt #", "Easting", "Northing", "Elevation", "Description"])
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.setAlternatingRowColors(True)
+        self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+
+        for r, p in enumerate(self.points):
+            self.tbl.setItem(r, 0, QTableWidgetItem(str(p.number)))
+            if ne:
+                self.tbl.setItem(r, 1, QTableWidgetItem(f"{p.y:,.3f}"))
+                self.tbl.setItem(r, 2, QTableWidgetItem(f"{p.x:,.3f}"))
+            else:
+                self.tbl.setItem(r, 1, QTableWidgetItem(f"{p.x:,.3f}"))
+                self.tbl.setItem(r, 2, QTableWidgetItem(f"{p.y:,.3f}"))
+            self.tbl.setItem(r, 3, QTableWidgetItem("" if math.isnan(p.z) else f"{p.z:,.3f}"))
+            self.tbl.setItem(r, 4, QTableWidgetItem(str(p.desc)))
+
+        self.tbl.resizeColumnsToContents()
+        lay.addWidget(self.tbl, 1)
+
+        grp = QGroupBox("Resolution Strategy")
+        glay = QVBoxLayout(grp)
+        self.rb_renumber = QRadioButton("Renumber duplicates with new unique numbers (1000+)")
+        self.rb_renumber.setChecked(True)
+        self.rb_keep_first = QRadioButton("Keep first point, delete duplicate(s)")
+        self.rb_keep_last = QRadioButton("Keep last/latest point, delete earlier point(s)")
+        self.rb_average = QRadioButton("Average coordinates into single point")
+        glay.addWidget(self.rb_renumber)
+        glay.addWidget(self.rb_keep_first)
+        glay.addWidget(self.rb_keep_last)
+        glay.addWidget(self.rb_average)
+        lay.addWidget(grp)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        b_apply = QPushButton("Apply Resolution")
+        b_apply.setProperty("accent", True)
+        b_apply.clicked.connect(self._apply)
+        b_cancel = QPushButton("Cancel")
+        b_cancel.clicked.connect(self.reject)
+        row.addWidget(b_apply)
+        row.addWidget(b_cancel)
+        lay.addLayout(row)
+
+    def _apply(self):
+        pr = self.state.project
+        with self.state.edit("Resolve Duplicate Points", kinds=("points",)):
+            if self.rb_renumber.isChecked():
+                existing_nums = set()
+                max_int = 0
+                for p in pr.points.values():
+                    existing_nums.add(str(p.number))
+                    try:
+                        num_val = int(p.number)
+                        if num_val > max_int:
+                            max_int = num_val
+                    except ValueError:
+                        pass
+                next_num = max(1000, max_int + 1)
+                for p in self.points[1:]:
+                    while str(next_num) in existing_nums:
+                        next_num += 1
+                    p.number = str(next_num)
+                    existing_nums.add(str(next_num))
+                    next_num += 1
+            elif self.rb_keep_first.isChecked():
+                for p in self.points[1:]:
+                    if p.id in pr.points:
+                        del pr.points[p.id]
+            elif self.rb_keep_last.isChecked():
+                for p in self.points[:-1]:
+                    if p.id in pr.points:
+                        del pr.points[p.id]
+            elif self.rb_average.isChecked():
+                avg_x = sum(p.x for p in self.points) / len(self.points)
+                avg_y = sum(p.y for p in self.points) / len(self.points)
+                valid_zs = [p.z for p in self.points if not math.isnan(p.z)]
+                avg_z = sum(valid_zs) / len(valid_zs) if valid_zs else math.nan
+                p0 = self.points[0]
+                p0.x = avg_x
+                p0.y = avg_y
+                p0.z = avg_z
+                for p in self.points[1:]:
+                    if p.id in pr.points:
+                        del pr.points[p.id]
+            pr.touch()
+        self.accept()
+
+
+class DescriptionFixDialog(QDialog):
+    """Interactive resolution dialog for fixing unknown codes or descriptions."""
+
+    def __init__(self, state, point_ids: list[int], vocabulary: set | None = None, parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.point_ids = point_ids
+        self.vocabulary = vocabulary or set()
+        self.setWindowTitle("Fix Unknown Descriptions & Feature Codes")
+        self.resize(780, 460)
+        lay = QVBoxLayout(self)
+
+        pr = state.project
+        self.points = [pr.points[pid] for pid in point_ids if pid in pr.points]
+
+        lay.addWidget(QLabel(f"<b>Fix Descriptions for {len(self.points)} Point(s):</b>"))
+
+        self.tbl = QTableWidget(len(self.points), 5)
+        self.tbl.setHorizontalHeaderLabels(["Pt #", "Current Description", "Extracted Code", "Suggested Fix", "New Description"])
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.setAlternatingRowColors(True)
+
+        vocab_list = sorted(list(self.vocabulary))
+        self.edits = []
+
+        for r, p in enumerate(self.points):
+            self.tbl.setItem(r, 0, QTableWidgetItem(str(p.number)))
+            self.tbl.setItem(r, 1, QTableWidgetItem(str(p.desc)))
+
+            tokens = (p.desc or "").split()
+            raw_code = tokens[0].upper() if tokens else ""
+            self.tbl.setItem(r, 2, QTableWidgetItem(raw_code))
+
+            matches = difflib.get_close_matches(raw_code, vocab_list, n=1, cutoff=0.4) if vocab_list else []
+            suggested = matches[0] if matches else raw_code
+            self.tbl.setItem(r, 3, QTableWidgetItem(suggested))
+
+            rest = " ".join(tokens[1:]) if len(tokens) > 1 else ""
+            proposed = f"{suggested} {rest}".strip() if suggested else p.desc
+            ed = QLineEdit(proposed)
+            self.tbl.setCellWidget(r, 4, ed)
+            self.edits.append((p, ed, suggested, rest))
+
+        hh = self.tbl.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(4, QHeaderView.Stretch)
+        lay.addWidget(self.tbl, 1)
+
+        btn_action_row = QHBoxLayout()
+        b_use_suggested = QPushButton("Use All Suggested Codes")
+        b_use_suggested.clicked.connect(self._apply_all_suggested)
+        b_upper = QPushButton("Uppercase All Descriptions")
+        b_upper.clicked.connect(self._apply_uppercase)
+        btn_action_row.addWidget(b_use_suggested)
+        btn_action_row.addWidget(b_upper)
+        btn_action_row.addStretch(1)
+        lay.addLayout(btn_action_row)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        b_apply = QPushButton("Apply Description Fixes")
+        b_apply.setProperty("accent", True)
+        b_apply.clicked.connect(self._apply)
+        b_cancel = QPushButton("Cancel")
+        b_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(b_apply)
+        btn_row.addWidget(b_cancel)
+        lay.addLayout(btn_row)
+
+    def _apply_all_suggested(self):
+        for p, ed, suggested, rest in self.edits:
+            if suggested:
+                ed.setText(f"{suggested} {rest}".strip())
+
+    def _apply_uppercase(self):
+        for p, ed, _, _ in self.edits:
+            ed.setText(ed.text().upper())
+
+    def _apply(self):
+        pr = self.state.project
+        with self.state.edit("Fix Descriptions", kinds=("points",)):
+            for p, ed, _, _ in self.edits:
+                new_desc = ed.text().strip()
+                if new_desc != p.desc:
+                    p.desc = new_desc
+            pr.touch()
+        self.accept()
+
+
+class LineRepairDialog(QDialog):
+    """Interactive resolution dialog for repairing linework sequences."""
+
+    def __init__(self, state, point_ids: list[int], parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.point_ids = point_ids
+        self.setWindowTitle("Repair Linework String")
+        self.resize(750, 420)
+        lay = QVBoxLayout(self)
+
+        pr = state.project
+        self.points = [pr.points[pid] for pid in point_ids if pid in pr.points]
+
+        lay.addWidget(QLabel(f"<b>Linework Sequence with {len(self.points)} Point(s):</b>"))
+
+        self.tbl = QTableWidget(len(self.points), 4)
+        self.tbl.setHorizontalHeaderLabels(["Pt #", "Current Description", "Suggested Action", "Fixed Description"])
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.setAlternatingRowColors(True)
+
+        self.edits = []
+        n_pts = len(self.points)
+        for r, p in enumerate(self.points):
+            self.tbl.setItem(r, 0, QTableWidgetItem(str(p.number)))
+            self.tbl.setItem(r, 1, QTableWidgetItem(str(p.desc)))
+
+            tokens = (p.desc or "").upper().split()
+            fixed_desc = p.desc
+            if r == 0 and "ST" not in tokens:
+                action_text = "Start line (add ST)"
+                fixed_desc = f"{p.desc} ST".strip()
+            elif r == n_pts - 1 and "CLS" not in tokens and "END" not in tokens:
+                action_text = "End line (add END)"
+                fixed_desc = f"{p.desc} END".strip()
+            else:
+                action_text = "Pass through"
+
+            self.tbl.setItem(r, 2, QTableWidgetItem(action_text))
+            ed = QLineEdit(fixed_desc)
+            self.tbl.setCellWidget(r, 3, ed)
+            self.edits.append((p, ed))
+
+        hh = self.tbl.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.Stretch)
+        lay.addWidget(self.tbl, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        b_apply = QPushButton("Apply Linework Fix")
+        b_apply.setProperty("accent", True)
+        b_apply.clicked.connect(self._apply)
+        b_cancel = QPushButton("Cancel")
+        b_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(b_apply)
+        btn_row.addWidget(b_cancel)
+        lay.addLayout(btn_row)
+
+    def _apply(self):
+        pr = self.state.project
+        with self.state.edit("Repair Linework String", kinds=("points", "entities")):
+            for p, ed in self.edits:
+                new_desc = ed.text().strip()
+                if new_desc != p.desc:
+                    p.desc = new_desc
+            pr.touch()
+            if hasattr(pr, "process_linework"):
+                pr.process_linework()
+        self.accept()
 
 
 def fieldbook_in(job_root) -> Path | None:
@@ -104,15 +445,22 @@ class CheckFieldworkDock(QWidget):
         lay.addWidget(self.banner)
 
         row = QHBoxLayout()
+        self.btn_workbench = QPushButton("Open QA Workbench...")
+        self.btn_workbench.setProperty("accent", True)
+        self.btn_workbench.setToolTip("Open full-screen split QA Workbench with 2D plan, 3D elevation view, and separated Point/Linework tabs")
         self.btn_run = QPushButton("Run the Check")
         self.btn_run.setProperty("accent", True)
+        self.btn_autofix = QPushButton("Auto-Fix Codes")
+        self.btn_autofix.setToolTip("Batch repair safe description casing and spacing typos")
         self.btn_book = QPushButton("Field Book...")
         self.btn_book.setToolTip("Point this job at an existing field book (.fwb) - it is "
                                  "remembered on the job")
         self.btn_conv = QPushButton("Convert Field to Finish...")
         self.btn_conv.setToolTip("Build a code table from the office's Carlson Field-to-Finish "
                                  "export (Survey > Convert Field to Finish)")
+        row.addWidget(self.btn_workbench)
         row.addWidget(self.btn_run)
+        row.addWidget(self.btn_autofix)
         row.addWidget(self.btn_book)
         row.addWidget(self.btn_conv)
         row.addStretch(1)
@@ -132,6 +480,7 @@ class CheckFieldworkDock(QWidget):
         hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(2, QHeaderView.Stretch)
         hh.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         lay.addWidget(self.tbl, 1)
 
         lay.addWidget(Hint("Click a finding to select those points in the drawing; double-click to "
@@ -146,7 +495,9 @@ class CheckFieldworkDock(QWidget):
                                  "reads.  A run is already stored in the project, and written into "
                                  "the job's Reports folder when the job has one.")
         row.addWidget(self.btn_save)
+        self.btn_workbench.clicked.connect(self.open_workbench)
         self.btn_run.clicked.connect(lambda *_: self.run(alert=True))
+        self.btn_autofix.clicked.connect(self.auto_fix)
         self.btn_save.clicked.connect(self.save_report)
         self.btn_book.clicked.connect(self.choose_field_book)
         self.btn_conv.clicked.connect(self.build_code_table)
@@ -162,6 +513,13 @@ class CheckFieldworkDock(QWidget):
             # project must leave it clean and the undo stack empty, so the automatic run does not
             # record itself.  Pressing "Run the Check" does.
             self.run(store=False)
+
+    def open_workbench(self):
+        """Open the full-screen split QA Workbench (2D top view + 3D elevation view + categorized error tables)."""
+        from .qa_workspace import QAWorkspaceDialog
+        dlg = QAWorkspaceDialog(self.state, self)
+        dlg.exec()
+        self.run(store=False)
 
     def save_report(self):
         """Copy this run out as a .fwc wherever the user wants it."""
@@ -241,24 +599,17 @@ class CheckFieldworkDock(QWidget):
                             f"({v['label']}) - all five checks run.", "info")
 
     def choose_field_book(self):
-        book = self.fieldbook()
-        start = str(book.parent) if book else str(self.job_root() or "")
-        path, _ = QFileDialog.getOpenFileName(self, "Field Book", start,
-                                              "Field Book (*.fwb);;Field Code Table (*.csv);;"
-                                              "All Files (*)")
-        if not path:
-            return
-        with self.state.edit("Choose field book"):
-            self.state.project.settings["fieldbook_file"] = path
-        self.state.log(f"Field book: {Path(path).name}.", "ok")
+        from .fieldbook_dialog import FieldBookDialog
+        dlg = FieldBookDialog(self.state, self)
+        dlg.exec()
         self.refresh_banner()
         self.run()
 
     def build_code_table(self):
         """Hand off to the window's own Convert Field to Finish, then re-check with its codes."""
-        if self._on_convert is None:
-            return
-        self._on_convert()
+        from .fieldbook_dialog import FieldBookDialog
+        dlg = FieldBookDialog(self.state, self)
+        dlg.action_convert()
         self.refresh_banner()
         self.run()
 
@@ -433,17 +784,68 @@ class CheckFieldworkDock(QWidget):
     def _fill_table(self):
         findings = self.result["findings"]
         self.tbl.setRowCount(len(findings))
+        ids = self.result.get("ids") or []
         for r, f in enumerate(findings):
+            row_idxs = f.get("rows") or []
+            point_ids = [ids[i] for i in row_idxs if 0 <= i < len(ids)]
             vals = [f["level"].upper(), f["check"], f["message"],
-                    f"{len(f['rows']):,}" if f["rows"] else (f"{f.get('count'):,}"
-                                                             if f.get("count") else "")]
+                    f"{len(row_idxs):,}" if row_idxs else (f"{f.get('count'):,}"
+                                                           if f.get("count") else "")]
             for c, v in enumerate(vals):
                 item = QTableWidgetItem(v)
                 if c == 0:
                     item.setForeground(QColor(COLORS.get(f["level"], COLORS["info"])))
                 item.setToolTip(f["message"])
                 self.tbl.setItem(r, c, item)
+
+            chk = (f.get("check") or "").lower()
+            msg = (f.get("message") or "").lower()
+            if point_ids:
+                if "duplicate" in chk or "duplicate" in msg or ("number" in chk and "used" in msg):
+                    btn = QPushButton("Resolve...")
+                    btn.setToolTip("Resolve duplicate point number or coordinate conflicts")
+                    btn.clicked.connect(lambda _=False, pids=point_ids: self._open_duplicate_resolver(pids))
+                    self.tbl.setCellWidget(r, 4, btn)
+                elif "description" in chk or "code" in chk or "unknown" in msg or "vocabulary" in msg:
+                    btn = QPushButton("Fix...")
+                    btn.setToolTip("Interactively fix descriptions and match feature codes")
+                    btn.clicked.connect(lambda _=False, pids=point_ids: self._open_description_fixer(pids))
+                    self.tbl.setCellWidget(r, 4, btn)
+                elif "line" in chk or "figure" in chk or "unclosed" in msg or "sequence" in msg:
+                    btn = QPushButton("Repair...")
+                    btn.setToolTip("Repair linework point sequences and start/end codes")
+                    btn.clicked.connect(lambda _=False, pids=point_ids: self._open_line_repair(pids))
+                    self.tbl.setCellWidget(r, 4, btn)
+                else:
+                    self.tbl.setCellWidget(r, 4, None)
+            else:
+                self.tbl.setCellWidget(r, 4, None)
+
         self.tbl.resizeRowsToContents()
+
+    def auto_fix(self):
+        """Batch repair safe description casing and spacing typos across the project."""
+        n = auto_fix_descriptions(self.state, self.code_set)
+        if n > 0:
+            self.state.log(f"Auto-fixed {n} point description(s).", "ok")
+            self.run(alert=False)
+        else:
+            QMessageBox.information(self, "Auto-Fix Descriptions", "No automatic description fixes were needed.")
+
+    def _open_duplicate_resolver(self, point_ids: list[int]):
+        dlg = DuplicateResolveDialog(self.state, point_ids, self)
+        if dlg.exec():
+            self.run(alert=False)
+
+    def _open_description_fixer(self, point_ids: list[int]):
+        dlg = DescriptionFixDialog(self.state, point_ids, vocabulary=self.code_set, parent=self)
+        if dlg.exec():
+            self.run(alert=False)
+
+    def _open_line_repair(self, point_ids: list[int]):
+        dlg = LineRepairDialog(self.state, point_ids, self)
+        if dlg.exec():
+            self.run(alert=False)
 
     # --------------------------------------------------------------------- acting on a finding
     def _ids(self) -> list:

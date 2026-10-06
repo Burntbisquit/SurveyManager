@@ -37,12 +37,37 @@ class LayersDock(QWidget):
         self.current = "0"
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
+
+        # Layer State Group bar
+        state_row = QHBoxLayout()
+        state_row.addWidget(QLabel("State:"))
+        self.cmb_state = QComboBox()
+        self.cmb_state.setMinimumWidth(110)
+        self.cmb_state.setToolTip("Saved Layer States - switch between saved visibility/locked setups")
+        self.cmb_state.currentIndexChanged.connect(self._on_state_selected)
+        state_row.addWidget(self.cmb_state, 1)
+
+        self.b_save_state = QPushButton("Save...")
+        self.b_save_state.setToolTip("Save current layer visibility, lock, and color settings as a Layer State")
+        self.b_save_state.clicked.connect(self._save_state)
+        state_row.addWidget(self.b_save_state)
+
+        self.b_del_state = QPushButton("Delete")
+        self.b_del_state.setToolTip("Delete selected Layer State")
+        self.b_del_state.clicked.connect(self._delete_state)
+        state_row.addWidget(self.b_del_state)
+        lay.addLayout(state_row)
+
+        # Table with multi-selection support (Shift + click, Ctrl + click)
         self.tbl = QTableWidget(0, 5)
         self.tbl.setHorizontalHeaderLabels(["", "", "", "Layer", "Objects"])
         self.tbl.verticalHeader().setVisible(False)
         self.tbl.setShowGrid(False)
+        self.tbl.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tbl.customContextMenuRequested.connect(self._context_menu)
         h = self.tbl.horizontalHeader()
         h.setSectionResizeMode(0, QHeaderView.Fixed)
         h.setSectionResizeMode(1, QHeaderView.Fixed)
@@ -52,6 +77,8 @@ class LayersDock(QWidget):
             self.tbl.setColumnWidth(c, 28)
         self.tbl.setColumnWidth(4, 64)
         lay.addWidget(self.tbl, 1)
+
+        # Bulk selected & general actions
         row = QHBoxLayout()
         self.b_new = QPushButton("New")
         self.b_all = QPushButton("Show all")
@@ -60,7 +87,25 @@ class LayersDock(QWidget):
         for b in (self.b_new, self.b_all, self.b_iso, self.b_purge):
             row.addWidget(b)
         lay.addLayout(row)
-        lay.addWidget(Hint("Click the eye / lock / swatch to change; double-click a name to make it the current layer for drawing."))
+
+        sel_row = QHBoxLayout()
+        self.b_sel_on = QPushButton("Show Sel")
+        self.b_sel_on.setToolTip("Turn visibility ON for all selected layers")
+        self.b_sel_on.clicked.connect(lambda: self._set_selected_visibility(True))
+        self.b_sel_off = QPushButton("Hide Sel")
+        self.b_sel_off.setToolTip("Turn visibility OFF for all selected layers")
+        self.b_sel_off.clicked.connect(lambda: self._set_selected_visibility(False))
+        self.b_sel_lock = QPushButton("Lock Sel")
+        self.b_sel_lock.setToolTip("Lock all selected layers")
+        self.b_sel_lock.clicked.connect(lambda: self._set_selected_locked(True))
+        self.b_sel_unlock = QPushButton("Unlock Sel")
+        self.b_sel_unlock.setToolTip("Unlock all selected layers")
+        self.b_sel_unlock.clicked.connect(lambda: self._set_selected_locked(False))
+        for b in (self.b_sel_on, self.b_sel_off, self.b_sel_lock, self.b_sel_unlock):
+            sel_row.addWidget(b)
+        lay.addLayout(sel_row)
+
+        lay.addWidget(Hint("Click eye/lock/swatch (affects all selected layers when multi-selected). Shift/Ctrl to select."))
         self.tbl.cellClicked.connect(self._clicked)
         self.tbl.cellDoubleClicked.connect(self._dbl)
         self.b_new.clicked.connect(self._new)
@@ -68,18 +113,173 @@ class LayersDock(QWidget):
         self.b_iso.clicked.connect(self._isolate)
         self.b_purge.clicked.connect(self._purge)
         state.changed.connect(lambda k: self.refresh())
-        state.project_replaced.connect(self.refresh)
+        state.project_replaced.connect(self._on_project_replaced)
         state.selection_changed.connect(lambda: None)
+        self._refresh_state_list()
         self.refresh()
 
+    def _on_project_replaced(self):
+        self._refresh_state_list()
+        self.refresh()
+
+    def _refresh_state_list(self):
+        pr = getattr(self.state, "project", self.state)
+        settings = getattr(pr, "settings", {}) or {}
+        saved_states = settings.get("layer_states", {}) if isinstance(settings, dict) else {}
+        self.cmb_state.blockSignals(True)
+        self.cmb_state.clear()
+        self.cmb_state.addItem("(Layer States)", "")
+        self.cmb_state.addItem("All Layers ON", "__ALL_ON__")
+        self.cmb_state.addItem("All Layers OFF", "__ALL_OFF__")
+        self.cmb_state.addItem("All Layers Unlocked", "__ALL_UNLOCKED__")
+        self.cmb_state.addItem("All Layers Locked", "__ALL_LOCKED__")
+        if isinstance(saved_states, dict):
+            for name in sorted(saved_states.keys()):
+                self.cmb_state.addItem(f"📁 {name}", name)
+        self.cmb_state.blockSignals(False)
+
+    def _save_state(self):
+        name, ok = QInputDialog.getText(self, "Save Layer State", "Enter name for this Layer State:")
+        name = name.strip()
+        if not ok or not name:
+            return
+        pr = getattr(self.state, "project", self.state)
+        if "layer_states" not in pr.settings or not isinstance(pr.settings["layer_states"], dict):
+            pr.settings["layer_states"] = {}
+        snapshot = {}
+        for n, lay in pr.layers.items():
+            snapshot[n] = {
+                "visible": bool(lay.visible),
+                "locked": bool(lay.locked),
+                "color": list(lay.color),
+                "linetype": str(lay.linetype),
+            }
+        with self.state.edit(f"Save Layer State '{name}'", kinds=("layers",)):
+            pr.settings["layer_states"][name] = snapshot
+        self._refresh_state_list()
+        idx = self.cmb_state.findData(name)
+        if idx >= 0:
+            self.cmb_state.setCurrentIndex(idx)
+        self.state.log(f"Layer State '{name}' saved ({len(snapshot)} layers captured).", "ok")
+
+    def _delete_state(self):
+        cur_data = self.cmb_state.currentData()
+        if not cur_data or str(cur_data).startswith("__"):
+            return
+        name = str(cur_data)
+        pr = getattr(self.state, "project", self.state)
+        if confirm(self, "Delete Layer State", f"Delete saved Layer State '{name}'?", "Delete"):
+            with self.state.edit(f"Delete Layer State '{name}'", kinds=("layers",)):
+                pr.settings.get("layer_states", {}).pop(name, None)
+            self._refresh_state_list()
+            self.state.log(f"Layer State '{name}' deleted.", "info")
+
+    def _on_state_selected(self, index):
+        code = self.cmb_state.itemData(index)
+        if not code:
+            return
+        pr = getattr(self.state, "project", self.state)
+        if code == "__ALL_ON__":
+            with self.state.edit("All Layers ON", kinds=("layers",)):
+                for l in pr.layers.values():
+                    l.visible = True
+            self.state.refresh(("layers",))
+            return
+        if code == "__ALL_OFF__":
+            with self.state.edit("All Layers OFF", kinds=("layers",)):
+                for l in pr.layers.values():
+                    l.visible = False
+            self.state.refresh(("layers",))
+            return
+        if code == "__ALL_UNLOCKED__":
+            with self.state.edit("All Layers Unlocked", kinds=("layers",)):
+                for l in pr.layers.values():
+                    l.locked = False
+            self.state.refresh(("layers",))
+            return
+        if code == "__ALL_LOCKED__":
+            with self.state.edit("All Layers Locked", kinds=("layers",)):
+                for l in pr.layers.values():
+                    l.locked = True
+            self.state.refresh(("layers",))
+            return
+
+        saved_states = pr.settings.get("layer_states", {}) if isinstance(getattr(pr, "settings", None), dict) else {}
+        st_data = saved_states.get(str(code))
+        if st_data and isinstance(st_data, dict):
+            with self.state.edit(f"Restore Layer State '{code}'", kinds=("layers",)):
+                for n, s in st_data.items():
+                    if n in pr.layers:
+                        pr.layers[n].visible = bool(s.get("visible", True))
+                        pr.layers[n].locked = bool(s.get("locked", False))
+                        if "color" in s and isinstance(s["color"], (list, tuple)) and len(s["color"]) >= 3:
+                            pr.layers[n].color = tuple(s["color"])
+                        if "linetype" in s:
+                            pr.layers[n].linetype = str(s["linetype"])
+            self.state.refresh(("layers",))
+            self.state.log(f"Restored Layer State: '{code}'.", "ok")
+
     def _counts(self):
-        pr = self.state.project
+        pr = getattr(self.state, "project", self.state)
         c: dict[str, int] = {}
-        for p in pr.points.values():
-            c[p.layer] = c.get(p.layer, 0) + 1
-        for e in pr.entities.values():
-            c[e.layer] = c.get(e.layer, 0) + 1
+        if hasattr(pr, "points"):
+            for p in pr.points.values():
+                c[p.layer] = c.get(p.layer, 0) + 1
+        if hasattr(pr, "entities"):
+            for e in pr.entities.values():
+                c[e.layer] = c.get(e.layer, 0) + 1
         return c
+
+    def _selected_layer_names(self) -> list[str]:
+        rows = sorted({idx.row() for idx in self.tbl.selectedIndexes()})
+        return [self._name(r) for r in rows if r < self.tbl.rowCount()]
+
+    def _context_menu(self, pos):
+        sel = self._selected_layer_names()
+        m = QMenu(self)
+        if sel:
+            m.addAction(f"Show Selected ({len(sel)})", lambda: self._set_selected_visibility(True))
+            m.addAction(f"Hide Selected ({len(sel)})", lambda: self._set_selected_visibility(False))
+            m.addSeparator()
+            m.addAction(f"Lock Selected ({len(sel)})", lambda: self._set_selected_locked(True))
+            m.addAction(f"Unlock Selected ({len(sel)})", lambda: self._set_selected_locked(False))
+            m.addSeparator()
+            m.addAction(f"Isolate Selected ({len(sel)})", lambda: self._isolate_selected(sel))
+            m.addSeparator()
+        m.addAction("Select All", self.tbl.selectAll)
+        m.addAction("New Layer...", self._new)
+        m.addAction("Save Current as Layer State...", self._save_state)
+        m.exec(self.tbl.viewport().mapToGlobal(pos))
+
+    def _set_selected_visibility(self, visible: bool):
+        sel = self._selected_layer_names()
+        if not sel and self.tbl.currentRow() >= 0:
+            sel = [self._name(self.tbl.currentRow())]
+        if not sel:
+            return
+        with self.state.edit("Toggle selected layer visibility", kinds=("layers",)):
+            for n in sel:
+                if n in self.state.project.layers:
+                    self.state.project.layers[n].visible = visible
+        self.state.refresh(("layers",))
+
+    def _set_selected_locked(self, locked: bool):
+        sel = self._selected_layer_names()
+        if not sel and self.tbl.currentRow() >= 0:
+            sel = [self._name(self.tbl.currentRow())]
+        if not sel:
+            return
+        with self.state.edit("Toggle selected layer lock", kinds=("layers",)):
+            for n in sel:
+                if n in self.state.project.layers:
+                    self.state.project.layers[n].locked = locked
+        self.state.refresh(("layers",))
+
+    def _isolate_selected(self, sel_names: list[str]):
+        with self.state.edit("Isolate selected layers", kinds=("layers",)):
+            for n, l in self.state.project.layers.items():
+                l.visible = (n in sel_names)
+        self.state.refresh(("layers",))
 
     def refresh(self):
         from .icons import icon
@@ -110,22 +310,39 @@ class LayersDock(QWidget):
         self.tbl.blockSignals(False)
 
     def _name(self, row):
-        return self.tbl.item(row, 3).text()
+        item = self.tbl.item(row, 3)
+        return item.text() if item else ""
 
     def _clicked(self, row, col):
         n = self._name(row)
+        if not n or n not in self.state.project.layers:
+            return
         lay = self.state.project.layers[n]
+        sel_names = self._selected_layer_names()
+        target_layers = sel_names if len(sel_names) > 1 and n in sel_names else [n]
+
         if col == 0:
-            lay.visible = not lay.visible
+            target_visible = not lay.visible
+            with self.state.edit("Toggle layer visibility", kinds=("layers",)):
+                for name in target_layers:
+                    if name in self.state.project.layers:
+                        self.state.project.layers[name].visible = target_visible
             self.state.refresh(("layers",))
         elif col == 1:
-            lay.locked = not lay.locked
+            target_locked = not lay.locked
+            with self.state.edit("Toggle layer lock", kinds=("layers",)):
+                for name in target_layers:
+                    if name in self.state.project.layers:
+                        self.state.project.layers[name].locked = target_locked
             self.state.refresh(("layers",))
         elif col == 2:
             c = QColorDialog.getColor(QColor(*lay.color), self, f"Colour of {n}")
             if c.isValid():
                 with self.state.edit("Layer colour", kinds=("layers",)):
-                    self.state.project.layers[n].color = (c.red(), c.green(), c.blue())
+                    for name in target_layers:
+                        if name in self.state.project.layers:
+                            self.state.project.layers[name].color = (c.red(), c.green(), c.blue())
+                self.state.refresh(("layers",))
 
     def _dbl(self, row, col):
         if col == 3:
@@ -168,6 +385,85 @@ class LayersDock(QWidget):
             with self.state.edit("Purge layers", kinds=("layers",)):
                 for n in dead:
                     del self.state.project.layers[n]
+
+
+# ----------------------------------------------------------------------------- field book palette
+class FieldBookDock(QWidget):
+    """Field Book tool palette displaying feature codes, descriptions, kinds, layers, and symbology."""
+
+    def __init__(self, state, parent=None):
+        super().__init__(parent)
+        self.state = state
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+
+        # Top search & filter
+        top_row = QHBoxLayout()
+        self.ed_search = QLineEdit()
+        self.ed_search.setPlaceholderText("Search field book codes, layers, descriptions...")
+        self.ed_search.textChanged.connect(self.refresh)
+        top_row.addWidget(self.ed_search)
+        lay.addLayout(top_row)
+
+        # Codes table (excludes commands and rules)
+        self.tbl = QTableWidget(0, 5)
+        self.tbl.setHorizontalHeaderLabels(["Code", "Description", "Kind", "Layer", "Symbol"])
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.setAlternatingRowColors(True)
+        self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        h = self.tbl.horizontalHeader()
+        h.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        h.setSectionResizeMode(1, QHeaderView.Stretch)
+        h.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        h.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        h.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        lay.addWidget(self.tbl, 1)
+
+        # Bottom info row
+        bot_row = QHBoxLayout()
+        self.lbl_count = QLabel("0 codes")
+        bot_row.addWidget(self.lbl_count)
+        bot_row.addStretch(1)
+        self.btn_manage = QPushButton("Field Book...")
+        self.btn_manage.setToolTip("Open Field Book manager to convert, select, or report")
+        self.btn_manage.clicked.connect(self._open_dialog)
+        bot_row.addWidget(self.btn_manage)
+        lay.addLayout(bot_row)
+
+        state.changed.connect(lambda k: self.refresh() if "codes" in k or not k else None)
+        state.project_replaced.connect(self.refresh)
+        self.refresh()
+
+    def _open_dialog(self):
+        from .fieldbook_dialog import FieldBookDialog
+        FieldBookDialog(self.state, self).exec()
+
+    def refresh(self):
+        pr = self.state.project
+        codes = getattr(pr, "codes", {}) or {}
+        codes_items = list(codes.items()) if hasattr(codes, "items") else list(getattr(codes, "codes", {}).items()) if hasattr(codes, "codes") else ([(c.code, c) for c in codes] if isinstance(codes, (list, tuple)) else [])
+
+        query = self.ed_search.text().strip().casefold()
+        filtered = []
+        for code, fc in sorted(codes_items):
+            if query:
+                text = f"{code} {getattr(fc, 'name', '')} {getattr(fc, 'layer', '')} {getattr(fc, 'symbol', '')}".casefold()
+                if query not in text:
+                    continue
+            filtered.append((code, fc))
+
+        self.tbl.blockSignals(True)
+        self.tbl.setRowCount(len(filtered))
+        for r, (code, fc) in enumerate(filtered):
+            kind_str = "Point" if fc.kind == "point" else "Line" if fc.kind == "line" else "Polygon"
+            self.tbl.setItem(r, 0, QTableWidgetItem(str(code)))
+            self.tbl.setItem(r, 1, QTableWidgetItem(str(getattr(fc, "name", ""))))
+            self.tbl.setItem(r, 2, QTableWidgetItem(kind_str))
+            self.tbl.setItem(r, 3, QTableWidgetItem(str(getattr(fc, "layer", ""))))
+            self.tbl.setItem(r, 4, QTableWidgetItem(str(getattr(fc, "symbol", ""))))
+        self.tbl.blockSignals(False)
+        self.lbl_count.setText(f"{len(filtered):,} of {len(codes_items):,} codes")
 
 
 # ----------------------------------------------------------------------------- points table
@@ -530,6 +826,15 @@ class PropertiesDock(QWidget):
             self._entity_form(f, ents[0])
         else:
             f.addRow(QLabel(f"<b>{len(pts)} point(s), {len(ents)} object(s) selected</b>"))
+            if len(pts) >= 2 and not ents:
+                b_join = QPushButton(f"Create Linework from {len(pts)} Points...")
+                b_join.setToolTip("Recode selected points into a linework figure")
+                def join_pts():
+                    from .linework_dialog import JoinPointsDialog
+                    dlg = JoinPointsDialog(self.state, [p.id for p in pts], self)
+                    dlg.exec()
+                b_join.clicked.connect(join_pts)
+                f.addRow("", b_join)
             cmb = QComboBox()
             cmb.setEditable(True)
             cmb.addItems(sorted(pr.layers))
@@ -579,6 +884,29 @@ class PropertiesDock(QWidget):
         b = QPushButton("Apply changes")
         f.addRow("", b)
 
+        if p.is_modified:
+            f.addRow(QLabel("<hr style='margin:4px 0;'/>"))
+            f.addRow(QLabel("<b>Original Field State:</b>"))
+            f.addRow("Orig Pt #:", QLabel(html.escape(p.orig_number)))
+            if ne:
+                f.addRow("Orig Northing:", QLabel(f"{p.orig_y:,.4f}"))
+                f.addRow("Orig Easting:", QLabel(f"{p.orig_x:,.4f}"))
+            else:
+                f.addRow("Orig Easting:", QLabel(f"{p.orig_x:,.4f}"))
+                f.addRow("Orig Northing:", QLabel(f"{p.orig_y:,.4f}"))
+            f.addRow("Orig Elev:", QLabel("" if math.isnan(p.orig_z) else f"{p.orig_z:,.4f}"))
+            f.addRow("Orig Desc:", QLabel(html.escape(p.orig_desc)))
+            if p.delta_xy > 0.0001:
+                f.addRow("Shift (ΔXY):", QLabel(f"{p.delta_xy:,.4f}"))
+            b_revert = QPushButton("Revert to Original")
+            b_revert.setToolTip("Reset this point's coordinates, number, description, and layer back to baseline import state")
+            def revert():
+                with self.state.edit("Revert point to original"):
+                    q = self.state.project.points[p.id]
+                    q.revert_to_original()
+            b_revert.clicked.connect(revert)
+            f.addRow("", b_revert)
+
         def apply():
             try:
                 x, y = float(e_e.text().replace(",", "")), float(e_n.text().replace(",", ""))
@@ -620,6 +948,16 @@ class PropertiesDock(QWidget):
             f.addRow("Layer:", c_l)
             b = QPushButton("Apply changes")
             f.addRow("", b)
+
+            if e.derived.startswith("linework") or (e.attrs or {}).get("points"):
+                b_recode = QPushButton("Edit Linework Coding (Recode Points)...")
+                b_recode.setToolTip("Inspect and modify the point descriptions defining this figure")
+                def edit_coding(checked=False, ent=e):
+                    from .linework_dialog import EditLineworkCodingDialog
+                    dlg = EditLineworkCodingDialog(self.state, ent, self)
+                    dlg.exec()
+                b_recode.clicked.connect(edit_coding)
+                f.addRow("", b_recode)
 
             def apply():
                 with self.state.edit("Edit polyline"):

@@ -37,6 +37,7 @@ class VerticalAndGroundPanel(QWidget):
 
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
+        form.setVerticalSpacing(6)
         self.cmb_datum = QComboBox()
         for d in VD.VERTICAL_DATUMS:
             self.cmb_datum.addItem(d.name, d.key)
@@ -50,7 +51,6 @@ class VerticalAndGroundPanel(QWidget):
         if show_vertical:
             form.addRow("Vertical datum:", self.cmb_datum)
             form.addRow("Geoid model:", self.cmb_geoid)
-            form.addRow("", self.lbl_datum)
         root.addLayout(form)
         if not show_vertical:
             self.cmb_datum.setVisible(False)
@@ -62,7 +62,8 @@ class VerticalAndGroundPanel(QWidget):
                                    "SAF box below is locked.  Tick it to store scaled coordinates.")
         root.addWidget(self.chk_ground)
         self.ground_form = QFormLayout()
-        self.ground_form.setContentsMargins(18, 0, 0, 0)
+        self.ground_form.setContentsMargins(18, 4, 0, 4)
+        self.ground_form.setVerticalSpacing(6)
         self.sp_by = widen_chars(dspin(0.0, -1e12, 1e12, 3), 18)
         self.sp_bx = widen_chars(dspin(0.0, -1e12, 1e12, 3), 18)
         self.sp_cf = widen_chars(dspin(1.0, 0.9, 1.1, 11, 0.000001), 18)
@@ -109,9 +110,7 @@ class VerticalAndGroundPanel(QWidget):
     def _datum_changed(self):
         d = VD.datum(self.cmb_datum.currentData())
         if d is None:
-            self.lbl_datum.setText("")
             return
-        self.lbl_datum.setText(f"{d.note}  Tied to the ellipsoid by: {d.tied_by}.")
         # An orthometric datum needs a geoid model; ellipsoid / assumed heights do not.
         want = d.kind == "orthometric"
         self.cmb_geoid.setEnabled(want)

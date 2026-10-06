@@ -134,8 +134,22 @@ class Settings:
         return self.from_dict(json.loads(p.read_text("utf-8")), merge=merge)
 
     def add_recent(self, path: str, limit: int = 10):
-        rec = [p for p in self.get("recent_files", []) if p != path]
-        rec.insert(0, path)
+        try:
+            norm = str(Path(path).resolve())
+        except Exception:
+            norm = str(path).strip()
+        if not norm:
+            return
+        existing = self.get("recent_files", [])
+        rec = []
+        for p in existing:
+            try:
+                p_norm = str(Path(p).resolve())
+            except Exception:
+                p_norm = str(p).strip()
+            if p_norm.casefold() != norm.casefold():
+                rec.append(p_norm)
+        rec.insert(0, norm)
         self.set("recent_files", rec[:limit])
 
     @property

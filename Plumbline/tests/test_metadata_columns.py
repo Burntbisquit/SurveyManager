@@ -12,6 +12,8 @@ import contextlib
 from pathlib import Path
 
 import pytest
+
+pytest.importorskip("PySide6")
 from PySide6.QtCore import Qt
 
 from plumbline.core import crs as C
@@ -230,58 +232,57 @@ def test_the_column_menu_is_on_the_headers_and_in_the_view_menu(win, app, auto):
     """"Show/hide" means right where the columns are, and where every other panel is."""
     labels = [a.text() for a in win.points.col_menu.actions()]
     assert labels == ["Source File", "Parent Folder", "Imported", "Import"]
-    view = {a.text(): a.menu() for a in win.menuBar().actions() if a.menu()}["&View"]
-    panels = {a.text(): a.menu() for a in view.actions() if a.menu()}["&Panels"]
+    view = next((m for m in getattr(win, "_top_menus", []) if m.title() == "&View"), None) or {a.text(): a.menu() for a in list(win.menuBar().actions()) if a.menu()}["&View"]
+    panels = next((m for m in getattr(win, "_all_menus", []) if m.title() == "&Panels"), None) or {a.text(): a.menu() for a in list(view.actions()) if a.menu()}["&Panels"]
     assert win.points.col_menu in [a.menu() for a in panels.actions() if a.menu()]
 
 
 # --------------------------------------------------------------------------------------------- the dock
-def test_the_check_fieldwork_dock_is_its_own_dock_next_to_the_points(win, app, auto):
-    from plumbline.ui.check_dock import CheckFieldworkDock
-
-    assert isinstance(win.check, CheckFieldworkDock)
-    assert win.d_check.windowTitle() == "Check Fieldwork"
-    assert win.d_check in win.tabifiedDockWidgets(win.d_pts), "next to the point list, not inside it"
-    view = {a.text(): a.menu() for a in win.menuBar().actions() if a.menu()}["&View"]
-    panels = {a.text(): a.menu() for a in view.actions() if a.menu()}["&Panels"]
-    assert win.d_check.toggleViewAction() in panels.actions()
+def test_the_points_dock_is_tabbed_with_groups_in_left_panel(win, app, auto):
+    assert win.d_pts in win.tabifiedDockWidgets(win.d_groups), "points is tabbed in left panel with groups"
 
 
 def test_the_dock_runs_the_checks_on_the_projects_points_and_says_how_many(win, app, auto):
-    win.check.run()
+    from plumbline.ui.check_dock import CheckFieldworkDock
+    dock = CheckFieldworkDock(win.state, job_root=win._job_folder)
+    dock.run()
     pump(app, 2)
-    assert win.check.result["stats"]["rows"] == len(win.state.project.points)
-    assert win.check.tbl.rowCount() == len(win.check.result["findings"])
-    assert "point(s) in the check" in win.check.lbl_when.text()
+    assert dock.result["stats"]["rows"] == len(win.state.project.points)
+    assert dock.tbl.rowCount() == len(dock.result["findings"])
+    assert "point(s) in the check" in dock.lbl_when.text()
 
 
 def test_the_dock_finds_a_duplicate_number_and_selects_the_points_it_names(win, app, auto):
+    from plumbline.ui.check_dock import CheckFieldworkDock
+    dock = CheckFieldworkDock(win.state, job_root=win._job_folder)
     pr = win.state.project
     rows = [FB.working_row(1, "9001", BASE_N, BASE_E, 500.0, "GS"),
             FB.working_row(2, "9001", BASE_N + 40, BASE_E + 40, 500.5, "GS")]
     with win.state.edit("test points"):
         FB.apply_rows_to_project(pr, rows, dup_policy="keep")
-    win.check.run()
+    dock.run()
     pump(app, 2)
 
-    finding = next(f for f in win.check.result["findings"] if f["check"] == "duplicate numbers")
-    ids = [win.check.result["ids"][i] for i in finding["rows"]]
+    finding = next(f for f in dock.result["findings"] if f["check"] == "duplicate numbers")
+    ids = [dock.result["ids"][i] for i in finding["rows"]]
     assert len(ids) == 2
     assert {pr.points[i].number for i in ids} == {"9001"}
 
-    row = win.check.result["findings"].index(finding)
-    win.check.tbl.selectRow(row)
+    row = dock.result["findings"].index(finding)
+    dock.tbl.selectRow(row)
     pump(app, 2)
     assert win.state.sel_points == set(ids), "clicking a finding selects those points in the drawing"
 
 
 def test_the_dock_says_when_the_check_is_out_of_date(win, app, auto):
-    win.check.run()
+    from plumbline.ui.check_dock import CheckFieldworkDock
+    dock = CheckFieldworkDock(win.state, job_root=win._job_folder)
+    dock.run()
     win.state.changed.emit({"points"})
     pump(app, 2)
-    assert win.check.btn_run.text().endswith("*")
-    win.check.run()
-    assert not win.check.btn_run.text().endswith("*")
+    assert dock.btn_run.text().endswith("*")
+    dock.run()
+    assert not dock.btn_run.text().endswith("*")
 
 
 def _write_fieldbook(path: Path, codes):

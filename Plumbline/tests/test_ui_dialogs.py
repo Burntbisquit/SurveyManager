@@ -2,6 +2,7 @@
 import math
 
 import pytest
+pytest.importorskip("PySide6")
 from PySide6.QtWidgets import QDockWidget, QFileDialog, QInputDialog, QMenu, QTableWidgetItem, QToolBar
 
 from plumbline.core import crs as C
@@ -32,7 +33,7 @@ def test_settings_dialog_applies_theme_and_values(win, app, auto):
 
 # ------------------------------------------------------------------ where things live in the menus
 def _top_menus(win):
-    return {a.text(): a.menu() for a in win.menuBar().actions() if a.menu() is not None}
+    return {m.title(): m for m in getattr(win, "_top_menus", [])} or {a.text(): a.menu() for a in win.menuBar().actions() if a.menu() is not None}
 
 
 def test_the_tools_menu_is_gone_and_its_items_moved_where_they_belong(win, app, auto):
@@ -244,6 +245,7 @@ def test_new_project_dialog_unassigned_texas_and_full_search(win, app, auto):
     # 1. the default: no coordinate system, units chosen, and a flag when something needs a CRS
     d = NewProjectDialog(win)
     assert d.r_unassigned.isChecked() and not d.setup_job is None
+    assert d.extra.isHidden() and d.lbl_heights.isHidden()
     assert d.extra.chk_ground.isHidden() and d.extra.ground_hint.isHidden()
     assert all(d.extra.ground_form.isRowVisible(w) is False
                for w in (d.extra.sp_by, d.extra.sp_bx, d.extra.sp_cf))
@@ -260,25 +262,26 @@ def test_new_project_dialog_unassigned_texas_and_full_search(win, app, auto):
         scratch.crs.to_lonlat(0.0, 0.0)
     assert "UNASSIGNED" in str(err.value) and "Select CRS" in str(err.value)
 
-    # 2. the Texas list carries every zone, realisation and unit, and defaults to 6584
+    # 2. the Texas list carries the 2011 US survey feet zones, and defaults to 6584
     from plumbline.core import crs as CC
     d2 = NewProjectDialog(win)
     keys = [d2.cmb_texas.itemData(i) for i in range(d2.cmb_texas.count())]
-    assert len(keys) == sum(1 for k, v in CC.TEXAS_ZONES.items() if v["state"] == "TX") >= 35
-    for want in (6584, 6583, 2276, 32138, 32038, "6584-ft", "2276-ft"):
+    assert len(keys) == 5
+    for want in (6584, 6582, 6578, 6588, 6586):
         assert want in keys, f"{want} missing from the Texas list"
     assert keys[0] == 6584 and d2.cmb_texas.currentData() == 6584
     d2.r_crs.setChecked(True)
+    assert not d2.extra.isHidden() and not d2.lbl_heights.isHidden()
     assert not d2.extra.chk_ground.isHidden() and d2.extra.ground_form.isRowVisible(d2.extra.sp_cf)
     d2.setup.chk.setChecked(False)
     d2._accept()
     assert d2.crs.authority == "EPSG:6584" and d2.crs.unit == "ftUS"
     assert d2.crs.unit_factor == pytest.approx(1200 / 3937)
 
-    # 3. and the metre twin of the same zone is one click away
+    # 3. and other systems (like the metre twin) are searched via the full register
     d3 = NewProjectDialog(win)
-    d3.r_crs.setChecked(True)
-    d3.cmb_texas.setCurrentIndex(d3.cmb_texas.findData(6583))
+    d3.r_other.setChecked(True)
+    d3.picker.select_key("EPSG:6583")
     d3.setup.chk.setChecked(False)
     d3._accept()
     assert d3.crs.authority == "EPSG:6583" and d3.crs.unit == "m"
@@ -289,6 +292,7 @@ def test_new_project_dialog_unassigned_texas_and_full_search(win, app, auto):
     d4 = NewProjectDialog(win)
     d4.setup.chk.setChecked(False)
     d4.r_other.setChecked(True)
+    assert not d4.extra.isHidden() and not d4.lbl_heights.isHidden()
     d4.picker.select_key("EPSG:2276")
     d4._accept()
     assert d4.crs.authority == "EPSG:2276" and d4.crs.is_legacy_zone
@@ -383,11 +387,15 @@ def test_the_file_menu_offers_both_samples_and_the_real_one_opens(win, app, auto
 
     from PySide6.QtWidgets import QMenu
     labels = {}
-    for menu in win.menuBar().findChildren(QMenu):
+    for menu in getattr(win, "_all_menus", win.menuBar().findChildren(QMenu)):
         for act in menu.actions():
-            if act.menu():
-                for sub in act.menu().actions():
-                    labels[sub.text()] = sub
+            labels[act.text()] = act
+            if act.menu() is not None:
+                try:
+                    for sub in act.menu().actions():
+                        labels[sub.text()] = sub
+                except RuntimeError:
+                    pass
     assert win.a_sample.text() in labels and win.a_sample_real.text() in labels
 
     real = Path(__file__).resolve().parent.parent / "samples" / "Real World" / "Real World.plb"

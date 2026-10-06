@@ -2177,6 +2177,10 @@ class MainWindow(QMainWindow):
             self.fieldbook_table.setItem(r, 4, QTableWidgetItem(row[4] if len(row) > 4 else ""))
             self.fieldbook_table.setItem(r, 5, QTableWidgetItem(row[5] if len(row) > 5 else ""))
         self.fieldbook_table.resizeColumnsToContents()
+        min_widths = [100, 240, 120, 220, 110, 140]
+        for c, min_w in enumerate(min_widths):
+            if self.fieldbook_table.columnWidth(c) < min_w:
+                self.fieldbook_table.setColumnWidth(c, min_w)
         self.fieldbook_table.setSortingEnabled(True)
         self._update_fieldbook_hint()
         self._update_fieldbook_path_label()

@@ -411,11 +411,28 @@ def compose(*steps: CoordTransform) -> CoordTransform:
 def _proj_transform(t: Transformer, description: str) -> CoordTransform:
     acc = t.accuracy if (t.accuracy is not None and t.accuracy >= 0) else None
 
+    def _is_invalid(val):
+        if isinstance(val, (int, float)):
+            return not math.isfinite(val)
+        if isinstance(val, np.ndarray):
+            return np.any(~np.isfinite(val))
+        try:
+            arr = np.asarray(val, dtype=float)
+            return np.any(~np.isfinite(arr))
+        except Exception:
+            return False
+
     def fwd(x, y):
-        return t.transform(x, y)
+        rx, ry = t.transform(x, y)
+        if _is_invalid(rx) or _is_invalid(ry):
+            return _null_datum(t.source_crs, t.target_crs)(x, y)
+        return rx, ry
 
     def inv(x, y):
-        return t.transform(x, y, direction=TransformDirection.INVERSE)
+        rx, ry = t.transform(x, y, direction=TransformDirection.INVERSE)
+        if _is_invalid(rx) or _is_invalid(ry):
+            return _null_datum(t.source_crs, t.target_crs).inv(x, y)
+        return rx, ry
 
     return CoordTransform(fwd, inv, description, acc)
 

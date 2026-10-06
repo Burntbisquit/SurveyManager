@@ -542,6 +542,145 @@ def _autocorrect_desc(raw_desc: str, f2f_set: set, fieldbook_path=None, rules=No
     except Exception:
         return None
 
+
+def _autocorrect_desc_leave_number(raw_desc: str, f2f_set=None, fieldbook_path=None, command_set=None, rules=None) -> str:
+    """Correct a description by moving detected codes before separator but leaving numbers in descriptor (supporting both leading and trailing numbers).
+
+    e.g. 'MH / 30rcp' -> 'MH - rcp / 30'
+         'MH / rcp30' -> 'MH - rcp / 30'
+         'MH / 30"rcp' -> 'MH - rcp / 30"'
+         'MH / rcp 30"' -> 'MH - rcp / 30"'
+         'MH / 30 rcp' -> 'MH - rcp / 30'
+         'MH / rcp 30' -> 'MH - rcp / 30'
+         '30"rcp' -> 'rcp / 30"'
+         'rcp 30"' -> 'rcp / 30"'
+         '30 rcp' -> 'rcp / 30'
+         'rcp 30' -> 'rcp / 30'
+         '30rcp' -> 'rcp / 30'
+         'rcp30' -> 'rcp / 30'
+    """
+    import re
+    from .config import MULTICODE_SEP, DESCRIPTION_SEP
+    from .parse import parse_desc_field, _strip_leading_digits, _strip_trailing_digits
+
+    if raw_desc is None:
+        return ""
+    raw = str(raw_desc).strip()
+    if not raw:
+        return ""
+
+    parsed = parse_desc_field(raw, f2f_set or set(), fieldbook_path=fieldbook_path, command_set=command_set, rules=rules)
+    code_part = parsed.get("code_part", "").strip()
+    free_desc = parsed.get("free_desc", "").strip()
+    misplaced_sets = parsed.get("misplaced_sets", []) or []
+
+    if not misplaced_sets:
+        for f in parsed.get("flags", []):
+            if f.startswith("MisplacedAfterSeparator:"):
+                ms = f.split(":", 1)[1].strip()
+                if ms:
+                    misplaced_sets.append(ms)
+
+    if not misplaced_sets and "/" in raw:
+        tokens = free_desc.split()
+        for tok in tokens:
+            clean_tok = tok.strip("\"'")
+            num_lead, base_lead = _strip_leading_digits(clean_tok)
+            base_trail, num_trail = _strip_trailing_digits(clean_tok)
+            if num_lead and base_lead and f2f_set and base_lead.casefold() in f2f_set:
+                misplaced_sets.append(tok)
+            elif num_trail and base_trail and f2f_set and base_trail.casefold() in f2f_set:
+                misplaced_sets.append(tok)
+            elif f2f_set and clean_tok.casefold() in f2f_set:
+                misplaced_sets.append(tok)
+
+    if not misplaced_sets and "/" not in raw:
+        # Check patterns like: 30"rcp, 30 rcp, 30rcp, rcp30, rcp 30", rcp 30
+        # 1. Leading number followed by code (e.g. 30"rcp, 30 rcp, 30rcp)
+        m_lead = re.match(r'^(\d+["\']?)\s*([a-zA-Z_]\w*)(.*)$', raw)
+        if m_lead and f2f_set and m_lead.group(2).casefold() in f2f_set:
+            num = m_lead.group(1).strip()
+            cd = m_lead.group(2).strip()
+            rem = m_lead.group(3).strip()
+            desc_val = f"{num} {rem}".strip() if rem else num
+            return f"{cd}{DESCRIPTION_SEP}{desc_val}"
+
+        # 2. Code followed by trailing number (e.g. rcp 30", rcp 30, rcp30)
+        m_trail = re.match(r'^([a-zA-Z_]\w*)\s*(\d+["\']?)(.*)$', raw)
+        if m_trail and f2f_set and m_trail.group(1).casefold() in f2f_set:
+            cd = m_trail.group(1).strip()
+            num = m_trail.group(2).strip()
+            rem = m_trail.group(3).strip()
+            desc_val = f"{num} {rem}".strip() if rem else num
+            return f"{cd}{DESCRIPTION_SEP}{desc_val}"
+
+        clean_raw = raw.strip("\"'")
+        num_lead, base_lead = _strip_leading_digits(clean_raw)
+        base_trail, num_trail = _strip_trailing_digits(clean_raw)
+        if num_lead and base_lead and f2f_set and base_lead.casefold() in f2f_set:
+            return f"{base_lead}{DESCRIPTION_SEP}{num_lead}"
+        elif num_trail and base_trail and f2f_set and base_trail.casefold() in f2f_set:
+            return f"{base_trail}{DESCRIPTION_SEP}{num_trail}"
+        return raw
+
+    moved_codes = []
+    remaining = free_desc
+
+    for ms in misplaced_sets:
+        toks = ms.split()
+        for t in toks:
+            clean_t = t.strip("\"'")
+            num_lead, base_lead = _strip_leading_digits(clean_t)
+            base_trail, num_trail = _strip_trailing_digits(clean_t)
+
+            b2, n2 = _strip_trailing_digits(base_lead) if base_lead else ("", "")
+            if num_lead and base_lead and f2f_set and (base_lead.casefold() in f2f_set or (b2 and b2.casefold() in f2f_set)):
+                moved_codes.append(base_lead)
+                m_unit = re.match(r'^(\d+["\']?)(.*)$', t)
+                num_to_keep = m_unit.group(1) if m_unit else num_lead
+                pat = r'\b' + re.escape(t) + r'\b'
+                remaining = re.sub(pat, num_to_keep, remaining, count=1, flags=re.I)
+            elif num_trail and base_trail and f2f_set and base_trail.casefold() in f2f_set:
+                moved_codes.append(base_trail)
+                m_unit = re.search(r'(\d+["\']?)$', t)
+                num_to_keep = m_unit.group(1) if m_unit else num_trail
+                pat = r'\b' + re.escape(t) + r'\b'
+                remaining = re.sub(pat, num_to_keep, remaining, count=1, flags=re.I)
+            elif f2f_set and clean_t.casefold() in f2f_set:
+                moved_codes.append(clean_t)
+                pat = r'\b' + re.escape(t) + r'\b'
+                remaining = re.sub(pat, '', remaining, count=1, flags=re.I)
+            else:
+                moved_codes.append(t)
+                pat = r'\b' + re.escape(t) + r'\b'
+                remaining = re.sub(pat, '', remaining, count=1, flags=re.I)
+
+    remaining = re.sub(r'\s{2,}', ' ', remaining).strip()
+    remaining = re.sub(r'^\s*[-/]+\s*', '', remaining).strip()
+    remaining = remaining.strip(" -/").strip()
+
+    code_part_has_valid = False
+    if code_part and f2f_set:
+        for c_tok in code_part.split():
+            b, _ = _strip_trailing_digits(c_tok)
+            if c_tok.casefold() in f2f_set or b.casefold() in f2f_set:
+                code_part_has_valid = True
+                break
+
+    if code_part and not code_part_has_valid:
+        combined_desc = f"{remaining} {code_part}".strip() if remaining else code_part
+        corrected_code = MULTICODE_SEP.join(moved_codes)
+        return f"{corrected_code}{DESCRIPTION_SEP}{combined_desc}" if combined_desc else corrected_code
+
+    if code_part:
+        corrected_code = code_part + MULTICODE_SEP + MULTICODE_SEP.join(moved_codes)
+    else:
+        corrected_code = MULTICODE_SEP.join(moved_codes)
+
+    if remaining:
+        return f"{corrected_code}{DESCRIPTION_SEP}{remaining}"
+    return corrected_code
+
 def _get_autofix_for_desc(raw_desc: str, flags: str, flag_detail: str, f2f_set: set, fieldbook_path=None) -> str | None:
     """Helper to compute Auto Fix for a description (same logic as CleanDescriptionDialog).
     Returns best_guess_desc or best_guess if available, else None. Used for batch Clean Auto (replaces Clean Selected)."""

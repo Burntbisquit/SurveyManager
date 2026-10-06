@@ -26,7 +26,10 @@ class AppState(QObject):
 
     def __init__(self, project: Project | None = None):
         super().__init__()
-        self.project: Project = project or Project("Untitled")
+        if isinstance(project, AppState):
+            self.project = project.project
+        else:
+            self.project = project or Project("Untitled")
         self.sel_points: set[int] = set()
         self.sel_entities: set[int] = set()
         self.undo_stack: list[tuple[str, bytes]] = []

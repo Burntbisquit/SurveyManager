@@ -1,8 +1,9 @@
 """Dark / light themes (palette + stylesheet) and canvas colours."""
 from __future__ import annotations
 
+from PySide6.QtCore import QEvent, QObject
 from PySide6.QtGui import QColor, QFont, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QComboBox
 
 THEMES = {
     "dark": dict(window="#1d2126", base="#14171b", alt="#191d22", text="#d9dee5", dim="#8a94a1", button="#2a3037",
@@ -184,3 +185,29 @@ def apply_theme(app: QApplication, name: str = "dark"):
     # so no dialog has to remember to ask for it, including dialogs written later.
     from . import dialogfit
     dialogfit.install(app)
+
+    # Prevent mouse wheel scrolling on closed QComboBox dropdowns application-wide
+    global _combo_wheel_filter
+    if _combo_wheel_filter is None:
+        _combo_wheel_filter = _ComboWheelFilter(app)
+        app.installEventFilter(_combo_wheel_filter)
+
+
+class _ComboWheelFilter(QObject):
+    """Prevent mouse wheel from scrolling QComboBoxes when their popup is closed.
+
+    Scrolling through forms or dialogs with the mouse wheel should not accidentally
+    change dropdown selections.  When the dropdown popup view is open, it handles
+    its own scrolling normally.
+    """
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel and isinstance(obj, QComboBox):
+            view = obj.view()
+            if view is None or not view.isVisible():
+                event.ignore()
+                return True
+        return super().eventFilter(obj, event)
+
+
+_combo_wheel_filter: _ComboWheelFilter | None = None

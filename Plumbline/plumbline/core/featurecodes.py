@@ -155,6 +155,21 @@ class FeatureCodeTable:
     def remove(self, code: str):
         self.codes.pop(code.upper(), None)
 
+    def items(self):
+        return self.codes.items()
+
+    def keys(self):
+        return self.codes.keys()
+
+    def values(self):
+        return self.codes.values()
+
+    def __contains__(self, code: str):
+        return (code or "").upper() in self.codes
+
+    def __getitem__(self, code: str):
+        return self.codes[(code or "").upper()]
+
     def __iter__(self):
         return iter(self.codes.values())
 

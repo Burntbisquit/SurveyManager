@@ -284,7 +284,7 @@ def write_sample_job(root, name: str = "Sample Job", overwrite: bool = True,
             Field Data/Week 1/
                 Week 1 Consolidated.fwk        the download, as it arrived
                 2026-07-19-S1/                 one folder per crew (S1)
-                    Week 1 S1 GPS.fwk
+                    Week 1 S1 GPS.csv
             Field Book/Sample Job.fwb          the code table
             Reports/                           the check report the detectors produced
     """
@@ -312,8 +312,8 @@ def write_sample_job(root, name: str = "Sample Job", overwrite: bool = True,
     step(0.45, "splitting the crew folder")
     crew_dir = paths.week(1) / SAMPLE_CREW_FOLDER
     crew_dir.mkdir(parents=True, exist_ok=True)
-    crew_file = crew_dir / "Week 1 S1 GPS.fwk"
-    fb.write_working_file(crew_file, rows, width=8)
+    crew_file = crew_dir / "Week 1 S1 GPS.csv"
+    fb.write_point_csv(crew_file, rows)
 
     step(0.60, "writing the field book")
     import csv as _csv

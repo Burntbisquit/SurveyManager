@@ -117,6 +117,26 @@ def test_rounding_is_half_up_never_truncated():
     assert round(2.5) == 2                                  # the builtin is half-to-even: do not use it
 
 
+def test_write_and_read_point_csv_5col(tmp_path):
+    f = tmp_path / "crew.csv"
+    rows = [
+        FB.pad_row(["1", "6200", "6782587.068", "2924717.738", "487.148", "MONC", "ParentFolder", "Source.csv"]),
+        FB.pad_row(["2", "6201", "6782759.194", "2924605.378", "492.783", "IPF", "ParentFolder", "Source.csv"]),
+    ]
+    FB.write_point_csv(f, rows)
+    lines = f.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert lines[0] == "6200,6782587.068,2924717.738,487.148,MONC"
+
+    read_back = FB.read_working_file(f)
+    assert len(read_back) == 2
+    assert read_back[0][FB.PTNUM] == "6200"
+    assert read_back[0][FB.NOR] == "6782587.068"
+    assert read_back[0][FB.EAS] == "2924717.738"
+    assert read_back[0][FB.ELE] == "487.148"
+    assert read_back[0][FB.DESC] == "MONC"
+
+
 def test_to_float_accepts_what_a_field_file_actually_contains():
     assert FB.to_float("1,234.56") == 1234.56
     assert FB.to_float(" 1234.5 ") == 1234.5
@@ -279,9 +299,8 @@ def test_job_folder_has_the_expected_shape(tmp_path):
         assert (root / rel).is_dir(), rel
     # Field Data/ is created EMPTY: what the folders inside it are called is the office's
     # business (Week 1, Stage 2, a date), and a program that pre-builds "Week 1" only
-    # teaches people to delete it.  A note in the folder says so, and says why it works.
-    assert sorted(p.name for p in (root / "Field Data").iterdir()) == [JT.FIELD_DATA_NOTE]
-    assert "folder per download" in (root / "Field Data" / JT.FIELD_DATA_NOTE).read_text(encoding="utf-8")
+    # teaches people to delete it.
+    assert list((root / "Field Data").iterdir()) == []
     assert out.paths.project_file.exists()
     assert out.paths.fieldbook_file.exists()
     assert out.paths.control_file.exists()
@@ -333,7 +352,7 @@ def test_weeks_are_not_pre_built_and_an_old_caller_is_told_so(tmp_path, capsys):
     """`weeks=` used to make Field Data/Week 1..N.  It is ignored now - and says so, rather
     than quietly making folders nobody asked for or silently doing nothing."""
     out = JT.create_job(tmp_path, "No Weeks", weeks=3)
-    assert [p.name for p in (out.paths.root / "Field Data").iterdir()] == [JT.FIELD_DATA_NOTE]
+    assert list((out.paths.root / "Field Data").iterdir()) == []
     from plumbline.core.jobtemplate import JobPaths
     assert JobPaths(out.paths.root, "No Weeks").week(1).name == "Week 1"   # helper still exists
     assert "ignored" in capsys.readouterr().out
@@ -456,12 +475,12 @@ def test_real_world_sample_rebuilds_byte_identical(tmp_path):
     build_real_world_sample(tmp_path, _real_source_file, f2f, chk, name="Real World")
 
     # Two files legitimately carry the moment they were built and cannot match:
-    # the .plb (project timestamp) and Job Setup.txt (created <date> <time>).
+    # the .plb (project timestamp), README.md (build date), and Job Setup.txt (created <date> <time>).
     # Everything that holds *data* must be byte-identical.
     # Generated output, not source data: the project file is rewritten by a save, and a check run
     # writes a stamped report into Reports/ (item 13).  A user who opens the sample and presses
     # "Run the Check" must not look like a broken sample.
-    volatile = {".plb", ".fwc", "Job Setup.txt"}
+    volatile = {".plb", ".fwc", "Job Setup.txt", "README.md"}
 
     def digest(root):
         out = {}
@@ -508,7 +527,7 @@ def test_real_world_job_folder_is_a_job_folder():
     assert (REAL / "Reports").is_dir()
     for crew in (6, 7, 9):
         d = REAL / "Field Data" / "Week 1" / f"Crew {crew}"
-        assert d.is_dir() and list(d.glob("*.fwk")), f"Crew {crew} has no field files"
+        assert d.is_dir() and list(d.glob("*.csv")), f"Crew {crew} has no field files"
     setup = (REAL / "Job Setup.txt").read_text(encoding="utf-8")
     assert "Week 1" in setup and "EPSG:6584" in setup
     readme = (REAL / "README.md").read_text(encoding="utf-8")

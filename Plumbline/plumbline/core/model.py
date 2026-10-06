@@ -58,6 +58,72 @@ class SurveyPoint:
     layer: str = "POINTS"
     attrs: dict = field(default_factory=dict)
 
+    def set_original_state(self, x=None, y=None, z=None, desc=None, number=None, layer=None):
+        """Record the baseline original state of this point upon import or creation."""
+        if self.attrs is None:
+            self.attrs = {}
+        if "orig_x" not in self.attrs:
+            self.attrs["orig_x"] = float(self.x if x is None else x)
+            self.attrs["orig_y"] = float(self.y if y is None else y)
+            self.attrs["orig_z"] = float(self.z if z is None else z)
+            self.attrs["orig_desc"] = str(self.desc if desc is None else desc)
+            self.attrs["orig_number"] = str(self.number if number is None else number)
+            self.attrs["orig_layer"] = str(self.layer if layer is None else layer)
+
+    @property
+    def orig_x(self) -> float:
+        return float(self.attrs.get("orig_x", self.x)) if self.attrs else float(self.x)
+
+    @property
+    def orig_y(self) -> float:
+        return float(self.attrs.get("orig_y", self.y)) if self.attrs else float(self.y)
+
+    @property
+    def orig_z(self) -> float:
+        return float(self.attrs.get("orig_z", self.z)) if self.attrs else float(self.z)
+
+    @property
+    def orig_desc(self) -> str:
+        return str(self.attrs.get("orig_desc", self.desc)) if self.attrs else str(self.desc)
+
+    @property
+    def orig_number(self) -> str:
+        return str(self.attrs.get("orig_number", self.number)) if self.attrs else str(self.number)
+
+    @property
+    def orig_layer(self) -> str:
+        return str(self.attrs.get("orig_layer", self.layer)) if self.attrs else str(self.layer)
+
+    @property
+    def is_modified(self) -> bool:
+        if not self.attrs or "orig_x" not in self.attrs:
+            return False
+        dx = abs(self.x - self.orig_x)
+        dy = abs(self.y - self.orig_y)
+        dz = 0.0 if (math.isnan(self.z) and math.isnan(self.orig_z)) else abs(self.z - self.orig_z)
+        return (dx > 1e-6 or dy > 1e-6 or dz > 1e-6 or
+                self.desc != self.orig_desc or
+                self.number != self.orig_number or
+                self.layer != self.orig_layer)
+
+    @property
+    def delta_xy(self) -> float:
+        """Ground distance moved from original position."""
+        dx = self.x - self.orig_x
+        dy = self.y - self.orig_y
+        return math.hypot(dx, dy)
+
+    def revert_to_original(self):
+        """Revert point attributes and coordinates back to baseline original state."""
+        if not self.attrs or "orig_x" not in self.attrs:
+            return
+        self.x = self.orig_x
+        self.y = self.orig_y
+        self.z = self.orig_z
+        self.desc = self.orig_desc
+        self.number = self.orig_number
+        self.layer = self.orig_layer
+
     def to_list(self):
         return [self.id, self.number, self.x, self.y, _nz(self.z), self.desc, self.layer, self.attrs or None]
 

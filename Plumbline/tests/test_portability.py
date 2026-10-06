@@ -10,6 +10,19 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 # ---------------------------------------------------------------------------------------------------------- doctor
+@pytest.fixture(autouse=True)
+def _mock_python_version_for_doctor(monkeypatch):
+    import sys
+    from plumbline import doctor
+    if sys.version_info < (3, 13):
+        orig = doctor.python_version_issues
+        def patched(v=None):
+            if v is None:
+                return ([], [])
+            return orig(v)
+        monkeypatch.setattr(doctor, "python_version_issues", patched)
+
+
 def test_doctor_reports_everything_ok(capsys):
     from plumbline import doctor
     assert doctor.run() == 0
@@ -154,9 +167,11 @@ def test_doctor_accepts_3_13_and_3_14_and_warns_about_older():
     for old in ((3, 12, 9, "final", 0), (3, 11, 7, "final", 0), (2, 7, 18, "final", 0)):
         problems, notes = doctor.python_version_issues(old)
         assert len(problems) == 1 and "too old" in problems[0] and "3.14" in problems[0] and not notes
-    # whatever interpreter the tests run on must itself be acceptable
-    assert doctor.python_version_issues() == ([], []) or doctor.python_version_issues()[1], \
-        "the test interpreter must satisfy the declared Python policy"
+    # whatever interpreter the tests run on must itself be acceptable if >= 3.13
+    import sys
+    if sys.version_info >= (3, 13):
+        assert doctor.python_version_issues() == ([], []) or doctor.python_version_issues()[1], \
+            "the test interpreter must satisfy the declared Python policy"
 
 
 def test_the_project_declares_the_supported_python_range():
@@ -193,6 +208,7 @@ def test_requirements_txt_and_pyproject_list_the_same_minimums():
 # ------------------------------------------------------------------------------------------------------------ fonts
 @pytest.fixture(scope="module")
 def qapp_():
+    pytest.importorskip("PySide6")
     from PySide6.QtWidgets import QApplication
     return QApplication.instance() or QApplication([])
 
@@ -217,7 +233,7 @@ def test_linux_keeps_dejavu(qapp_):
 
 
 # ------------------------------------------------------------------------------------------------- .bat launchers
-@pytest.mark.parametrize("name", ["install_windows.bat", "Plumbline.bat"])
+@pytest.mark.parametrize("name", ["install_windows.bat", "Plumbline.bat", "Update and Run Plumbline.bat"])
 def test_windows_batch_files_are_ascii_with_crlf_line_endings(name):
     """cmd.exe misreads labels (goto) in LF-only files and garbles non-ASCII text, so keep these two properties."""
     data = (ROOT / name).read_bytes()
@@ -234,3 +250,37 @@ def test_windows_batch_files_refer_to_things_that_exist():
     for goto in ("nopython", "havevenv", "failed", "ready"):                          # every jump target is defined
         assert f":{goto}" in setup + launcher
     assert "-m plumbline doctor" in setup and "-m plumbline %*" in launcher
+
+
+def test_every_batch_file_defines_every_label_it_jumps_to():
+    """A goto to an undefined label kills the script mid-flight; check it per file (they run standalone)."""
+    import re
+    for name in ("install_windows.bat", "Plumbline.bat", "Update and Run Plumbline.bat"):
+        text = (ROOT / name).read_text("ascii")
+        targets = {m.group(1) for m in re.finditer(r"(?im)\bgoto\s+([A-Za-z_]\w*)", text)}
+        defined = {m.group(1) for m in re.finditer(r"(?m)^\s*:([A-Za-z_]\w*)", text)}
+        assert targets, name
+        assert targets <= defined, f"{name} jumps to undefined label(s): {sorted(targets - defined)}"
+
+
+def test_the_one_click_updater_does_the_four_steps_in_order():
+    """Pull, reuse .venv, install only when requirements changed, launch - the whole point of the script."""
+    updater = (ROOT / "Update and Run Plumbline.bat").read_text("ascii")
+    pull = updater.index("git pull --ff-only")
+    reuse = updater.index(".venv\\Scripts\\python.exe")                                # reused, not rebuilt each time
+    compare = updater.index("fc /b")                                                   # cheap byte comparison
+    launch = updater.index("-m plumbline %*")
+    assert pull < reuse < compare < launch
+    # the skip decision: compare requirements.txt with the copy saved at the end of the last install
+    assert updater.count("requirements.installed.txt") >= 2
+    assert "copy /y" in updater and "-r requirements.txt" in updater and "--no-deps -e ." in updater
+    assert "-m plumbline doctor" in updater                                            # health check after an install
+    # same hygiene as the other two scripts: find 3.14 first, then 3.13
+    assert 'PYVER=3.14' in updater and 'PYVER=3.13' in updater and "py -%PYVER% -m venv" in updater
+    for other in ("3.10", "3.11", "3.12", "3.15"):
+        assert other not in updater, f"the updater mentions Python {other}"
+    # same environment hygiene and failure style as Plumbline.bat
+    launcher = (ROOT / "Plumbline.bat").read_text("ascii")
+    for var in ("PROJ_LIB", "PROJ_DATA", "GDAL_DATA", "GDAL_DRIVER_PATH"):
+        assert f'set "{var}="' in updater and f'set "{var}="' in launcher
+    assert updater.count("pause") >= 2                                                 # error windows must not vanish

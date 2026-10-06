@@ -23,6 +23,7 @@ property codes come in while the 1,400 utility codes stay where they are.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
                                QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
                                QRadioButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
@@ -33,6 +34,146 @@ from .widgets import Banner, Hint, hline
 
 COLS = ("Code", "Description", "Kind", "Layer", "Category")
 WIDTHS = (130, 0, 80, 260, 120)          # 0 = take the rest
+
+
+class CodeCommandsDialog(QDialog):
+    """Edit the code commands valid after a code (ST, PC, PT, END, X, -, /)."""
+
+    def __init__(self, commands=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Code Commands — Line & Curve Commands")
+        self.resize(540, 360)
+        lay = QVBoxLayout(self)
+        lay.addWidget(Hint("Stored with the field book so it travels with the job. "
+                           "\"-\" = Multicode separator, \"/\" = Description separator."))
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(["Code Command (fillable)", "Meaning (locked)"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
+
+        current = list(commands) if isinstance(commands, list) and commands else list(f2f.DEFAULT_COMMANDS)
+        labels = f2f.DEFAULT_COMMAND_LABELS
+        self.table.setRowCount(len(labels))
+
+        for row, meaning in enumerate(labels):
+            cmd = str(current[row]).strip().upper() if row < len(current) else (f2f.DEFAULT_COMMANDS[row] if row < len(f2f.DEFAULT_COMMANDS) else "")
+            item_cmd = QTableWidgetItem(cmd)
+            item_cmd.setFlags(item_cmd.flags() | Qt.ItemIsEditable)
+            self.table.setItem(row, 0, item_cmd)
+            item_meaning = QTableWidgetItem(meaning)
+            item_meaning.setFlags(item_meaning.flags() & ~Qt.ItemIsEditable)
+            item_meaning.setBackground(QBrush(QColor("#2a3037" if parent is not None else "#f0f0f0")))
+            self.table.setItem(row, 1, item_meaning)
+
+        lay.addWidget(self.table)
+
+        btn_row = QHBoxLayout()
+        b_def = QPushButton("Reset to Defaults")
+        b_def.clicked.connect(self._reset_defaults)
+        btn_row.addWidget(b_def)
+        btn_row.addStretch(1)
+        ok = QPushButton("OK")
+        ok.setProperty("accent", True)
+        cancel = QPushButton("Cancel")
+        ok.clicked.connect(self.accept)
+        cancel.clicked.connect(self.reject)
+        btn_row.addWidget(ok)
+        btn_row.addWidget(cancel)
+        lay.addLayout(btn_row)
+
+    def _reset_defaults(self):
+        for row, cmd in enumerate(f2f.DEFAULT_COMMANDS):
+            if row < self.table.rowCount():
+                it = self.table.item(row, 0)
+                if it:
+                    it.setText(cmd)
+
+    def get_commands(self) -> list[str]:
+        cmds = []
+        for r in range(self.table.rowCount()):
+            it = self.table.item(r, 0)
+            txt = it.text().strip().upper() if it else ""
+            cmds.append(txt or (f2f.DEFAULT_COMMANDS[r] if r < len(f2f.DEFAULT_COMMANDS) else ""))
+        return cmds
+
+
+class CorrectionRulesDialog(QDialog):
+    """Two-column rules: Common Error (what was typed in field) -> Fix (valid code)."""
+
+    def __init__(self, rules=None, fieldbook_codes=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Correction Rules — Common Errors")
+        self.resize(650, 420)
+        lay = QVBoxLayout(self)
+        lay.addWidget(Hint("Stored with the field book so it travels with the job. "
+                           "Automatically fixes known typos (e.g. IPF -> 12IPF) during check runs."))
+
+        self.fieldbook_codes = [str(c).upper() for c in (fieldbook_codes or [])]
+        self._fb_set = {c.casefold() for c in self.fieldbook_codes}
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(["Common Error", "Fix (Field Book code)"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.setAlternatingRowColors(True)
+
+        rules = rules or []
+        self.table.setRowCount(len(rules))
+        for r, pair in enumerate(rules):
+            err = pair[0] if len(pair) > 0 else ""
+            fix = pair[1] if len(pair) > 1 else ""
+            self.table.setItem(r, 0, QTableWidgetItem(str(err)))
+            self.table.setItem(r, 1, QTableWidgetItem(str(fix)))
+        lay.addWidget(self.table)
+
+        btn_row = QHBoxLayout()
+        add_btn = QPushButton("Add Row")
+        add_btn.clicked.connect(self._add_row)
+        del_btn = QPushButton("Remove Selected")
+        del_btn.clicked.connect(self._del_row)
+        btn_row.addWidget(add_btn)
+        btn_row.addWidget(del_btn)
+        btn_row.addStretch(1)
+        ok = QPushButton("OK")
+        ok.setProperty("accent", True)
+        cancel = QPushButton("Cancel")
+        ok.clicked.connect(self.accept)
+        cancel.clicked.connect(self.reject)
+        btn_row.addWidget(ok)
+        btn_row.addWidget(cancel)
+        lay.addLayout(btn_row)
+
+    def _add_row(self):
+        r = self.table.rowCount()
+        self.table.insertRow(r)
+        self.table.setItem(r, 0, QTableWidgetItem(""))
+        self.table.setItem(r, 1, QTableWidgetItem(""))
+
+    def _del_row(self):
+        sel = self.table.selectionModel().selectedRows()
+        rows = sorted([s.row() for s in sel], reverse=True)
+        if not rows:
+            if self.table.rowCount() > 0:
+                self.table.removeRow(self.table.rowCount() - 1)
+            return
+        for r in rows:
+            self.table.removeRow(r)
+
+    def get_rules(self) -> list[list[str]]:
+        rules = []
+        for r in range(self.table.rowCount()):
+            e = self.table.item(r, 0)
+            f = self.table.item(r, 1)
+            err = e.text().strip().upper() if e else ""
+            fix = f.text().strip().upper() if f else ""
+            if err or fix:
+                rules.append([err, fix])
+        return rules
 
 
 class ConvertFieldToFinishDialog(QDialog):
@@ -49,6 +190,11 @@ class ConvertFieldToFinishDialog(QDialog):
         self._timer.setSingleShot(True)
         self._timer.setInterval(120)
         self._timer.timeout.connect(self._recount)
+
+        extra = f2f.read_fwb_extra(table.path) if table.path else {}
+        proj_settings = getattr(project, "settings", {}) or {}
+        self.commands = list(extra.get("commands") or proj_settings.get("f2f_commands") or f2f.DEFAULT_COMMANDS)
+        self.rules = list(extra.get("rules") or proj_settings.get("f2f_rules") or [])
 
         root = QVBoxLayout(self)
         root.setSpacing(10)
@@ -71,6 +217,18 @@ class ConvertFieldToFinishDialog(QDialog):
         bl.addWidget(self.custom)
         self.rb_custom.toggled.connect(self._set_custom)
         root.addWidget(box)
+
+        # ---- commands and rules ---------------------------------------------------------
+        box_extra = QGroupBox("Code Commands & Correction Rules")
+        el = QHBoxLayout(box_extra)
+        self.btn_commands = QPushButton("Code Commands (ST, PC, PT, END, X...)...")
+        self.btn_commands.clicked.connect(self._edit_commands)
+        self.btn_rules = QPushButton("Correction Rules...")
+        self.btn_rules.clicked.connect(self._edit_rules)
+        el.addWidget(self.btn_commands)
+        el.addWidget(self.btn_rules)
+        el.addStretch(1)
+        root.addWidget(box_extra)
 
         # ---- the codes ------------------------------------------------------------------
         root.addWidget(hline())
@@ -134,6 +292,17 @@ class ConvertFieldToFinishDialog(QDialog):
 
         self._fill()
         self._recount()
+
+    def _edit_commands(self):
+        dlg = CodeCommandsDialog(self.commands, self)
+        if dlg.exec():
+            self.commands = dlg.get_commands()
+
+    def _edit_rules(self):
+        codes = [self.table.code_of(i, self.mapping) for i in range(len(self.table.rows))]
+        dlg = CorrectionRulesDialog(self.rules, codes, self)
+        if dlg.exec():
+            self.rules = dlg.get_rules()
 
     # ------------------------------------------------------------------ the table
     def _fill(self):
@@ -254,8 +423,8 @@ class ConvertFieldToFinishDialog(QDialog):
 
     # ------------------------------------------------------------------ answers
     def choices(self):
-        """(column map, ticked row indices, "replace" | "merge") - what the caller acts on."""
-        return self.mapping, self._ticked(), self.mode()
+        """(column map, ticked row indices, "replace" | "merge", commands, rules)"""
+        return self.mapping, self._ticked(), self.mode(), self.commands, self.rules
 
 
 class _CustomColumns(QWidget):

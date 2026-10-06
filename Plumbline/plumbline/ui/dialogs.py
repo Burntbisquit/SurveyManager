@@ -716,7 +716,16 @@ class WelcomeDialog(QDialog):
             b.setMinimumHeight(34)
             b.clicked.connect(lambda _=False, k=key: self._pick(k))
             lay.addWidget(b)
-        rec = [p for p in settings().get("recent_files") if Path(p).exists()]
+        seen = set()
+        rec = []
+        for p in settings().get("recent_files", []):
+            try:
+                res = str(Path(p).resolve())
+                if Path(res).exists() and res.casefold() not in seen:
+                    seen.add(res.casefold())
+                    rec.append(res)
+            except Exception:
+                pass
         if rec:
             lay.addWidget(QLabel("Recent projects"))
             self.lst = QListWidget()

@@ -27,10 +27,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt
-from PySide6.QtGui import QAction
-from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
-                               QLabel, QMessageBox, QRadioButton, QVBoxLayout)
+try:
+    from PySide6.QtCore import QObject, Qt
+    from PySide6.QtGui import QAction
+    from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
+                                   QLabel, QMessageBox, QRadioButton, QVBoxLayout)
+except ImportError:
+    QObject = object  # type: ignore
+    Qt = None  # type: ignore
+    QAction = None  # type: ignore
+    QDialog = object  # type: ignore
+    QApplication = QComboBox = QDialogButtonBox = QFormLayout = None  # type: ignore
+    QLabel = QMessageBox = QRadioButton = QVBoxLayout = None  # type: ignore
 
 from ..fieldwork import bridge as FB
 

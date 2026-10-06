@@ -62,6 +62,9 @@ class View3D(QWidget):
         self.cam = S.Camera(np.zeros(3), 30.0, 35.0, 1000.0, 40.0, True, 1.0)
         self.show_surface = self.show_points = self.show_lines = True
         self.show_wire = self.show_numbers = False
+        self.error_point_ids: set[int] = set()
+        self.hide_non_error_points: bool = False
+        self.dim_non_error_points: bool = False
         self._img: QImage | None = None
         self._dirty = True
         self._drag = None
@@ -123,6 +126,16 @@ class View3D(QWidget):
         self.invalidate()
         self.camera_changed.emit()
 
+    def center_on_point(self, x: float, y: float, z: float = 0.0, distance: float | None = None):
+        """Fix the 3D orbit camera target to a specific 3D point (unscaled world coordinates)."""
+        self.cam.target = np.array([float(x), float(y), float(z)], float)
+        if distance is not None:
+            self.cam.distance = max(float(distance), 5.0)
+        else:
+            self.cam.distance = min(self.cam.distance, 150.0)
+        self.invalidate()
+        self.camera_changed.emit()
+
     def set_option(self, name: str, value: bool):
         setattr(self, name, bool(value))
         self.invalidate()
@@ -146,7 +159,10 @@ class View3D(QWidget):
                                point_px=6.0 * dpr, line_px=1.6 * dpr, dark=theme.current() == "dark",
                                max_tris=int(60000 * self._lod) if lod else 0, max_points=int(30000 * self._lod) if lod else 0,
                                max_segments=int(40000 * self._lod) if lod else 0,
-                               selected=frozenset(self.state.sel_points), sel_rgb=QColor(theme.colors()["select"]).getRgb()[:3])
+                               selected=frozenset(self.state.sel_points), sel_rgb=QColor(theme.colors()["select"]).getRgb()[:3],
+                               error_point_ids=frozenset(self.error_point_ids),
+                               hide_non_error_points=getattr(self, "hide_non_error_points", False),
+                               dim_non_error_points=getattr(self, "dim_non_error_points", False))
         t0 = time.perf_counter()
         buf = S.render_orbit(sc, self.cam, W, H, opts)
         dt = time.perf_counter() - t0
@@ -173,9 +189,32 @@ class View3D(QWidget):
         p.setRenderHint(QPainter.Antialiasing, True)
         if self.show_numbers:
             self._paint_numbers(p, sc)
+        self._paint_error_flags(p, sc)
         self._paint_gizmo(p)
         self._paint_readout(p, sc)
         p.end()
+
+    def _paint_error_flags(self, p, sc):
+        if not self.error_point_ids or not len(sc.pts_xyz) or not len(sc.pts_id):
+            return
+        W, H = self.width(), self.height()
+        s = self.cam.project(sc.pts_xyz, W, H)
+        ok = (s[:, 2] > self.cam.near) & np.isfinite(s[:, 0]) & (s[:, 0] > 0) & (s[:, 0] < W) & (s[:, 1] > 0) & (s[:, 1] < H)
+        idx = np.nonzero(ok)[0]
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing, True)
+        pen_pole = QPen(QColor(255, 60, 60, 230), 2.0)
+        for i in idx:
+            pid = sc.pts_id[i]
+            if pid in self.error_point_ids:
+                sx, sy = s[i, 0], s[i, 1]
+                p.setPen(pen_pole)
+                p.drawLine(QPointF(sx, sy), QPointF(sx, sy - 20))
+                p.setBrush(QColor(255, 60, 60, 230))
+                p.setPen(QPen(QColor(255, 255, 255), 1.0))
+                poly = [QPointF(sx, sy - 20), QPointF(sx + 10, sy - 15), QPointF(sx, sy - 10), QPointF(sx, sy - 20)]
+                p.drawPolygon(poly)
+        p.restore()
 
     def _paint_note(self, p, text):
         p.setPen(QColor(theme.colors()["dim"]))
@@ -238,14 +277,16 @@ class View3D(QWidget):
     def mousePressEvent(self, ev):
         self.setFocus()
         b, m = ev.button(), ev.modifiers()
-        if b == Qt.LeftButton and not (m & Qt.ShiftModifier):
+        if b == Qt.LeftButton and not (m & (Qt.ShiftModifier | Qt.ControlModifier)):
             self._drag = "orbit"
-        elif b in (Qt.LeftButton, Qt.RightButton, Qt.MiddleButton):
+        elif (b == Qt.LeftButton and (m & Qt.ShiftModifier)) or b in (Qt.RightButton, Qt.MiddleButton):
             self._drag = "pan"
+        elif (b == Qt.LeftButton and (m & Qt.ControlModifier)):
+            self._drag = "zoom"
         else:
             return
         self._last = ev.position()
-        self.setCursor(Qt.ClosedHandCursor if self._drag == "orbit" else Qt.SizeAllCursor)
+        self.setCursor(Qt.ClosedHandCursor if self._drag == "orbit" else (Qt.SizeVerCursor if self._drag == "zoom" else Qt.SizeAllCursor))
 
     def mouseMoveEvent(self, ev):
         if not self._drag:
@@ -255,6 +296,8 @@ class View3D(QWidget):
         self._last = pos
         if self._drag == "orbit":
             self.cam.orbit(-dx * 0.4, dy * 0.4)               # drag right: the scene turns clockwise; drag down: look from higher up
+        elif self._drag == "zoom":
+            self.cam.zoom(1.0 - dy * 0.01)
         else:
             self.cam.pan(dx, dy, self.height())
         self._interact()
@@ -269,7 +312,7 @@ class View3D(QWidget):
         self.fit()
 
     def wheelEvent(self, ev):
-        d = ev.angleDelta().y()
+        d = ev.angleDelta().y() or ev.angleDelta().x() or ev.pixelDelta().y()
         if d:
             self.cam.zoom(1.18 ** (d / 120.0))
             self._interact()

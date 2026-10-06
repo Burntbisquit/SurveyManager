@@ -105,6 +105,9 @@ class DisplayOptions:
     label_px: float = 11.0
     line_px: float = 1.0
     attribution: str = ""
+    error_point_ids: set[int] = field(default_factory=set)
+    hide_non_error_points: bool = False
+    dim_non_error_points: bool = False
 
 
 # ----------------------------------------------------------------------------- cached scene geometry
@@ -675,32 +678,66 @@ class SceneRenderer:
         idx = np.nonzero(m)[0]
         if not len(idx):
             return
+
+        err_set = getattr(opts, "error_point_ids", set()) or set()
+        hide_non_err = getattr(opts, "hide_non_error_points", False)
+        dim_non_err = getattr(opts, "dim_non_error_points", False)
+
+        if hide_non_err and err_set:
+            err_mask = np.isin(sc.pt_ids[idx], list(err_set))
+            idx = idx[err_mask]
+            if not len(idx):
+                return
+
         S = view.to_screen_arr(sc.pt_xy[idx])
         s = opts.point_px / 2.0
         lidx = sc.pt_layer_idx[idx]
         # level of detail: when points are packed closer than their own symbols, shrink them, then drop them
         spacing = math.sqrt(max(view.w * view.h, 1.0) / max(len(idx), 1))
-        if spacing < 2.2 and len(idx) > 2000:
+        if spacing < 2.2 and len(idx) > 2000 and not hide_non_err:
             self.points_hidden = len(idx)
             return
-        crosses = spacing >= 11
+        crosses = spacing >= 11 or hide_non_err
         dot_w = 3.0 if spacing >= 6 else 2.0 if spacing >= 3.5 else 1.4
         for li in np.unique(lidx):
             sel = lidx == li
             A = S[sel]
             n = len(A)
             rgb = theme.display_color(sc.pt_layer_rgb[li])
+            alpha = 70 if (dim_non_err and err_set) else 255
             if crosses:
                 xy = np.empty((n * 4, 2))
                 xy[0::4] = A + [-s, 0]
                 xy[1::4] = A + [s, 0]
                 xy[2::4] = A + [0, -s]
                 xy[3::4] = A + [0, s]
-                p.setPen(pen_for(rgb, 1.0))
+                p.setPen(pen_for(rgb, 1.0, alpha=alpha))
                 p.drawPath(make_path(xy, np.tile([0, 1, 0, 1], n)))
             dot = np.repeat(A, 2, axis=0)
-            p.setPen(pen_for(rgb, dot_w))
+            p.setPen(pen_for(rgb, dot_w, alpha=alpha))
             p.drawPath(make_path(dot, np.tile([0, 1], n)))
+
+        # Draw error flag pins on points with active issues
+        if err_set:
+            err_mask = np.isin(sc.pt_ids[idx], list(err_set))
+            if err_mask.any():
+                err_S = S[err_mask]
+                p.save()
+                p.setRenderHint(QPainter.Antialiasing, True)
+                p.setPen(pen_for((255, 60, 60), 1.8))
+                p.setBrush(QBrush(QColor(255, 60, 60, 80)))
+                for ex, ey in err_S:
+                    p.drawEllipse(QPointF(ex, ey), s + 4, s + 4)
+                    # Draw flagpole and triangle flag
+                    p.drawLine(QPointF(ex, ey - s - 1), QPointF(ex, ey - s - 14))
+                    flag = QPainterPath()
+                    flag.moveTo(ex, ey - s - 14)
+                    flag.lineTo(ex + 8, ey - s - 10)
+                    flag.lineTo(ex, ey - s - 6)
+                    flag.closeSubpath()
+                    p.fillPath(flag, QBrush(QColor(255, 60, 60)))
+                p.restore()
+
         if not crosses:
             return
         # labels (decluttered)

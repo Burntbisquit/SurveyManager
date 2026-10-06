@@ -28,7 +28,8 @@ table, one window per half of the work: reduce the download, then draw it.
 ## Install and run
 
 **Windows, and new to the command line?** Follow [`docs/WINDOWS_SETUP.md`](docs/WINDOWS_SETUP.md). It checks your Python (3.14 preferred, 3.13 also works) and PATH, then you
-either type five commands in PowerShell or double-click `install_windows.bat`. After that, double-click `Plumbline.bat` whenever you want to work.
+either type five commands in PowerShell or double-click `install_windows.bat`. After that, double-click `Plumbline.bat` whenever you want to work -
+or `Update and Run Plumbline.bat` to fetch the latest code with git first, refresh the libraries only when `requirements.txt` changed, and then start the program (see Step 5 of the guide).
 
 **Linux / macOS, or if you like terminals:**
 
@@ -381,6 +382,7 @@ plumbline/
              view3d (orbit view), depthview (rotatable elevation / depth view), fieldwork_window + job_setup (the merge)
   sample.py  the synthetic sample site          cli.py  command line          doctor.py  `plumbline doctor` health check
 Plumbline.bat, install_windows.bat   Windows launcher and one-time setup (see docs/WINDOWS_SETUP.md)
+Update and Run Plumbline.bat         one-click update + launch: git pull, reuse .venv, pip only when requirements.txt changed
 tests/       228 automated tests (core maths, I/O round trips, plugins, the 3D renderer, an end-to-end Qt suite driving real mouse events,
              portability checks, and the merge: the field-data core importing with Qt sabotaged, crew decoding, the job folder's cancel
              promise, and the two samples)

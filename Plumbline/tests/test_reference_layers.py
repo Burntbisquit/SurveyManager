@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+pytest.importorskip("PySide6")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -319,3 +320,82 @@ def test_the_points_of_a_role_can_be_written_and_read_back_as_that_role(tmp_path
     assert stats["points"] == 2 and stats["renumbered"] == 0
     back = [(p.number, round(p.z, 3), p.desc, p.layer) for p in REF.reference_points(pr2, "stakeout")]
     assert back == [("4", 512.25, "STAKE CURB", "STAKE-OUT"), ("5", 512.75, "STAKE CURB", "STAKE-OUT")]
+
+
+def test_reference_folder_dialog_lists_and_filters_csvs(tmp_path, qapp):
+    from plumbline.ui.app_state import AppState
+    from plumbline.ui.import_export import Importer, ReferenceFolderDialog
+
+    # Setup folder with multiple CSV files across subfolders
+    (tmp_path / "Crew 1").mkdir()
+    (tmp_path / "Crew 2").mkdir()
+    f1 = _csv(tmp_path / "Crew 1" / "crew1.csv", [(1, BASE_N + 1, BASE_E + 1, 501.0, "CP")])
+    f2 = _csv(tmp_path / "Crew 2" / "crew2.csv", [(2, BASE_N + 2, BASE_E + 2, 502.0, "CP")])
+    f3 = _csv(tmp_path / "root.csv", [(3, BASE_N + 3, BASE_E + 3, 503.0, "CP")])
+
+    st = AppState(_project())
+    dlg = ReferenceFolderDialog(st, tmp_path, None)
+
+    # All 3 files listed in the table
+    assert len(dlg.files()) == 3
+    assert dlg.chk_table.rowCount() == 3
+    assert len(dlg.selected_files()) == 3
+    assert "3 of 3 selected" in dlg.lbl_file_count.text()
+
+    # Deselect one file
+    dlg._checkboxes[0].setChecked(False)
+    assert len(dlg.selected_files()) == 2
+    assert "2 of 3 selected" in dlg.lbl_file_count.text()
+
+    # Select none
+    dlg._select_none()
+    assert len(dlg.selected_files()) == 0
+    assert "0 of 3 selected" in dlg.lbl_file_count.text()
+    assert dlg.validate() == "Please select at least one file to import."
+
+    # Select all
+    dlg._select_all()
+    assert len(dlg.selected_files()) == 3
+    assert dlg.validate() is None
+
+    # Partial import using selected_files
+    selected = [f1, f3]
+    class _Win:
+        state = st
+        _job_root_choice = None
+    tally = Importer(_Win()).import_reference_folder(tmp_path, "control", selected_files=selected)
+    assert tally["files"] == 2
+    assert tally["points"] == 2
+
+
+def test_folder_points_preview_dialog(tmp_path, qapp):
+    from plumbline.ui.import_export import FolderPointsPreviewDialog
+
+    (tmp_path / "Sub").mkdir()
+    f1 = _csv(tmp_path / "Sub" / "crew1.csv", [
+        (101, BASE_N + 10, BASE_E + 20, 510.5, "TREE 12IN"),
+        (102, BASE_N + 30, BASE_E + 40, 511.0, "EP"),
+    ])
+    f2 = _csv(tmp_path / "control.csv", [
+        (1, BASE_N, BASE_E, 500.0, "BM1"),
+    ])
+
+    dlg = FolderPointsPreviewDialog([f1, f2], None)
+    assert len(dlg.all_points) == 3
+    assert dlg.table.rowCount() == 3
+    assert "3 points" in dlg.lbl_summary.text()
+
+    # Test filtering points by description
+    dlg.ed_filter.setText("TREE")
+    assert dlg.table.rowCount() == 1
+    assert dlg.table.item(0, 0).text() == "101"
+    assert dlg.table.item(0, 4).text() == "TREE 12IN"
+
+    # Test filtering by point number
+    dlg.ed_filter.setText("1")
+    # Matches '101', '102', and '1'
+    assert dlg.table.rowCount() == 3
+
+    # Clear filter
+    dlg.ed_filter.setText("")
+    assert dlg.table.rowCount() == 3

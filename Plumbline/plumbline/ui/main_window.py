@@ -32,10 +32,9 @@ from .app_state import AppState
 from .canvas import CanvasView
 from .crs_dialog import CRSDialog
 from .depthview import DepthPanel
-from .check_dock import CheckFieldworkDock
 from .dialogs import (AboutDialog, FeatureCodesDialog, HelpDialog, PluginsDialog, QADialog, ReportViewer, SettingsDialog,
                       TransformDialog, TraverseDialog, WelcomeDialog)
-from .docks import ConsoleDock, LayersDock, MessagesDock, PointsDock, PropertiesDock, SurfacesDock
+from .docks import ConsoleDock, FieldBookDock, LayersDock, MessagesDock, PointsDock, PropertiesDock, SurfacesDock
 from .groups_dock import GroupsDock
 from .export_dialogs import export_dxf, export_gis, export_kml, export_landxml, export_points_csv
 from .f2f_dialog import ConvertFieldToFinishDialog
@@ -91,10 +90,84 @@ class ParamDialog(FormDialog):
         return out
 
 
+class DockTitleBar(QWidget):
+    """Custom dock widget title bar with Auto-Hide / Pin toggle, title, and close buttons."""
+
+    def __init__(self, dock: QDockWidget, title: str):
+        super().__init__(dock)
+        self.dock = dock
+        self.title_text = title
+        self.pinned = True
+
+        self.lay = QHBoxLayout(self)
+        self.lay.setContentsMargins(4, 2, 4, 2)
+        self.lay.setSpacing(4)
+
+        self.lbl_title = QLabel(title)
+        self.lbl_title.setStyleSheet("font-weight: 600; font-size: 11px;")
+        self.lay.addWidget(self.lbl_title, 1)
+
+        self.btn_pin = QToolButton(self)
+        self.btn_pin.setCheckable(True)
+        self.btn_pin.setChecked(True)
+        self.btn_pin.setToolTip("Pin palette (keep open) / Unpin to auto-hide")
+        self.btn_pin.setText("📌")
+        self.btn_pin.setStyleSheet("QToolButton { border: none; background: transparent; font-size: 11px; padding: 1px 2px; } "
+                                   "QToolButton:hover { background: rgba(128, 128, 128, 0.25); border-radius: 2px; }")
+        self.btn_pin.toggled.connect(self._on_pin_clicked)
+        self.lay.addWidget(self.btn_pin)
+
+        self.btn_close = QToolButton(self)
+        self.btn_close.setText("✕")
+        self.btn_close.setToolTip("Close palette")
+        self.btn_close.setStyleSheet("QToolButton { border: none; background: transparent; font-size: 10px; padding: 1px 2px; font-weight: bold; } "
+                                     "QToolButton:hover { background: rgba(255, 60, 60, 0.3); border-radius: 2px; }")
+        self.btn_close.clicked.connect(self.dock.close)
+        self.lay.addWidget(self.btn_close)
+
+    def set_pinned_state(self, checked: bool):
+        self.pinned = checked
+        self.btn_pin.blockSignals(True)
+        self.btn_pin.setChecked(checked)
+        self.btn_pin.blockSignals(False)
+
+        w = self.dock.widget()
+        if checked:
+            self.btn_pin.setText("📌")
+            self.btn_pin.setToolTip("Pinned (click to auto-hide)")
+            self.lbl_title.setVisible(True)
+            self.btn_close.setVisible(True)
+            if w:
+                w.setVisible(True)
+        else:
+            self.btn_pin.setText("📍")
+            self.btn_pin.setToolTip("Auto-hide collapsed (click pin to expand)")
+            self.lbl_title.setVisible(False)
+            self.btn_close.setVisible(False)
+            if w:
+                w.setVisible(False)
+
+    def _on_pin_clicked(self, checked: bool):
+        mw = self.dock.parent()
+        if isinstance(mw, QMainWindow) and hasattr(mw, "set_dock_group_pinned"):
+            mw.set_dock_group_pinned(self.dock, checked)
+        else:
+            self.set_pinned_state(checked)
+
+    def mousePressEvent(self, event):
+        if not self.pinned:
+            mw = self.dock.parent()
+            if isinstance(mw, QMainWindow) and hasattr(mw, "set_dock_group_pinned"):
+                mw.set_dock_group_pinned(self.dock, True)
+            else:
+                self.set_pinned_state(True)
+        super().mousePressEvent(event)
+
+
 class MainWindow(QMainWindow):
-    def __init__(self, project: Project | None = None, open_path: str | None = None, welcome: bool = False):
+    def __init__(self, project: Project | AppState | None = None, open_path: str | None = None, welcome: bool = False):
         super().__init__()
-        self.state = AppState(project)
+        self.state = project if isinstance(project, AppState) else AppState(project)
         self.setWindowIcon(icons.app_icon())
         self.resize(1480, 920)
         self._icon_actions: list = []
@@ -108,8 +181,8 @@ class MainWindow(QMainWindow):
         self._build_tools()
         self._build_docks()
         self._build_actions()
-        self._build_menus()
         self._build_toolbars()
+        self._build_menus()
         self._build_statusbar()
         self._wire()
         self.rebuild_plugins_menu(load=True)
@@ -137,8 +210,36 @@ class MainWindow(QMainWindow):
         d.setObjectName(name)
         d.setWidget(widget)
         d.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable | QDockWidget.DockWidgetClosable)
+        title_bar = DockTitleBar(d, title)
+        d.setTitleBarWidget(title_bar)
         self.addDockWidget(area, d)
         return d
+
+    def set_dock_group_pinned(self, source_dock: QDockWidget, pinned: bool):
+        """Set pinned / collapsed state for all tabified docks in the palette group."""
+        area = self.dockWidgetArea(source_dock)
+        group = [source_dock] + self.tabifiedDockWidgets(source_dock)
+        for d in self.findChildren(QDockWidget):
+            if d.isVisible() and self.dockWidgetArea(d) == area and d not in group:
+                group.append(d)
+
+        for d in group:
+            tb = d.titleBarWidget()
+            if isinstance(tb, DockTitleBar):
+                tb.set_pinned_state(pinned)
+
+        if pinned:
+            if area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                width = 340 if area == Qt.LeftDockWidgetArea else 280
+                self.resizeDocks(group, [width] * len(group), Qt.Horizontal)
+            elif area == Qt.BottomDockWidgetArea:
+                self.resizeDocks(group, [210] * len(group), Qt.Vertical)
+        else:
+            # Collapse down to a compact box only showing the pin
+            if area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                self.resizeDocks(group, [28] * len(group), Qt.Horizontal)
+            elif area == Qt.BottomDockWidgetArea:
+                self.resizeDocks(group, [28] * len(group), Qt.Vertical)
 
     def _build_docks(self):
         st, cv = self.state, self.canvas
@@ -146,31 +247,41 @@ class MainWindow(QMainWindow):
         self.groups = GroupsDock(st)
         self.surfaces = SurfacesDock(st)
         self.imagery = ImageryDock(st, cv)
+        self.fieldbook_dock = FieldBookDock(st)
         self.props = PropertiesDock(st)
         self.points = PointsDock(st)
         self.messages = MessagesDock(st)
         self.console = ConsoleDock(st, cv)
-        # the field-data checks: its own dock, next to the point list, opened from View > Panels
-        self.check = CheckFieldworkDock(st, job_root=self._job_folder,
-                                        on_convert=self.convert_field_to_finish)
+
+        # Left dock area: Layers, Surfaces, Imagery, Groups, Points
         self.d_layers = self._dock("Layers", self.layers, Qt.LeftDockWidgetArea, "layers")
         self.d_surf = self._dock("Surfaces", self.surfaces, Qt.LeftDockWidgetArea, "surfaces")
-        self.d_groups = self._dock("Groups", self.groups, Qt.LeftDockWidgetArea, "groups")
         self.d_img = self._dock("Imagery", self.imagery, Qt.LeftDockWidgetArea, "imagery")
+        self.d_groups = self._dock("Groups", self.groups, Qt.LeftDockWidgetArea, "groups")
+        self.d_pts = self._dock("Points", self.points, Qt.LeftDockWidgetArea, "points")
+
+        # Right dock area: Properties, Field Book
         self.d_props = self._dock("Properties", self.props, Qt.RightDockWidgetArea, "props")
-        self.d_pts = self._dock("Points", self.points, Qt.BottomDockWidgetArea, "points")
+        self.d_fieldbook = self._dock("Field Book", self.fieldbook_dock, Qt.RightDockWidgetArea, "fieldbook")
+
+        # Bottom dock area: Messages, Python Console
         self.d_msg = self._dock("Messages", self.messages, Qt.BottomDockWidgetArea, "messages")
         self.d_con = self._dock("Python Console", self.console, Qt.BottomDockWidgetArea, "console")
-        self.d_check = self._dock("Check Fieldwork", self.check, Qt.BottomDockWidgetArea, "check")
+
         self.tabifyDockWidget(self.d_layers, self.d_surf)
         self.tabifyDockWidget(self.d_surf, self.d_img)
+        self.tabifyDockWidget(self.d_img, self.d_groups)
+        self.tabifyDockWidget(self.d_groups, self.d_pts)
         self.d_layers.raise_()
-        self.tabifyDockWidget(self.d_pts, self.d_msg)
+
+        self.tabifyDockWidget(self.d_props, self.d_fieldbook)
+        self.d_props.raise_()
+
         self.tabifyDockWidget(self.d_msg, self.d_con)
-        self.tabifyDockWidget(self.d_con, self.d_check)
-        self.d_pts.raise_()
-        self.resizeDocks([self.d_layers, self.d_props], [350, 270], Qt.Horizontal)
-        self.resizeDocks([self.d_pts], [210], Qt.Vertical)
+        self.d_msg.raise_()
+
+        self.resizeDocks([self.d_layers, self.d_props], [340, 280], Qt.Horizontal)
+        self.resizeDocks([self.d_msg], [160], Qt.Vertical)
         self.d_con.hide()
         # the 3D view and the depth view: docked next to the plan the first time they are opened (see _toggle_view_dock)
         self.scene_provider = SceneProvider(st)
@@ -269,12 +380,20 @@ class MainWindow(QMainWindow):
             self.tool_group.addAction(a)
             self.tool_acts[key] = a
         # ---- survey
-        self.a_qa = A("&Data Quality Check...", self.qa_dialog, icon="warning")
+        self.a_fix_points = A("Fix &Point Errors...", self.open_fix_point_errors, icon="check_points",
+                              tip="Fix Point Errors (closeness duplicates, unknown codes, descriptions)")
+        self.a_fix_linework = A("Fix &Linework...", self.open_fix_linework, icon="check_lines",
+                                tip="Fix Linework (missing start/end, curve commands, bowties, reclass/reorder)")
+        self.a_qa = self.a_fix_points
         self.a_codes = A("Apply &Feature Codes to All Points", self.apply_codes, icon="tag")
         self.a_linework = A("Process &Linework", self.process_linework, icon="polyline")
-        self.a_f2f = A("Convert Field Book...", self.convert_field_to_finish, icon="tag",)
-        self.a_fieldbook = A("Field Book...", self.convert_fieldbook, icon="layers",
-                       tip="Read a Carlson Field-to-Finish code table (the office's own codes, layers and symbols) into this job's feature codes")
+        self.a_join_points = A("&Create Linework from Selected Points...", self.join_selected_points_dialog, icon="polyline",
+                               tip="Recode selected points in description coding to form a linework figure")
+        self.a_edit_linework_coding = A("&Edit Linework Coding (Point Coder)...", self.edit_linework_coding_dialog, icon="polyline",
+                                        tip="Inspect, reverse, close/open, or recode figure points")
+        self.a_fieldbook = A("&Field Book...", self.open_fieldbook_dialog, icon="layers",
+                             tip="Field Book: Convert Carlson code table, Select/Pull field book, or View field book report")
+        self.a_f2f = self.a_fieldbook
         self.a_codetable = A("Feature Code &Table...", self.codes_dialog)
         self.a_cogo = A("&COGO — Traverse and Inverse...", self.cogo_dialog, icon="inverse")
         # ---- surface
@@ -337,11 +456,20 @@ class MainWindow(QMainWindow):
 
     def _build_menus(self):
         mb = self.menuBar()
-        m = mb.addMenu("&File")
+        self._top_menus = []
+        self._all_menus = []
+        def add_menu(title, parent=mb):
+            menu = parent.addMenu(title)
+            self._all_menus.append(menu)
+            if parent is mb:
+                self._top_menus.append(menu)
+            return menu
+
+        m = add_menu("&File")
         m.addActions([self.a_new, self.a_open])
-        m_samp = m.addMenu("Open Sa&mple Project")
+        m_samp = add_menu("Open Sa&mple Project", m)
         m_samp.addActions([self.a_sample, self.a_sample_real])
-        self.m_recent = m.addMenu("Open &Recent")
+        self.m_recent = add_menu("Open &Recent", m)
         self.m_recent.aboutToShow.connect(self._fill_recent)
         m.addSeparator()
         m.addActions([self.a_save, self.a_saveas])
@@ -349,41 +477,45 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_project_folder)
         m.addSeparator()
         m.addAction(self.a_import)
-        me = m.addMenu("&Export")
+        me = add_menu("&Export", m)
         me.addActions([self.a_exp_dxf, self.a_exp_lx, self.a_exp_gis, self.a_exp_kml, self.a_exp_csv])
         self.m_export = me
         m.addAction(self.a_exp_png)
         m.addSeparator()
         m.addAction(self.a_quit)
-        m = mb.addMenu("&Edit")
+        m = add_menu("&Edit")
         m.addActions([self.a_undo, self.a_redo])
         m.addSeparator()
         m.addActions([self.a_selall, self.a_delete, self.a_find])
         m.addSeparator()
         m.addActions([self.a_transform, self.a_settings])
-        m = mb.addMenu("&View")
+        m = add_menu("&View")
         m.addActions([self.a_ext, self.a_zsel, self.a_zin, self.a_zout, self.tool_acts["zoom_window"]])
         m.addSeparator()
         m.addActions([self.a_3d, self.a_depth, self.tool_acts["depth_line"]])
         m.addSeparator()
-        mv = m.addMenu("&Show")
+        mv = add_menu("&Show", m)
         mv.addActions(list(self.view_toggles.values()))
-        ms = m.addMenu("S&nap")
+        ms = add_menu("S&nap", m)
         ms.addAction(self.a_snap)
         ms.addSeparator()
         ms.addActions(list(self.snap_acts.values()))
         m.addAction(self.a_theme)
         m.addSeparator()
-        md = m.addMenu("&Panels")
-        for d in (self.d_layers, self.d_surf, self.d_img, self.d_props, self.d_pts, self.d_msg, self.d_con,
-                  self.d_check):
+        mtb = add_menu("&Toolbars", m)
+        mtb.addAction(self.tb_draw_tools.toggleViewAction())
+        mtb.addAction(self.tb_survey.toggleViewAction())
+        mtb.addAction(self.tb_draw_controls.toggleViewAction())
+        md = add_menu("&Panels", m)
+        for d in (self.d_layers, self.d_surf, self.d_img, self.d_groups, self.d_pts, self.d_props, self.d_fieldbook,
+                  self.d_msg, self.d_con, self.d_3d, self.d_depth):
             md.addAction(d.toggleViewAction())
         md.addSeparator()
         md.addMenu(self.points.col_menu)          # the point list's own columns live here too
-        m = mb.addMenu("&Draw")
+        m = add_menu("&Draw")
         for k in ("select", "polyline", "arc", "point", "text", "measure", "area", "move"):
             m.addAction(self.tool_acts[k])
-        m = mb.addMenu("&Survey")
+        m = add_menu("&Survey")
         # the field-data half of the program opens from here
         m.addActions([self.a_fw_manager, self.a_fw_import])
         m.addSeparator()
@@ -391,117 +523,86 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         m.addAction(self.a_file_crs)
         m.addSeparator()
-        m.addActions([self.a_qa, self.a_codes, self.a_linework, self.a_f2f])
+        m.addActions([self.a_fix_points, self.a_fix_linework, self.a_fieldbook, self.a_codes, self.a_linework, self.a_join_points, self.a_edit_linework_coding])
         m.addSeparator()
         m.addActions([self.a_cogo, self.a_transform])
-        m = mb.addMenu("S&urface")
+        m = add_menu("S&urface")
         m.addActions([self.a_sf_new, self.a_sf_edit, self.a_sf_ctr, self.a_sf_vol, self.a_sf_prof, self.a_sf_rep])
-        m = mb.addMenu("&Imagery")
+        m = add_menu("&Imagery")
         m.addAction(self.a_img_add)
         m.addSeparator()
-        m.addActions([self.a_img_ge_in, self.a_exp_kml])
-        m.addSeparator()
-        m.addActions([self.a_gmaps, self.a_gmaps_map, self.a_gmaps_copy])
-        m = mb.addMenu("&Coordinates")
+        m.addActions([self.a_gmaps, self.a_gmaps_copy])
+        m = add_menu("&Coordinates")
         m.addActions([self.a_crs, self.a_calc])
-        m = mb.addMenu("&Reports")
+        m = add_menu("&Reports")
         m.addActions([self.a_r_pts, self.a_r_lines, self.a_r_qa, self.a_r_audit, self.a_r_crs, self.a_sf_rep])
         # (there is no Tools menu: its four items were a folder, a window and two imports, and
         #  each of those now sits in the menu it belongs to - File and Survey)
-        self.m_plugins = mb.addMenu("&Plugins")
-        m = mb.addMenu("&Help")
+        self.m_plugins = add_menu("&Plugins")
+        m = add_menu("&Help")
         m.addActions([self.a_help, self.a_licence, self.a_about])
 
     def _build_toolbars(self):
-        def tb_left(title, name):
+        def tb_top(title, name):
             t = QToolBar(title, self)
             t.setObjectName(name)
             t.setIconSize(QSize(20, 20))
-            t.setMovable(False)
-            self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, t)
+            t.setMovable(True)
+            self.addToolBar(Qt.ToolBarArea.TopToolBarArea, t)
             return t
 
-        def tb_bottom(name):
-            t = QToolBar(name, self)
-            t.setObjectName(name)
-            t.setIconSize(QSize(20, 20))
-            t.setMovable(False)
-            self.addToolBar(Qt.BottomToolBarArea, t)
-            return t
+        # TOP toolbars: Draw Tools + Survey (Row 1), Draw Controls (Row 2)
+        self.tb_draw_tools = tb_top("Draw Tools", "tb_draw_tools")
+        for k in ("pan", "select", "polyline", "arc", "point", "text", "measure", "area", "move"):
+            self.tb_draw_tools.addAction(self.tool_acts[k])
+        self.tb_draw_tools.addSeparator()
+        self.tb_draw_tools.addActions([self.tool_acts["zoom_window"], self.a_ext, self.a_zsel])
+        self.tb_draw_tools.addSeparator()
+        self.tb_draw_tools.addAction(self.a_snap)
 
-        # LEFT toolbar: File + Drawing tools + Survey + Imagery + 3d/depth
-        t = tb_left("File", "tb_file")
-        t.addActions([self.a_new, self.a_open, self.a_save, self.a_import])
-        t.addSeparator()
-        t.addActions([self.a_undo, self.a_redo])
+        self.tb_survey = tb_top("Survey", "tb_survey")
+        self.tb_survey.addActions([self.a_crs, self.a_fix_points, self.a_fix_linework, self.a_fieldbook, self.a_sf_new, self.a_sf_ctr, self.a_sf_vol, self.a_sf_prof])
+        self.tb_survey.addSeparator()
+        self.tb_survey.addActions([self.a_img_add, self.a_gmaps])
+        self.tb_survey.addSeparator()
+        self.tb_survey.addActions([self.a_3d, self.a_depth])
 
-        t = tb_left("Draw Tools", "tb_draw_tools")
-        for k in ("select", "polyline", "arc", "point", "text", "measure", "area", "move"):
-            t.addAction(self.tool_acts[k])
-        t.addSeparator()
-        t.addActions([self.tool_acts["zoom_window"], self.a_ext, self.a_zsel])
-        t.addSeparator()
-        t.addAction(self.a_snap)
+        # Place draw controls on a new line below other toolbars
+        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
+        self.tb_draw_controls = tb_top("Draw Controls", "tb_draw_controls")
+        w_draw = QWidget()
+        lay_draw = QHBoxLayout(w_draw)
+        lay_draw.setContentsMargins(4, 1, 4, 1)
 
-        t = tb_left("Survey", "tb_survey")
-        t.addActions([self.a_crs, self.a_qa, self.a_linework, self.a_sf_new, self.a_sf_ctr, self.a_sf_vol, self.a_sf_prof])
-        t.addSeparator()
-        t.addActions([self.a_img_add, self.a_gmaps])
-        t.addSeparator()
-        t.addActions([self.a_3d, self.a_depth])
-
-        # BOTTOM toolbar with tabs for draw controls and survey controls
-        b = tb_bottom("tb_bottom")
-        # Create a stacked widget for tabs
-        from PySide6.QtWidgets import QStackedWidget, QWidget
-        self.bottom_tabs = QStackedWidget()
-        b.addWidget(self.bottom_tabs)
-
-        # Tab 1: Draw controls
-        draw_widget = QWidget()
-        draw_layout = QVBoxLayout(draw_widget)
-        draw_layout.addWidget(QLabel(" Layer: "))
+        lay_draw.addWidget(QLabel("Layer:"))
         self.cmb_layer = QComboBox()
-        self.cmb_layer.setMinimumWidth(190)
+        self.cmb_layer.setMinimumWidth(160)
         self.cmb_layer.setToolTip("Layer new objects are drawn on")
-        draw_layout.addWidget(self.cmb_layer)
-        draw_layout.addWidget(QLabel("   Point description: "))
+        lay_draw.addWidget(self.cmb_layer)
+
+        lay_draw.addWidget(QLabel(" Desc:"))
         self.ed_desc = QLineEdit()
-        self.ed_desc.setPlaceholderText("e.g. EP  or  TREE 18")
-        self.ed_desc.setMaximumWidth(150)
-        draw_layout.addWidget(self.ed_desc)
-        draw_layout.addWidget(QLabel("   New points are: "))
+        self.ed_desc.setPlaceholderText("e.g. EP")
+        self.ed_desc.setMaximumWidth(120)
+        lay_draw.addWidget(self.ed_desc)
+
+        lay_draw.addWidget(QLabel(" Type:"))
         self.cmb_ptrole = QComboBox()
-        self.cmb_ptrole.setMinimumWidth(180)
+        self.cmb_ptrole.setMinimumWidth(140)
         self.cmb_ptrole.setToolTip("What the point tool drops.\n\n"
                                    "Reference points (stake-out / control / other) go on their own layer with their own\n"
                                    "point numbers, and are kept out of the fieldwork list and the data-quality checks.")
-        self.cmb_ptrole.addItem("Field data (the fieldwork list)", "")
+        self.cmb_ptrole.addItem("Field data", "")
         for role in REF.ROLES:
-            self.cmb_ptrole.addItem(f"{REF.ROLE_LABELS[role]} (reference)", role)
-        draw_layout.addWidget(self.cmb_ptrole)
-        draw_layout.addWidget(QLabel("   Command: "))
+            self.cmb_ptrole.addItem(f"{REF.ROLE_LABELS[role]}", role)
+        lay_draw.addWidget(self.cmb_ptrole)
+
+        lay_draw.addWidget(QLabel(" Command:"))
         self.ed_cmd = QLineEdit()
-        self.ed_cmd.setPlaceholderText("N,E   @dN,dE   @dist<bearing   or a point number  - then Enter")
-        self.ed_cmd.setMinimumWidth(360)
-        draw_layout.addWidget(self.ed_cmd)
-        self.bottom_tabs.addWidget(draw_widget)
-
-        # Tab 2: Survey tools (could be minimal or empty for now)
-        survey_widget = QWidget()
-        survey_layout = QVBoxLayout(survey_widget)
-        survey_layout.addWidget(QLabel("Survey tools placeholder"))
-        self.bottom_tabs.addWidget(survey_widget)
-
-        # Set the default tab
-        self.bottom_tabs.setCurrentIndex(0)
-
-        # Also add the old tb_survey actions to the bottom toolbar's second tab
-        # or keep them in the left toolbar
-        # For now, just note they're in the left toolbar
-
-        # Note: the old tb_draw is no longer needed as its controls are in the bottom tab 1
-        # The old tb_survey is also moved to the left toolbar
+        self.ed_cmd.setPlaceholderText("N,E  @dN,dE  @dist<bearing  point#  - Enter")
+        self.ed_cmd.setMinimumWidth(260)
+        lay_draw.addWidget(self.ed_cmd)
+        self.tb_draw_controls.addWidget(w_draw)
 
     def _build_statusbar(self):
         sb = self.statusBar()
@@ -1098,7 +1199,16 @@ class MainWindow(QMainWindow):
 
     def _fill_recent(self):
         self.m_recent.clear()
-        rec = [p for p in settings().get("recent_files") if Path(p).exists()]
+        seen = set()
+        rec = []
+        for p in settings().get("recent_files", []):
+            try:
+                res = str(Path(p).resolve())
+                if Path(res).exists() and res.casefold() not in seen:
+                    seen.add(res.casefold())
+                    rec.append(res)
+            except Exception:
+                pass
         for p in rec:
             self.m_recent.addAction(Path(p).name, lambda p=p: self.open_project_path(p)).setToolTip(p)
         if not rec:
@@ -1234,19 +1344,30 @@ class MainWindow(QMainWindow):
             self.canvas.invalidate()
 
     # ================================================================== survey
+    def open_fix_point_errors(self):
+        """Survey > Fix Point Errors: open the dedicated Fix Point Errors workbench."""
+        from .qa_workspace import FixPointErrorsDialog
+        FixPointErrorsDialog(self.state, self).exec()
+
+    def open_fix_linework(self):
+        """Survey > Fix Linework: open the dedicated Fix Linework workbench."""
+        from .qa_workspace import FixLineworkDialog
+        FixLineworkDialog(self.state, self).exec()
+
     def qa_dialog(self):
-        QADialog(self.state, self).exec()
+        self.open_fix_point_errors()
 
     def codes_dialog(self):
         FeatureCodesDialog(self.state, self).exec()
 
-    def convert_field_to_finish(self):
-        """Survey > Convert Field Book: an office code table becomes this job's codes.
+    def open_fieldbook_dialog(self):
+        """Survey > Field Book: open the unified Field Book manager (Convert, Select, Report)."""
+        from .fieldbook_dialog import FieldBookDialog
+        dlg = FieldBookDialog(self.state, self)
+        dlg.exec()
 
-        Carlson's own layout is the default and asks nothing; Custom points at the columns and
-        ticks the rows by hand (ui/f2f_dialog.py).  The file is remembered on the job, so the next
-        conversion - the office publishes a new standard every winter - opens in the right folder.
-        """
+    def convert_field_to_finish(self):
+        """Survey > Convert Field Book: an office code table becomes this job's codes."""
         pr = self.state.project
         start = pr.settings.get("f2f_path") or os.path.dirname(pr.path or "") or ""
         path, _ = QFileDialog.getOpenFileName(self, "Convert Field to Finish", start,
@@ -1261,7 +1382,8 @@ class MainWindow(QMainWindow):
         dlg = ConvertFieldToFinishDialog(table, pr, self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        mapping, only, mode = dlg.choices()
+        res = dlg.choices()
+        mapping, only, mode = res[0], res[1], res[2]
         try:
             new_codes, stats = f2f.convert(table, mapping, only=only,
                                            existing=pr.codes if mode == "merge" else None)
@@ -1276,60 +1398,9 @@ class MainWindow(QMainWindow):
                        f"- Apply Feature Codes redraws the points with them.",
                        "warn" if stats["unknown_entity_types"] else "ok")
 
-
     def convert_fieldbook(self):
-        """Survey > Field Book: select or convert a field book file.
-        
-        Shows available field books in the job folder or offers to create a new one.
-        """
-        from PySide6.QtWidgets import QFileDialog, QMessageBox
-        from plumbline.fieldwork.bridge import fieldbooks_in
-        from plumbline.core.project import Project
-        
-        job_root = self.state.project.path
-        fieldbooks = fieldbooks_in(job_root)
-        
-        if fieldbooks:
-            QMessageBox.information(self, "Field Book",
-                f"Field book(s) found in job folder\n\n"
-                f"Count: {len(fieldbooks)}")
-            if fieldbooks:
-                fb_path = fieldbooks[0].path if hasattr(fieldbooks[0], 'path') else fieldbooks[0]
-                if isinstance(fb_path, str):
-                    fb_path = Path(fb_path)
-                if fb_path.exists():
-                    self._show_fieldbook(fb_path)
-        else:
-            fname, ok = QFileDialog.getSaveFileName(self, "Create Field Book",
-                str(self.state.project.path / "Field Book" / "New Job.fwb"),
-                "Field Book (*.fwb)")
-            if fname and ok:
-                try:
-                    from plumbline.fieldwork.bridge import write_fieldbook_from_f2f
-                    from plumbline.fieldwork import io_carlson as IC
-                    headers = ["Code", "Description", "Symbol", "Layer", "Entity Type", "Category"]
-                    write_fieldbook_from_f2f(None, Path(fname), name="", commands=["ST", "PC", "PT", "END", "X", "-", "/"])
-                    QMessageBox.information(self, "Field Book",
-                        f"Field book created at {Path(fname).name}")
-                except Exception as e:
-                    QMessageBox.warning(self, "Field Book Error",
-                        f"Could not create field book: {e}")
-
-    def _show_fieldbook(self, fb_path):
-        """Show a fieldbook file in the UI."""
-        from plumbline.fieldwork.bridge import read_fwb_file
-        from plumbline.fieldwork.io_carlson import IC
-        from plumbline.core.project import Project
-        
-        try:
-            headers, rows = read_fwb_file(Path(fb_path))
-            QMessageBox.information(self, "Field Book",
-                f"Field book: {Path(fb_path).name}\n\n"
-                f"Rows: {len(rows) if rows else 0}\n"
-                f"Headers: {', '.join(headers) if headers else 'none'}")
-        except Exception as e:
-            QMessageBox.warning(self, "Field Book Error",
-                f"Could not read field book: {e}")
+        """Survey > Field Book: delegate to Field Book manager."""
+        self.open_fieldbook_dialog()
     def apply_codes(self):
         with self.state.edit("Apply feature codes"):
             r = self.state.project.apply_codes_to_points()
@@ -1343,6 +1414,22 @@ class MainWindow(QMainWindow):
         with self.state.edit("Process linework"):
             r = self.state.project.process_linework()
         self.state.log(f"Linework: {r['strings']} string(s) created" + (f", {r['replaced']} previous replaced" if r["replaced"] else "") + ".", "ok")
+
+    def join_selected_points_dialog(self):
+        pts = list(self.state.sel_points)
+        if len(pts) < 2:
+            info_box(self, "Join Points", "Select 2 or more points in the drawing or point list first.")
+            return
+        from .linework_dialog import JoinPointsDialog
+        dlg = JoinPointsDialog(self.state, pts, self)
+        dlg.exec()
+
+    def edit_linework_coding_dialog(self):
+        sel_ents = [self.state.project.entities[eid] for eid in self.state.sel_entities if eid in self.state.project.entities]
+        poly = next((e for e in sel_ents if isinstance(e, Polyline) and (e.derived.startswith("linework") or (e.attrs or {}).get("points"))), None)
+        from .linework_dialog import EditLineworkCodingDialog
+        dlg = EditLineworkCodingDialog(self.state, poly, self)
+        dlg.exec()
 
     def cogo_dialog(self):
         TraverseDialog(self.state, self).exec()
@@ -1663,13 +1750,18 @@ class MainWindow(QMainWindow):
         m = self.m_plugins
         m.clear()
         self._plugin_actions = []
-        tree: dict = {}
+        self._plugin_submenus = {}
         for cmd in plugins.registry.commands:
             parts = [p for p in cmd.menu.split("/") if p] if cmd.menu else []
             node = m
+            path = ()
             for part in parts:
-                sub = next((a.menu() for a in node.actions() if a.menu() and a.text() == part), None)
-                node = sub or node.addMenu(part)
+                path = path + (part,)
+                if path not in self._plugin_submenus:
+                    sub = node.addMenu(part)
+                    self._all_menus.append(sub)
+                    self._plugin_submenus[path] = sub
+                node = self._plugin_submenus[path]
             act = QAction(cmd.name, self)
             act.setStatusTip(cmd.description)
             if cmd.shortcut:

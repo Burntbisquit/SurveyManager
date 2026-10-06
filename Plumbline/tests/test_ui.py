@@ -70,9 +70,7 @@ def win(app, auto, tmp_path, monkeypatch):
     yield w
     w.state.tiles.shutdown()
     w.close()
-    w.deleteLater()                                           # a MainWindow is ~15 MB: really free it between tests
-    QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
-    gc.collect()
+    app.processEvents()
     S._instance = None
 
 
@@ -656,7 +654,7 @@ def test_plugin_menu_runs_command_as_one_undo_step(win, app, auto):
     assert n2 > n
     win.undo()
     assert sum(1 for e in win.state.project.entities.values() if isinstance(e, TextEntity)) == n
-    tools = next(a.menu() for a in win.m_plugins.actions() if a.menu() and a.text() == "Tools")
+    tools = next((m for m in getattr(win, "_plugin_submenus", {}).values() if m.title() == "Tools"), None) or next(a.menu() for a in list(win.m_plugins.actions()) if a.menu() and a.text() == "Tools")
     assert {"Round elevations", "Label spot elevations"} <= {a.text() for a in tools.actions()}
     assert any("(plugin)" in a.text() for a in win.m_export.actions())          # the example exporter joined File > Export
 

@@ -65,7 +65,9 @@ class FirstRunDialog(QDialog):
         self.rows: list[tuple[QCheckBox, FR.Item, QLabel]] = []
         for item in FR.plan():
             box = QCheckBox(f"{item.title}   ({item.size})")
-            box.setChecked(True)
+            # Keep geoid models uninstalled by default unless needed for reprojection
+            is_geoid = item.key.startswith("geoid:")
+            box.setChecked(not is_geoid)
             box.setEnabled(item.mb > 0)          # imagery has no size: it is a cache, always on
             box.setToolTip(item.why)
             why = QLabel(item.why)
