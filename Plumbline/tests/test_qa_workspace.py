@@ -498,6 +498,157 @@ def test_potential_code_in_descriptor_corrections_ui(win, app, auto):
     dlg._save_and_exit()
 
 
+# ------------------------------------------------------------------ Per-point Ignore / Stale Editor Widget Regressions
+def test_separator_ignore_clears_warning_and_discard_restores_it(win, monkeypatch):
+    from plumbline.fieldwork import bridge as FB
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    pr = win.state.project
+    point = pr.add_point(900, 1000, 50, number="8901", desc="NOTES / 30RCP")
+    check_finding = {
+        "check": "Potential code in descriptor",
+        "flag": "MisplacedAfterSeparator",
+        "level": "warn",
+        "detail": "Potential code appears after a descriptor separator.",
+        "pids": [point.id],
+        "key": "separator-ignore-regression",
+    }
+
+    def fake_check_project(project, **kwargs):
+        return {
+            "findings": [dict(check_finding)],
+            "ids": list(project.points),
+            "rows": [],
+            "stats": {},
+            "flags": {},
+            "line_issues": [],
+        }
+
+    monkeypatch.setattr(FB, "check_project", fake_check_project)
+    dialog = FixPointErrorsDialog(win.state, win)
+    finding = next(f for f in dialog.active_findings if f["key"] == check_finding["key"])
+    dialog._open_inline_editor(finding)
+
+    dialog.sep_corrections[0][3].setCurrentText("Ignore")
+    dialog._action_apply_separator_corrections()
+
+    assert point.id not in dialog.error_point_ids
+    assert dialog.current_edit_finding["status"] == "resolved"
+    assert dialog.tbl_active.item(0, 1).text() == "RESOLVED"
+
+    # The issue-scoped undo/redo stack restores and reapplies the ignore choice.
+    dialog._undo_issue()
+    assert point.id in dialog.error_point_ids
+    dialog._redo_issue()
+    assert point.id not in dialog.error_point_ids
+
+    # Ignore is session-scoped: Discarding this issue restores the warning.
+    dialog._action_discard_issue()
+    assert point.id in dialog.error_point_ids
+    assert dialog.active_findings[0]["status"] == "active"
+
+
+def test_close_stack_ignore_suppresses_only_the_selected_point(win, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+    from plumbline.fieldwork import bridge as FB
+    from plumbline.ui.qa_workspace import ClosePointsResolveDialog, FixPointErrorsDialog
+
+    pr = win.state.project
+    p1 = pr.add_point(920, 1020, 50, number="8921", desc="EP ST")
+    p2 = pr.add_point(920.01, 1020.01, 50, number="8922", desc="EP END")
+    check_finding = {
+        "check": "Close Points",
+        "flag": "ClosePointCollision",
+        "level": "warn",
+        "detail": "Two points are within the closeness tolerance.",
+        "pids": [p1.id, p2.id],
+        "key": "close-ignore-regression",
+    }
+
+    def fake_check_project(project, **kwargs):
+        return {
+            "findings": [dict(check_finding)],
+            "ids": list(project.points),
+            "rows": [],
+            "stats": {},
+            "flags": {},
+            "line_issues": [],
+        }
+
+    def accept_with_second_ignored(popup):
+        popup.combos[1].setCurrentText("Ignore")
+        return QDialog.Accepted
+
+    monkeypatch.setattr(FB, "check_project", fake_check_project)
+    monkeypatch.setattr(ClosePointsResolveDialog, "exec", accept_with_second_ignored)
+    dialog = FixPointErrorsDialog(win.state, win)
+    finding = next(f for f in dialog.active_findings if f["key"] == check_finding["key"])
+    dialog._open_inline_editor(finding)
+    dialog._action_resolve_stack_dialog([p1.id, p2.id])
+
+    assert dialog.current_edit_finding["ignored_pids"] == {p2.id}
+    assert dialog.current_edit_finding["pids"] == [p1.id]
+    assert p1.id in dialog.error_point_ids
+    assert p2.id not in dialog.error_point_ids
+    assert dialog.tbl_active.item(0, 1).text() == "PARTIAL"
+
+    dialog._action_ignore(dialog.current_edit_finding["key"])
+    assert dialog.active_findings == []
+    assert dialog.error_point_ids == set()
+
+
+def test_issue_page_hides_exit_controls_and_deleted_separator_widgets_are_safe(win, app):
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    pr = win.state.project
+    point = pr.add_point(910, 1010, 50, number="8911", desc="BADCODE1 ST")
+    dialog = FixPointErrorsDialog(win.state, win)
+
+    exit_controls = (dialog.btn_save_exit, dialog.btn_discard_exit, dialog.btn_cancel)
+    assert all(not button.isHidden() for button in exit_controls)
+
+    sep_finding = {
+        "check": "Potential code in descriptor",
+        "flag": "MisplacedAfterSeparator",
+        "level": "warn",
+        "detail": "Synthetic separator issue for widget lifecycle coverage.",
+        "pids": [point.id],
+        "key": "synthetic-separator",
+    }
+    unknown_finding = {
+        "check": "Unknown Code",
+        "flag": "UnknownCode",
+        "level": "error",
+        "detail": "Unknown code in description.",
+        "pids": [point.id],
+        "key": "synthetic-unknown-code",
+    }
+
+    dialog._open_inline_editor(sep_finding)
+    stale_combo = dialog.sep_corrections[0][3]
+    assert all(button.isHidden() for button in exit_controls)
+
+    # Rebuilding into a non-separator issue deletes the table and its combo boxes.
+    dialog._open_inline_editor(unknown_finding)
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    app.processEvents()
+    assert dialog.sep_corrections == []
+    with pytest.raises(RuntimeError, match="already deleted"):
+        stale_combo.currentText()
+
+    # Even an accidentally retained stale reference must not crash Back/Save checks.
+    dialog.sep_corrections = [(point, "", None, stale_combo)]
+    assert not dialog._has_unapplied_issue_edits()
+    dialog.sep_corrections = []
+    assert not dialog._has_unapplied_issue_edits()
+
+    dialog.issue_dirty = True
+    dialog._action_save_issue()
+    assert dialog.stack.currentIndex() == 0
+    assert all(not button.isHidden() for button in exit_controls)
+
+
 # ------------------------------------------------------------------ Fix Unknown Code & Fieldbook Lookup
 def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
@@ -523,6 +674,15 @@ def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkey
     # 2. Open inline editor for Unknown Code
     dlg._open_inline_editor(unk_finding)
     assert dlg.stack.currentIndex() == 1
+    assert not dlg.btn_autofix_descriptions.isEnabled()
+    assert "temporarily disabled" in dlg.btn_autofix_descriptions.toolTip().lower()
+
+    # Fixed-description input uses a dark foreground on its pale validation background.
+    fixed_edit = next(item[1] for item in dlg.desc_edits if item[0].id == p_unk.id)
+    assert "color: #1f2933" in fixed_edit.styleSheet()
+    old_fixed_text = fixed_edit.text()
+    dlg._action_autofix_descriptions()
+    assert fixed_edit.text() == old_fixed_text
 
     # 3. Verify original description highlights error token in red/underline
     highlighted = dlg._highlight_unknown_tokens(p_unk.desc)

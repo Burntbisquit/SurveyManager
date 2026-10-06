@@ -650,6 +650,8 @@ class BaseQAWorkbenchDialog(QDialog):
         lay_bot.addWidget(self.btn_cancel)
 
         lay_right.addWidget(w_bottom_bar)
+        self.stack.currentChanged.connect(self._on_stack_page_changed)
+        self._on_stack_page_changed(self.stack.currentIndex())
         self.splitter.addWidget(self.w_right)
         self.splitter.setChildrenCollapsible(False)
         self.split_views.setChildrenCollapsible(False)
@@ -661,6 +663,13 @@ class BaseQAWorkbenchDialog(QDialog):
         self._refresh_vocabulary()
         self.run_check()
         self._sync_view_flags()
+
+    def _on_stack_page_changed(self, index: int):
+        """Keep workbench-level exit actions on the summary page only."""
+        show_exit_actions = index == 0
+        self.btn_save_exit.setVisible(show_exit_actions)
+        self.btn_discard_exit.setVisible(show_exit_actions)
+        self.btn_cancel.setVisible(show_exit_actions)
 
     # ------------------------------------------------------------------ Subclass Extension Hooks
     def _filter_finding(self, finding: dict) -> bool:
@@ -735,28 +744,30 @@ class BaseQAWorkbenchDialog(QDialog):
         for f in all_findings:
             rows = f.get("rows")
             if rows is not None:
-                resolved_pids = [ids[i] for i in rows if 0 <= i < len(ids)]
+                raw_pids = [ids[i] for i in rows if 0 <= i < len(ids)]
             else:
-                raw_pids = f.get("pids") or f.get("points") or []
-                resolved_pids = []
-                for pid in raw_pids:
+                source_pids = f.get("pids") or f.get("points") or []
+                raw_pids = []
+                for pid in source_pids:
                     if pid in pr.points:
-                        resolved_pids.append(pid)
+                        raw_pids.append(pid)
                     else:
                         matching = [p.id for p in pr.points.values() if p.number == str(pid)]
-                        resolved_pids.extend(matching)
-            f["pids"] = resolved_pids
+                        raw_pids.extend(matching)
 
-            groups = f.get("groups")
-            if groups is not None:
-                f["stack_groups"] = [[ids[i] for i in g if 0 <= i < len(ids)] for g in groups]
+            raw_groups = f.get("groups")
+            if raw_groups is not None:
+                raw_stack_groups = [
+                    [ids[i] for i in group if 0 <= i < len(ids)]
+                    for group in raw_groups
+                ]
             else:
-                f["stack_groups"] = [resolved_pids] if resolved_pids else []
+                raw_stack_groups = [raw_pids] if raw_pids else []
 
-            p_nums = f.get("numbers") or [str(pr.points[pid].number) for pid in resolved_pids if pid in pr.points]
-            f["points"] = p_nums
-
-            key = f.get("key", f"{f.get('check')}:{','.join(str(p) for p in resolved_pids)}")
+            # Keep the finding key based on the detector's complete result. Per-point
+            # ignores then remain attached to the same tracked issue as its active
+            # point list shrinks.
+            key = f.get("key", f"{f.get('check')}:{','.join(str(pid) for pid in raw_pids)}")
             f["key"] = key
 
             if key in self.ignored_keys:
@@ -764,14 +775,36 @@ class BaseQAWorkbenchDialog(QDialog):
             if not self._filter_finding(f):
                 continue
 
-            for pid in resolved_pids:
-                err_pids.add(pid)
-
-            # Match or add to tracked findings
+            # Match before removing ignored points so a stable tracked finding can
+            # carry its per-point ignore state across detector refreshes.
             existing = self.tracked_findings_by_key.get(key)
             if not existing:
                 chk = f.get("check")
-                existing = next((t for t in self.tracked_findings if t.get("check") == chk and t not in fresh_matched_tracked), None)
+                existing = next((t for t in self.tracked_findings
+                                 if t.get("check") == chk and t not in fresh_matched_tracked), None)
+
+            ignored_pids = set((existing or f).get("ignored_pids") or ())
+            resolved_pids = [pid for pid in raw_pids if pid not in ignored_pids]
+            if raw_groups is not None:
+                stack_groups = [
+                    [pid for pid in group if pid not in ignored_pids]
+                    for group in raw_stack_groups
+                ]
+                stack_groups = [group for group in stack_groups if group]
+            else:
+                stack_groups = [resolved_pids] if resolved_pids else []
+
+            if raw_pids:
+                p_nums = [str(pr.points[pid].number) for pid in resolved_pids if pid in pr.points]
+            else:
+                p_nums = [str(number) for number in (f.get("numbers") or [])]
+            f["pids"] = resolved_pids
+            f["stack_groups"] = stack_groups
+            f["points"] = p_nums
+            f["ignored_pids"] = ignored_pids
+
+            for pid in resolved_pids:
+                err_pids.add(pid)
 
             if existing:
                 old_key = existing.get("key")
@@ -780,15 +813,16 @@ class BaseQAWorkbenchDialog(QDialog):
                 existing["key"] = key
                 self.tracked_findings_by_key[key] = existing
                 existing["pids"] = resolved_pids
-                existing["stack_groups"] = f["stack_groups"]
+                existing["stack_groups"] = stack_groups
+                existing["points"] = p_nums
+                existing["ignored_pids"] = ignored_pids
                 if resolved_pids:
-                    existing["points"] = p_nums
                     existing["status"] = "partial" if existing.get("resolutions") else "active"
                 else:
                     existing["status"] = "resolved"
                 fresh_matched_tracked.append(existing)
             else:
-                f["status"] = "active"
+                f["status"] = "resolved" if raw_pids and not resolved_pids else "active"
                 f["resolutions"] = []
                 f["resolved_history"] = []
                 f["resolved_pids"] = set()
@@ -917,6 +951,7 @@ class BaseQAWorkbenchDialog(QDialog):
                 "resolutions": list(finding.get("resolutions", [])),
                 "resolved_history": list(finding.get("resolved_history", [])),
                 "resolved_pids": set(finding.get("resolved_pids", set())),
+                "ignored_pids": set(finding.get("ignored_pids", set())),
                 "history_undo": list(finding.get("history_undo", [])),
                 "history_redo": list(finding.get("history_redo", [])),
                 "redo_resolved_history": list(finding.get("redo_resolved_history", [])),
@@ -930,6 +965,14 @@ class BaseQAWorkbenchDialog(QDialog):
         self.issue_dirty = False
 
     def _open_inline_editor(self, finding: dict, *, start_session: bool | None = None):
+        # These lists contain wrappers for editor widgets. Drop old wrappers before
+        # clearing the layout, otherwise Qt may delete their C++ objects while a
+        # later save/back check still calls text() or currentText() on them.
+        self.desc_edits = []
+        self.sep_corrections = []
+        self.current_focused_ed = None
+        self.btn_autofix_descriptions = None
+
         if start_session is None:
             start_session = (self.stack.currentIndex() != 1 or self.current_edit_finding is not finding)
         if start_session:
@@ -1187,22 +1230,55 @@ class BaseQAWorkbenchDialog(QDialog):
         else:
             self._show_summary_page()
 
+    @staticmethod
+    def _safe_widget_text(widget, getter: str) -> str | None:
+        """Read text from a Qt widget, returning None if its C++ object was deleted."""
+        if widget is None:
+            return None
+        try:
+            return getattr(widget, getter)()
+        except (AttributeError, RuntimeError):
+            return None
+
     def _has_unapplied_issue_edits(self) -> bool:
-        if hasattr(self, "desc_edits") and self.desc_edits:
-            for p, ed, _ in self.desc_edits:
-                if ed.text().strip() != (p.desc or ""):
-                    return True
-        if hasattr(self, "sep_corrections") and self.sep_corrections:
-            for item in self.sep_corrections:
-                cb_action = item[3] if len(item) >= 4 else (item[1] if len(item) >= 2 else None)
-                if cb_action and hasattr(cb_action, "currentText") and cb_action.currentText() in ("Correct", "Correct (Leave # in Descriptor)", "Ignore"):
-                    return True
+        for item in getattr(self, "desc_edits", []):
+            if len(item) < 2:
+                continue
+            p, ed = item[0], item[1]
+            text = self._safe_widget_text(ed, "text")
+            if text is not None and text.strip() != (p.desc or ""):
+                return True
+
+        for item in getattr(self, "sep_corrections", []):
+            cb_action = item[3] if len(item) >= 4 else (item[1] if len(item) >= 2 else None)
+            action = self._safe_widget_text(cb_action, "currentText")
+            if action in ("Correct", "Correct (Leave # in Descriptor)", "Ignore"):
+                return True
         return bool(getattr(self, "issue_dirty", False))
 
     def _apply_pending_issue_edits(self):
-        if hasattr(self, "desc_edits") and self.desc_edits:
+        # A stale wrapper is ignored rather than dereferenced. Normally the editor
+        # lists are cleared during rebuild; this is a final guard for queued Qt
+        # deferred-delete events on Back and Save Issue paths.
+        desc_edits = [
+            item for item in getattr(self, "desc_edits", [])
+            if len(item) >= 2 and self._safe_widget_text(item[1], "text") is not None
+        ]
+        if desc_edits:
+            self.desc_edits = desc_edits
             self._action_apply_descriptions()
-        elif hasattr(self, "sep_corrections") and self.sep_corrections:
+            return
+
+        sep_corrections = []
+        for item in getattr(self, "sep_corrections", []):
+            cb_action = item[3] if len(item) >= 4 else (item[1] if len(item) >= 2 else None)
+            if self._safe_widget_text(cb_action, "currentText") is None:
+                continue
+            if len(item) >= 3 and self._safe_widget_text(item[2], "text") is None:
+                continue
+            sep_corrections.append(item)
+        if sep_corrections:
+            self.sep_corrections = sep_corrections
             self._action_apply_separator_corrections()
 
     def _discard_issue_edits(self):
@@ -1402,6 +1478,7 @@ class BaseQAWorkbenchDialog(QDialog):
         if f.get("resolved_history"):
             last_item = f["resolved_history"].pop()
             f.setdefault("redo_resolved_history", []).append(last_item)
+            f.setdefault("ignored_pids", set()).difference_update(last_item.get("ignored_pids", []))
         self.btn_issue_undo.setEnabled(len(h_undo) > 0)
         self.btn_issue_redo.setEnabled(True)
         self.btn_undo.setEnabled(len(h_undo) > 0)
@@ -1425,7 +1502,9 @@ class BaseQAWorkbenchDialog(QDialog):
         self._restore_snapshot(snap)
         f.setdefault("resolutions", []).append(desc)
         if f.get("redo_resolved_history"):
-            f.setdefault("resolved_history", []).append(f["redo_resolved_history"].pop())
+            last_item = f["redo_resolved_history"].pop()
+            f.setdefault("resolved_history", []).append(last_item)
+            f.setdefault("ignored_pids", set()).update(last_item.get("ignored_pids", []))
         else:
             res_item = {
                 "level": f.get("level", "warn"),
@@ -1473,7 +1552,14 @@ class BaseQAWorkbenchDialog(QDialog):
         self.run_check()
         self.lbl_status.setText(f"Redo: {desc}")
 
-    def _apply_fix(self, resolution_desc: str, fix_fn, resolved_points: list[int] | None = None, stay_on_edit_page: bool = True):
+    def _apply_fix(
+        self,
+        resolution_desc: str,
+        fix_fn,
+        resolved_points: list[int] | None = None,
+        stay_on_edit_page: bool = True,
+        ignored_points: list[int] | None = None,
+    ):
         pr = self.state.project
         cur_finding = self.current_edit_finding
         p_nums = []
@@ -1484,6 +1570,9 @@ class BaseQAWorkbenchDialog(QDialog):
             p_nums = list(cur_finding.get("points", []))
 
         self._push_undo(resolution_desc)
+        ignored_pids = list(dict.fromkeys(ignored_points or []))
+        if cur_finding and ignored_pids:
+            cur_finding.setdefault("ignored_pids", set()).update(ignored_pids)
         fix_fn()
         pr.process_linework()
         self.state.project.touch()
@@ -1495,6 +1584,7 @@ class BaseQAWorkbenchDialog(QDialog):
             "check": cur_finding.get("check", "Issue") if cur_finding else "Issue",
             "resolution": resolution_desc,
             "points": p_nums,
+            "ignored_pids": ignored_pids,
         }
         self.resolved_findings.append(res_item)
         if cur_finding:
@@ -1890,10 +1980,10 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                     def _on_txt_changed(txt):
                         is_val, msg = self._validate_desc_text(txt)
                         if not is_val:
-                            e.setStyleSheet("QLineEdit { border: 1.5px solid #e74c3c; background-color: #fdf2f2; border-radius: 3px; }")
+                            e.setStyleSheet("QLineEdit { color: #1f2933; selection-color: #ffffff; selection-background-color: #357edd; border: 1.5px solid #e74c3c; background-color: #fdf2f2; border-radius: 3px; }")
                             lbl.setText(f"<span style='color: #e74c3c; font-size: 11px; font-weight: bold;'>⚠ {msg}</span>")
                         else:
-                            e.setStyleSheet("QLineEdit { border: 1.5px solid #27ae60; background-color: #f4faf6; border-radius: 3px; }")
+                            e.setStyleSheet("QLineEdit { color: #1f2933; selection-color: #ffffff; selection-background-color: #357edd; border: 1.5px solid #27ae60; background-color: #f4faf6; border-radius: 3px; }")
                             lbl.setText(f"<span style='color: #27ae60; font-size: 11px; font-weight: bold;'>✓ {msg}</span>")
                     return _on_txt_changed
 
@@ -1922,8 +2012,10 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             row_d_btns.addWidget(btn_apply_desc)
 
             btn_autofix = QPushButton("Auto Fix All")
-            btn_autofix.setToolTip("Automatically substitute closest Field Book code matches")
+            btn_autofix.setEnabled(False)
+            btn_autofix.setToolTip("Auto Fix is temporarily disabled. Edit descriptions manually or use Fieldbook Lookup.")
             btn_autofix.clicked.connect(self._action_autofix_descriptions)
+            self.btn_autofix_descriptions = btn_autofix
             row_d_btns.addWidget(btn_autofix)
 
             row_d_btns.addStretch(1)
@@ -2196,6 +2288,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
         merge_pts = res["merge_points"]
         delete_pts = res["delete_points"]
         renumber_pts = res.get("renumber_points", [])
+        ignore_pts = res.get("ignore_points", [])
         merged_desc = res["merged_desc"]
         avg_coords = res["average_coords"]
 
@@ -2219,7 +2312,15 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
         summary = f"Resolved stack into Pt #{target_p.number}"
         if merged_desc:
             summary += f" ({merged_desc})"
-        self._apply_fix(summary, do_it, resolved_points=stack_pids, stay_on_edit_page=True)
+        if ignore_pts:
+            summary += f"; ignored {len(ignore_pts)} point(s)"
+        self._apply_fix(
+            summary,
+            do_it,
+            resolved_points=stack_pids,
+            stay_on_edit_page=True,
+            ignored_points=[p.id for p in ignore_pts],
+        )
 
     def _action_resolve_selected_stack(self, is_duplicate: bool = False):
         stk = getattr(self, "current_selected_stack", None)
@@ -2448,7 +2549,13 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
         else:
             summary = f"Corrected potential code in descriptor: {descs_str}"
 
-        self._apply_fix(summary, do_it, resolved_points=resolved_pids, stay_on_edit_page=True)
+        self._apply_fix(
+            summary,
+            do_it,
+            resolved_points=resolved_pids,
+            stay_on_edit_page=True,
+            ignored_points=[p.id for p in to_ignore],
+        )
 
         finding = self.current_edit_finding
         if not to_skip:
@@ -2497,23 +2604,9 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
         self._action_apply_descriptions()
 
     def _action_autofix_descriptions(self):
-        changes: list[tuple[SurveyPoint, str]] = []
-        for item in getattr(self, "desc_edits", []):
-            p, ed = item[0], item[1]
-            cur = ed.text()
-            # Standardize spacing around delimiters and uppercase codes
-            fixed = re.sub(r"\s+", " ", cur).strip()
-            if "/" in fixed:
-                c, _, note = fixed.partition("/")
-                fixed = f"{c.strip().upper()} / {note.strip()}"
-            else:
-                fixed = fixed.upper()
-            if fixed != cur:
-                ed.setText(fixed)
-                changes.append((p, fixed))
+        """Auto Fix is temporarily disabled; use manual edits or Fieldbook Lookup."""
+        return
 
-        if changes:
-            self._action_apply_descriptions()
 
 
 # ============================================================================
