@@ -1,20 +1,17 @@
 """Linework, read whole: the issues one description cannot show, and the tools for them.
 
-Every other check in this program reads **one point at a time**.  A line is not a point: ``TOC PC``
-on OID 46 is a perfectly good description whose *meaning* is wrong, and the only place that shows
-is the line it belongs to - a segment that starts, runs, and stops without an ``END``; a curve that
-starts and never ends.  Worse, the two ends of one mistake usually sit on **two different points**,
-which is why the tool that fixes them has to be allowed to clear a second flag it was not aimed at.
+Every other check in this program reads **one point at a time**. A line is a sequence: a point may
+carry a valid description while the line has no semantic End Line/Close, or a curve may start without
+an End Curve. The two ends of one mistake usually sit on **two different points**, which is why the
+tool that fixes them has to be allowed to clear a second flag it was not aimed at.
 
-The vocabulary is the field book's, and the order is the whole game::
+The Field Book's meanings define the valid order::
 
-    ST  (start line)  →  PC  (start curve)  →  PT  (end curve)  →  END / X  (end line, close)
+    Start Line → Start Curve → End Curve → End Line / Close
 
-so ``TOC PC PT END`` is right, ``TOC PT PC END`` is not, and ``TOC PC PT`` never finished.  A fix
-that appends the missing word to the end of the description can therefore produce a description
-that is still wrong - which is exactly why every fix here is **proposed, then validated**: the
-proposal is offered, and after it is applied the line is read again, because the only honest
-answer to "did that help?" is to look.
+A fix that appends a command to the end of the description can therefore still be wrong - which is
+exactly why every fix here is **proposed, then validated**: the proposal is offered, and after it is
+applied the line is read again, because the only honest answer to "did that help?" is to look.
 
 This module is Qt-free on purpose: the field window's Line Repair tab and the drawing window's
 Check Fieldwork dock both use it, and neither should be able to disagree with the other about
@@ -36,24 +33,24 @@ ISSUE_FLAGS = {
     "Missing PT": "MissingPT",
 }
 
-#: Outside in.  ST starts the line, PC starts the curve inside it, PT ends that curve, and only
-#: then may the line end (END) or close (X) - the field book's own hierarchy, kept here so a
-#: proposal can be *placed* rather than appended.
-RANK = {"st": 0, "pc": 1, "pt": 2, "end": 3, "x": 3}
+#: The semantic command hierarchy is fixed even when an office changes its command tokens.
+RANK = {"start_line": 0, "start_curve": 1, "end_curve": 2, "end_line": 3, "close": 3}
 
 
-def _command_set(command_set=None) -> set:
-    return {str(c).strip().casefold() for c in (command_set if command_set is not None else C.COMMAND_SET)}
+def _command_map(fieldbook_path=None, commands=None):
+    from .config import get_command_map
+    return get_command_map(fieldbook_path, commands)
+
+
+def _command_set(command_set=None, commands=None) -> set:
+    if command_set is not None:
+        return {str(c).strip().casefold() for c in command_set if str(c).strip()}
+    from .config import get_command_set
+    return get_command_set(commands=commands)
 
 
 def _f2f_for(fieldbook_path, f2f_set):
-    """The code vocabulary: the caller's if it has one, else the field book's, else none.
-
-    None rather than an empty set matters downstream: with no vocabulary every code reads as
-    unknown, and an unknown code has no line commands, so the check would answer "no issues" -
-    the one answer that is certainly wrong.  Callers are expected to say which of the two they
-    did, and this function does not pretend otherwise.
-    """
+    """The code vocabulary: the caller's if it has one, else the field book's, else none."""
     if f2f_set:
         return f2f_set
     if fieldbook_path:
@@ -65,229 +62,254 @@ def _f2f_for(fieldbook_path, f2f_set):
     return set()
 
 
-def _command_set_for(fieldbook_path, command_set):
+def _command_set_for(fieldbook_path, command_set, commands=None):
     if command_set is not None:
         return command_set
-    if fieldbook_path:
-        try:
-            from .config import get_command_set
-            return get_command_set(fieldbook_path)
-        except Exception:
-            return None
-    return None
+    try:
+        from .config import get_command_set
+        return get_command_set(fieldbook_path, commands)
+    except Exception:
+        return None
 
 
 # --------------------------------------------------------------------------------- detection
 def detect_line_errors(working_rows, fieldbook_path=None, f2f_set=None, command_set=None,
-                       rules=None) -> list[dict]:
-    """Every line in the file, read as a whole, and what is wrong with it.
-
-    Working rows are the 8-column list (OID, Pt#, N, E, Z, Desc, Parent, Source) in **file
-    order** - a line is the order the crew shot it, so a sorted list is a different answer.
-
-    Returns one dict per issue::
-
-        {"gid", "issue_type", "oid", "line_id", "detail", "fix_suggestion", "seg_id", "proposal"}
-
-    ``oid`` is the point the issue is *about* (where the fix belongs), ``line_id`` the code
-    token it was grouped under, and ``proposal`` the description that would fix it - empty
-    when there is no safe guess, in which case the user keys it in (see
-    :func:`propose_fix`).
-    """
+                       rules=None, commands=None) -> list[dict]:
+    """Read each coded line in file order and report incomplete line/curve command sequences."""
     if not working_rows:
         return []
     from .parse import parse_desc_field
+    from ..core.fieldbook_syntax import command_meanings
 
     f2f = _f2f_for(fieldbook_path, f2f_set)
-    cs = _command_set_for(fieldbook_path, command_set)
+    semantic_tokens = _command_map(fieldbook_path, commands)
+    token_meanings = command_meanings(semantic_tokens)
+    cs = _command_set_for(fieldbook_path, command_set, semantic_tokens)
+    line_meanings = set(RANK)
 
     oid_list = []
-    for wr in working_rows:
-        oid = str(wr[0]).strip() if len(wr) > 0 else ""
-        raw = str(wr[5]).strip() if len(wr) > 5 else ""
-        oid_list.append((oid, raw, wr))
+    for working_row in working_rows:
+        oid = str(working_row[0]).strip() if len(working_row) > 0 else ""
+        raw = str(working_row[5]).strip() if len(working_row) > 5 else ""
+        oid_list.append((oid, raw, working_row))
     try:
-        oid_list.sort(key=lambda x: int(x[0]) if x[0].isdigit() else x[0])
+        oid_list.sort(key=lambda row: int(row[0]) if row[0].isdigit() else row[0])
     except Exception:
         pass
 
-    # Group every point under the code token that owns its line commands.  A code with no
-    # commands anywhere is not a line at all and is skipped below - the description check's
-    # business, not this one's.
     segments_by_line: dict[str, list] = {}
     raw_by_line: dict[str, str] = {}
-    for oid, raw, _wr in oid_list:
-        parsed = parse_desc_field(raw, f2f, fieldbook_path=fieldbook_path, command_set=cs, rules=rules)
+    for oid, raw, _working_row in oid_list:
+        parsed = parse_desc_field(raw, f2f, fieldbook_path=fieldbook_path,
+                                  command_set=cs, rules=rules, commands=semantic_tokens)
         classified = parsed.get("code_classified", [])
-        cmds_by_code: dict[str, list] = {}
-        for i, item in enumerate(classified):
+        commands_by_code: dict[str, list] = {}
+        for item in classified:
             if item["type"] == "command" and item.get("status") == "valid" and "attached_to" in item:
-                cidx = item["attached_to"]
-                code_item = classified[cidx] if 0 <= cidx < len(classified) else None
+                meaning = item.get("meaning") or token_meanings.get(item.get("norm", "").casefold(), "")
+                if meaning not in line_meanings:
+                    continue
+                code_index = item["attached_to"]
+                code_item = classified[code_index] if 0 <= code_index < len(classified) else None
                 if code_item and code_item["type"] == "code":
                     line_id = code_item["raw"].strip().casefold()
-                    cmds_by_code.setdefault(line_id, []).append(item["norm"].casefold())
+                    commands_by_code.setdefault(line_id, []).append(meaning)
                     raw_by_line[line_id] = code_item["raw"]
             elif item["type"] == "code" and item["status"] in ("exact", "line_instance"):
                 line_id = item["raw"].strip().casefold()
-                cmds_by_code.setdefault(line_id, [])
+                commands_by_code.setdefault(line_id, [])
                 raw_by_line.setdefault(line_id, item["raw"])
-        for line_id, cmds in cmds_by_code.items():
-            segments_by_line.setdefault(line_id, []).append((oid, cmds, raw, raw_by_line.get(line_id, line_id)))
+        for line_id, line_commands in commands_by_code.items():
+            segments_by_line.setdefault(line_id, []).append(
+                (oid, line_commands, raw, raw_by_line.get(line_id, line_id)))
 
     errors: list[dict] = []
 
     def raw_of(oid):
-        for o, raw, _wr in oid_list:
-            if o == str(oid):
-                return raw
-        return ""
+        return next((raw for current_oid, raw, _row in oid_list if current_oid == str(oid)), "")
 
-    def issues_for(line_id, pts):
-        """One code's points, read as a sequence of segments."""
-        out: list[dict] = []
-        segments: list[list] = []
-        cur_seg: list = []
+    def issues_for(line_id, points):
+        out = []
+        segments = []
+        current_segment = []
         in_line = False
-        code_raw = pts[0][3] if pts else line_id
+        code_raw = points[0][3] if points else line_id
 
         def add(issue_type, oid, detail, suggestion):
             out.append({
                 "issue_type": issue_type, "oid": oid, "line_id": line_id,
                 "detail": detail, "fix_suggestion": suggestion, "seg_id": len(segments) + 1,
-                "proposal": propose_fix(issue_type, raw_of(oid), line_id, command_set=cs),
+                "proposal": propose_fix(issue_type, raw_of(oid), line_id,
+                                         command_set=cs, commands=semantic_tokens,
+                                         f2f_set=f2f, fieldbook_path=fieldbook_path),
             })
 
-        for oid, cmds, raw, _code in pts:
-            if "st" in cmds:
-                if in_line and cur_seg:
-                    add("Missing END", cur_seg[-1][0],
-                        f"Line {code_raw} segment missing END/X before new ST at OID {oid} ({raw}) "
-                        f"- previous segment started at OID {cur_seg[0][0]}",
-                        f"Add END to OID {cur_seg[-1][0]}")
-                    segments.append(cur_seg)
-                    cur_seg = []
+        for oid, line_commands, raw, _code in points:
+            if "start_line" in line_commands:
+                if in_line and current_segment:
+                    add("Missing END", current_segment[-1][0],
+                        f"Line {code_raw} segment is missing End Line/Close before a new Start Line "
+                        f"at OID {oid} ({raw}); previous segment started at OID {current_segment[0][0]}",
+                        f"Add End Line to OID {current_segment[-1][0]}")
+                    segments.append(current_segment)
+                    current_segment = []
                 in_line = True
-                cur_seg.append((oid, cmds, raw))
+                current_segment.append((oid, line_commands, raw))
             elif in_line:
-                cur_seg.append((oid, cmds, raw))
-                if "end" in cmds or "x" in cmds:
-                    segments.append(cur_seg)
-                    cur_seg = []
+                current_segment.append((oid, line_commands, raw))
+                if "end_line" in line_commands or "close" in line_commands:
+                    segments.append(current_segment)
+                    current_segment = []
                     in_line = False
-            elif cmds:
-                # Commands on a code with no ST anywhere before them: the segment never started.
+            elif line_commands:
                 add("Missing ST", oid,
-                    f"Line {code_raw} has {cmds} at OID {oid} ({raw}) without a prior ST - "
-                    f"every segment needs a START",
-                    f"Add ST to OID {oid}")
+                    f"Line {code_raw} has {line_commands} at OID {oid} ({raw}) without a prior Start Line",
+                    f"Add Start Line to OID {oid}")
                 in_line = True
-                cur_seg = [(oid, cmds, raw)]
-                if "end" in cmds or "x" in cmds:
-                    segments.append(cur_seg)
-                    cur_seg = []
+                current_segment = [(oid, line_commands, raw)]
+                if "end_line" in line_commands or "close" in line_commands:
+                    segments.append(current_segment)
+                    current_segment = []
                     in_line = False
-        if cur_seg:
-            add("Missing END", cur_seg[-1][0],
-                f"Line {code_raw} segment starting at OID {cur_seg[0][0]} never closed with END/X "
-                f"(last point OID {cur_seg[-1][0]})",
-                f"Add END/X to OID {cur_seg[-1][0]}")
-            segments.append(cur_seg)
-            cur_seg = []
+        if current_segment:
+            add("Missing END", current_segment[-1][0],
+                f"Line {code_raw} segment starting at OID {current_segment[0][0]} never received "
+                f"End Line/Close (last point OID {current_segment[-1][0]})",
+                f"Add End Line to OID {current_segment[-1][0]}")
+            segments.append(current_segment)
 
-        for seg in segments:
-            pcs = [oid for oid, cmds, _raw in seg if "pc" in cmds]
-            pts_ = [oid for oid, cmds, _raw in seg if "pt" in cmds]
-            if pcs and not pts_:
-                add("Missing PT", pcs[0],
-                    f"Line {code_raw} has PC at OID {pcs[0]} without a matching PT before the end",
-                    f"Add PT to OID {pcs[0]} (after PC, before END/X)")
-            if pts_ and not pcs:
-                add("Missing PC", pts_[0],
-                    f"Line {code_raw} has PT at OID {pts_[0]} without a prior PC",
-                    f"Add PC to OID {pts_[0]} (before PT)")
+        for segment in segments:
+            curve_starts = [oid for oid, line_commands, _raw in segment
+                            if "start_curve" in line_commands]
+            curve_ends = [oid for oid, line_commands, _raw in segment
+                          if "end_curve" in line_commands]
+            if curve_starts and not curve_ends:
+                add("Missing PT", curve_starts[0],
+                    f"Line {code_raw} has Start Curve at OID {curve_starts[0]} without a matching End Curve",
+                    f"Add End Curve to OID {curve_starts[0]} (after Start Curve, before End Line/Close)")
+            if curve_ends and not curve_starts:
+                add("Missing PC", curve_ends[0],
+                    f"Line {code_raw} has End Curve at OID {curve_ends[0]} without a prior Start Curve",
+                    f"Add Start Curve to OID {curve_ends[0]} (before End Curve)")
         return out
 
-    for line_id, pts in segments_by_line.items():
-        has_line_cmd = any(any(c in ("st", "pc", "pt", "end", "x") for c in cmds) for _, cmds, _, _ in pts)
-        if not has_line_cmd:
+    for line_id, points in segments_by_line.items():
+        has_line_command = any(any(command in line_meanings for command in line_commands)
+                               for _oid, line_commands, _raw, _code in points)
+        if not has_line_command:
             continue
-        for issue in issues_for(line_id, pts):
+        for issue in issues_for(line_id, points):
             issue["gid"] = str(len(errors) + 1)
             errors.append(issue)
     return errors
 
 
 # --------------------------------------------------------------------------------- the tools
-def propose_fix(issue_type: str, current_desc: str, line_id: str = "", command_set=None) -> str:
-    """The description that would fix *issue_type* on a point that reads *current_desc*.
+def propose_fix(issue_type: str, current_desc: str, line_id: str = "", command_set=None,
+                commands=None, f2f_set=None, fieldbook_path=None) -> str:
+    """Place the missing semantic command in its Field Book-defined, correctly ordered position."""
+    if not (current_desc or "").strip():
+        return ""
+    from ..core.fieldbook_syntax import command_joiner, command_meanings
+    from .parse import parse_desc_field
 
-    Empty string means **no safe guess**: the caller offers Key-In instead of pretending.
+    semantic_tokens = _command_map(fieldbook_path, commands)
+    token_meanings = command_meanings(semantic_tokens)
+    cs = _command_set(command_set, semantic_tokens)
+    meanings_ordered = list(RANK)
+    parsed = None
+    if f2f_set:
+        parsed = parse_desc_field(current_desc, f2f_set, fieldbook_path=fieldbook_path,
+                                  command_set=cs, commands=semantic_tokens)
 
-    The word is *placed*, not appended - appended guesses are the ones that fail validation
-    (``TOC PC PT`` + ``END`` on the end of a ``PT``-less curve reads fine and is still wrong).
-    A description holding more than one code (a multicode ``TOC ST - EC ST``) gets no proposal
-    at all: the token to edit is a judgement, and a judgement belongs to the user.
-    """
-    words = (current_desc or "").split()
-    if not words:
-        return ""
-    cs = _command_set(command_set)
-    if words[0].casefold() in cs:                       # a description starting with a command
-        return ""
-    codes = [w for w in words if w.casefold() not in cs and w not in ("-", "/")]
-    if len(codes) != 1:                                  # multicode - key it in by hand
-        return ""
-    head, rest = words[0], words[1:]
-    lo = [w.casefold() for w in rest]
+    if parsed is not None:
+        if parsed.get("free_desc"):
+            return ""
+        classified = parsed.get("code_classified", [])
+        code_items = [item for item in classified if item["type"] == "code" and
+                      item.get("status") in ("exact", "line_instance")]
+        if len(code_items) != 1 or any(item.get("status") in ("unknown", "orphan")
+                                        for item in classified):
+            return ""
+        head = code_items[0]["raw"]
+        rest_meanings = []
+        for item in classified:
+            if item["type"] != "command":
+                continue
+            meaning = item.get("meaning") or token_meanings.get(item.get("norm", "").casefold(), "")
+            if item.get("status") != "valid" or meaning not in meanings_ordered:
+                return ""
+            rest_meanings.append(meaning)
+    else:
+        words = current_desc.split()
+        if not words:
+            return ""
+        separator_tokens = {semantic_tokens.get("multicode", "").casefold(),
+                            semantic_tokens.get("description", "").casefold()}
+        if words[0].casefold() in cs:
+            return ""
+        code_words = [word for word in words if word.casefold() not in cs and
+                      word.casefold() not in separator_tokens]
+        if len(code_words) != 1:
+            return ""
+        head = code_words[0]
+        rest_meanings = []
+        for word in words:
+            meaning = token_meanings.get(word.casefold(), "")
+            if meaning in meanings_ordered:
+                rest_meanings.append(meaning)
+            elif word != head and word.casefold() not in separator_tokens and word.casefold() not in cs:
+                return ""
+
     line = (line_id or "").casefold().strip()
-    if line and line != head.casefold() and head.casefold().rstrip("0123456789") != line:
-        # The issue is grouped under a different code token than this description starts with.
+    if line and head.casefold() != line:
         return ""
-
-    def insert_before(names, word):
-        for i, tok in enumerate(lo):
-            if tok in names:
-                return " ".join([head, *rest[:i], word, *rest[i:]])
-        return " ".join([head, *rest, word])
 
     if issue_type == "Missing ST":
-        if "st" in lo:
+        required = "start_line"
+        if required in rest_meanings:
             return ""
-        return " ".join([head, "ST", *rest])             # ST ranks outside every other command
-    if issue_type == "Missing END":
-        if "end" in lo or "x" in lo:
+        insert_at = 0
+    elif issue_type == "Missing END":
+        required = "end_line"
+        if any(meaning in ("end_line", "close") for meaning in rest_meanings):
             return ""
-        return " ".join([head, *rest, "END"])            # the line ends last, so it goes last
-    if issue_type == "Missing PC":
-        if "pc" in lo:
+        insert_at = len(rest_meanings)
+    elif issue_type == "Missing PC":
+        required = "start_curve"
+        if required in rest_meanings:
             return ""
-        return insert_before(("pt", "end", "x"), "PC")   # inside the line, before what it feeds
-    if issue_type == "Missing PT":
-        if "pt" in lo:
+        insert_at = next((i for i, meaning in enumerate(rest_meanings)
+                          if meaning in ("end_curve", "end_line", "close")), len(rest_meanings))
+    elif issue_type == "Missing PT":
+        required = "end_curve"
+        if required in rest_meanings:
             return ""
-        return insert_before(("end", "x"), "PT")         # the curve ends before the line does
-    return ""
+        insert_at = next((i for i, meaning in enumerate(rest_meanings)
+                          if meaning in ("end_line", "close")), len(rest_meanings))
+    else:
+        return ""
+
+    token = semantic_tokens.get(required, "")
+    if not token:
+        return ""
+    rest_meanings.insert(insert_at, required)
+    command_tokens = [semantic_tokens.get(meaning, "") for meaning in rest_meanings]
+    if any(not command for command in command_tokens):
+        return ""
+    return command_joiner().join([head, *command_tokens])
 
 
-def validate_fix(working_rows, oid, new_desc, fieldbook_path=None, f2f_set=None, command_set=None,
-                 rules=None) -> dict:
-    """Apply *new_desc* to *oid* **in memory**, read the lines again, and say what it cleared.
-
-    The field book's own note asked for this ("after full rewrite, re-run ... and show a toast
-    'also cleared LineOrderError on OID 46'"): fixing the end of one line routinely fixes the
-    start of another, and a tool that only reports its own row makes the second one look like
-    work still to do.
-
-    Returns ``{"ok", "cleared", "also_cleared", "still", "note"}``; nothing is written.
-    """
-    cs = _command_set_for(fieldbook_path, command_set)
+def validate_fix(working_rows, oid, new_desc, fieldbook_path=None, f2f_set=None,
+                 command_set=None, rules=None, commands=None) -> dict:
+    """Apply a proposal in memory, re-read the line, and report what it cleared."""
+    cs = _command_set_for(fieldbook_path, command_set, commands)
     before = detect_line_errors(working_rows, fieldbook_path=fieldbook_path, f2f_set=f2f_set,
-                                command_set=cs, rules=rules)
+                                command_set=cs, rules=rules, commands=commands)
     rows2 = []
     found = False
-    for r in working_rows:
-        row = list(r)
+    for working_row in working_rows:
+        row = list(working_row)
         if str(row[0]).strip() == str(oid).strip():
             if len(row) > 5:
                 row[5] = new_desc
@@ -297,15 +319,17 @@ def validate_fix(working_rows, oid, new_desc, fieldbook_path=None, f2f_set=None,
         return {"ok": False, "cleared": [], "also_cleared": [], "still": [],
                 "note": f"There is no point with OID {oid} in the working file - nothing was changed."}
     after = detect_line_errors(rows2, fieldbook_path=fieldbook_path, f2f_set=f2f_set,
-                               command_set=cs, rules=rules)
-    key = lambda e: (str(e["issue_type"]), str(e["oid"]), str(e.get("line_id", "")))  # noqa: E731
-    seen_after = {key(e) for e in after}
-    cleared = [e for e in before if key(e) not in seen_after and str(e["oid"]).strip() == str(oid).strip()]
-    also = [e for e in before if key(e) not in seen_after and str(e["oid"]).strip() != str(oid).strip()]
-    still = [e for e in after if str(e["oid"]).strip() == str(oid).strip()]
+                               command_set=cs, rules=rules, commands=commands)
+    key = lambda issue: (str(issue["issue_type"]), str(issue["oid"]),
+                         str(issue.get("line_id", "")))  # noqa: E731
+    seen_after = {key(issue) for issue in after}
+    cleared = [issue for issue in before if key(issue) not in seen_after and
+               str(issue["oid"]).strip() == str(oid).strip()]
+    also = [issue for issue in before if key(issue) not in seen_after and
+            str(issue["oid"]).strip() != str(oid).strip()]
+    still = [issue for issue in after if str(issue["oid"]).strip() == str(oid).strip()]
     return {"ok": not still, "cleared": cleared, "also_cleared": also, "still": still,
             "note": fix_note(oid, new_desc, cleared, also, still)}
-
 
 def fix_note(oid, new_desc, cleared, also, still) -> str:
     """One sentence a status line can carry: what the fix did, and what it left."""

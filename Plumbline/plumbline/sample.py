@@ -8,12 +8,10 @@ The sample is built the long way round on purpose: the points are written out as
 through the same Fieldwork Manager code path a real job takes (read -> check -> import -> code -> linework).
 So `python -m plumbline sample` is an end-to-end test of the merged program, not just a pretty picture.
 
-Two description dialects are covered between the two shipped samples, which is the point of the merge:
-
-* this synthetic site speaks Plumbline's own dialect - ``EP1 B``, ``PL1 CLS``, ``GS`` (code + string
-  number + begin/close flags);
-* ``samples/Real World`` speaks a real Carlson office standard - ``THACK22``, ``GB4 END - EC2 END``,
-  ``58CIRST / BLUE ARS`` (numbered codes, multi-code strings, slash free text).
+The synthetic site uses Carlson Field-to-Finish command meanings and representative codes from the
+shipped office F2F reference: ``EA ST``, ``FNC X``, ``T14 / OAK``, and ``NG``. This keeps the tutorial
+project synthetic while exercising the same start/end/close and description conventions as a field book.
+The untouched real-world source remains a separate, real reduced survey in ``samples/Real World``.
 
 For real field data, see :func:`plumbline.fieldwork.sample_real.build_real_world_sample`.
 """
@@ -61,7 +59,7 @@ def _arc(cx, cy, r, a0, a1, n=7):
 
 
 def sample_points(seed: int = 11) -> list[tuple]:
-    """[(x, y, z, desc)] in local coordinates (x east, y north of the SW corner)."""
+    """Synthetic PNEZD points encoded with Carlson-style Field-to-Finish descriptions."""
     rng = np.random.default_rng(seed)
     rows: list[tuple] = []
     T = terrain
@@ -70,70 +68,71 @@ def sample_points(seed: int = 11) -> list[tuple]:
         rows.append((float(x), float(y), float(T(x, y) + dz), desc))
 
     R = 30.0
-    # -- main street: south edge of pavement y=28, north edge y=52, centreline y=40; side street at x=560 going north
+    # Main street edges, centerline, and side street.  Command semantics follow the
+    # Carlson Field Book defaults: Start Line, End Line, with each segment explicit.
     xs = list(range(0, 621, 40))
     for i, x in enumerate(xs):
-        add(x, 28, -0.15, "EP1" + (" B" if i == 0 else " E" if i == len(xs) - 1 else ""))
+        add(x, 28, -0.15, "EA ST" if i == 0 else "EA END" if i == len(xs) - 1 else "EA")
     north = [(x, 52) for x in range(0, 519, 40)] + [(518, 52)]
     north = [pt for k, pt in enumerate(north) if k == 0 or pt != north[k - 1]]
     for i, (x, y) in enumerate(north):
-        add(x, y, -0.15, "EP2" + (" B" if i == 0 else ""))
-    for x, y in _arc(518, 82, R, -90, 0):                              # west corner fillet
-        add(x, y, -0.15, "EP2")
+        add(x, y, -0.15, "EA ST" if i == 0 else "EA")
+    for x, y in _arc(518, 82, R, -90, 0):
+        add(x, y, -0.15, "EA")
     for y in range(120, 341, 40):
-        add(548, y, -0.15, "EP2")
-    add(548, 340, -0.15, "EP2 E") if False else None
-    rows[-1] = (*rows[-1][:3], "EP2 E")
-    for i, y in enumerate(range(340, 81, -40)):                       # side street east edge, heading south
-        add(572, y, -0.15, "EP3" + (" B" if i == 0 else ""))
-    add(572, 82, -0.15, "EP3")
-    for x, y in _arc(602, 82, R, 180, 270):                           # east corner fillet
-        add(x, y, -0.15, "EP3")
-    add(620, 52, -0.15, "EP3 E")
+        add(548, y, -0.15, "EA")
+    rows[-1] = (*rows[-1][:3], "EA END")
+    for i, y in enumerate(range(340, 81, -40)):
+        add(572, y, -0.15, "EA ST" if i == 0 else "EA")
+    add(572, 82, -0.15, "EA")
+    for x, y in _arc(602, 82, R, 180, 270):
+        add(x, y, -0.15, "EA")
+    add(620, 52, -0.15, "EA END")
+
     for i, x in enumerate(range(0, 621, 40)):
-        add(x, 40, 0.05, "CL1" + (" B" if i == 0 else " E" if x == 620 else ""))
+        add(x, 40, 0.05, "CL ST" if i == 0 else "CL END" if x == 620 else "CL")
     for i, y in enumerate(range(80, 341, 52)):
-        add(560, y, 0.05, "CL2" + (" B" if i == 0 else ""))
-    rows[-1] = (*rows[-1][:3], "CL2 E")
+        add(560, y, 0.05, "CL ST" if i == 0 else "CL")
+    rows[-1] = (*rows[-1][:3], "CL END")
 
-    # -- sidewalk behind the north curb
+    # Sidewalk and closed site features.
     for i, x in enumerate(range(10, 539, 66)):
-        add(x, 60, -0.05, "SW1" + (" B" if i == 0 else ""))
-    rows[-1] = (*rows[-1][:3], "SW1 E")
+        add(x, 60, -0.05, "SW ST" if i == 0 else "SW")
+    rows[-1] = (*rows[-1][:3], "SW END")
 
-    # -- property line (closed) and fence
     for i, (x, y) in enumerate(((0, 62), (540, 62), (540, 345), (0, 345))):
-        add(x, y, 0.0, "PL1" + (" B" if i == 0 else " CLS" if i == 3 else ""))
+        add(x, y, 0.0, "FNC ST" if i == 0 else "FNC X" if i == 3 else "FNC")
     for i, x in enumerate(range(0, 541, 90)):
-        add(x, 343, 0.0, "FNC1" + (" B" if i == 0 else " E" if x == 540 else ""))
+        add(x, 343, 0.0, "FNC ST" if i == 0 else "FNC END" if x == 540 else "FNC")
 
-    # -- building 90 x 54 ft with a finished floor 2 ft above the surrounding ground
+    # Building and parking geometry.
     bx, by, bw, bh = 150.0, 170.0, 90.0, 54.0
     ff = float(T(bx + bw / 2, by + bh / 2)) + 2.0
-    for x, y in ((bx, by), (bx + bw, by), (bx + bw, by + bh), (bx, by + bh)):
-        rows.append((x, y, round(ff - 0.35, 2), "BLDG"))
+    building_corners = ((bx, by), (bx + bw, by), (bx + bw, by + bh), (bx, by + bh))
+    for i, (x, y) in enumerate(building_corners):
+        desc = "BLDG ST" if i == 0 else "BLDG X" if i == len(building_corners) - 1 else "BLDG"
+        rows.append((x, y, round(ff - 0.35, 2), desc))
     rows.append((bx + bw / 2, by + bh / 2, round(ff, 2), "FFE"))
-    # -- parking lot edge (closed) and a walk to the door
     for i, (x, y) in enumerate(((120, 100), (280, 100), (280, 150), (120, 150))):
-        add(x, y, -0.05, "EP4" + (" B" if i == 0 else " CLS" if i == 3 else ""))
-    add(195, 152, 0.1, "SW2 B")
-    add(195, 100, 0.05, "SW2 E")
+        add(x, y, -0.05, "EA ST" if i == 0 else "EA X" if i == 3 else "EA")
+    add(195, 152, 0.1, "SW ST")
+    add(195, 100, 0.05, "SW END")
 
-    # -- utilities, furniture, trees  (rims sit within a tenth or two of the pavement, as in real life)
-    add(95, 46, -0.12, "MH")
+    # Point features use office-standard codes; a slash introduces a note, not another code.
+    add(95, 46, -0.12, "MH / WATER")
     add(430, 46, -0.10, "SSMH")
     add(300, 57, 0.10, "FH")
     add(60, 58, 0.05, "LP")
     add(350, 58, 0.05, "LP")
-    add(255, 66, 0.0, "SIGN")
-    for x, y, d in ((330, 300, 14), (360, 120, 18), (90, 240, 22), (470, 230, 16), (40, 320, 12)):
-        add(x, y, 0.0, f"TREE {d} OAK")
+    add(255, 66, 0.0, "SN")
+    for x, y, diameter in ((330, 300, 14), (360, 120, 18), (90, 240, 22), (470, 230, 16), (40, 320, 12)):
+        add(x, y, 0.0, f"T{diameter} / OAK")
 
-    # -- drainage swale flowline (a breakline: SWL string 1)
+    # Drainage flowline (a surface breakline).
     for i, x in enumerate(range(30, 531, 50)):
-        add(x, float(swale_y(x)), 0.0, "SWL1" + (" B" if i == 0 else " E" if x == 530 else ""))
+        add(x, float(swale_y(x)), 0.0, "FL ST" if i == 0 else "FL END" if x == 530 else "FL")
 
-    # -- general ground shots on a loose grid (skipping the building, the parking lot and the street)
+    # Natural-ground shots on a loose grid, skipping the building, parking, and street.
     for x in np.arange(14, 540, 38):
         for y in np.arange(74, 336, 36):
             if bx - 14 < x < bx + bw + 14 and by - 14 < y < by + bh + 14:
@@ -141,10 +140,40 @@ def sample_points(seed: int = 11) -> list[tuple]:
             if 108 < x < 292 and 88 < y < 162:
                 continue
             xx, yy = x + rng.uniform(-9, 9), y + rng.uniform(-9, 9)
-            rows.append((float(xx), float(yy), float(T(xx, yy) + rng.normal(0, 0.04)), "GS"))
-    for x in range(20, 600, 60):                                      # south of the street
-        add(x + rng.uniform(-8, 8), 14 + rng.uniform(-3, 3), rng.normal(0, 0.04), "GS")
+            rows.append((float(xx), float(yy), float(T(xx, yy) + rng.normal(0, 0.04)), "NG"))
+    for x in range(20, 600, 60):
+        add(x + rng.uniform(-8, 8), 14 + rng.uniform(-3, 3), rng.normal(0, 0.04), "NG")
     return rows
+
+
+def sample_fieldbook_codes():
+    """A small synthetic code table based on the Carlson F2F office reference."""
+    from .core.featurecodes import FeatureCode, FeatureCodeTable
+
+    definitions = [
+        ("EA", "Edge of asphalt", "line", "V-SITE-ASPHALT", True, True),
+        ("CL", "Centerline", "line", "V-SITE-CENTERLINE", True, True),
+        ("SW", "Sidewalk", "line", "V-SITE-WALK", True, True),
+        ("FNC", "Fence", "line", "V-SITE-FENCE", False, False),
+        ("BLDG", "Building corner", "polygon", "V-BLDG", False, False),
+        ("FFE", "Finished floor elevation", "point", "V-BLDG-FFE", False, False),
+        ("MH", "Manhole", "point", "E-UTILITY-MH", False, False),
+        ("SSMH", "Sanitary sewer manhole", "point", "E-UTILITY-SSMH", False, False),
+        ("FH", "Fire hydrant", "point", "E-UTILITY-FH", False, False),
+        ("LP", "Light pole", "point", "E-UTILITY-LP", False, False),
+        ("SN", "Sign", "point", "V-ROAD-SIGN", False, False),
+        ("FL", "Flowline", "line", "V-SITE-FLOWLINE", True, True),
+        ("NG", "Natural ground shot", "point", "V-SITE-GROUND", False, True),
+        ("T12", 'Tree 12"', "point", "V-SITE-TREES", False, False),
+        ("T14", 'Tree 14"', "point", "V-SITE-TREES", False, False),
+        ("T16", 'Tree 16"', "point", "V-SITE-TREES", False, False),
+        ("T18", 'Tree 18"', "point", "V-SITE-TREES", False, False),
+        ("T22", 'Tree 22"', "point", "V-SITE-TREES", False, False),
+    ]
+    return FeatureCodeTable([
+        FeatureCode(code, name, kind, layer, breakline=breakline, ground=ground)
+        for code, name, kind, layer, breakline, ground in definitions
+    ])
 
 
 def sample_field_rows(seed: int = 11) -> list[list[str]]:
@@ -165,13 +194,13 @@ def sample_field_rows(seed: int = 11) -> list[list[str]]:
 
 
 def sample_bust_row(rows) -> int | None:
-    """Index of the one GS shot given a deliberate +4.9 ft elevation error.
+    """Index of the one natural-ground shot given a deliberate +4.9 ft elevation error.
 
     The Data Quality Check tool needs something to find, and a surveyor's eye goes
     straight to a shot that is 4.9 ft above its neighbours.
     """
-    gs = [i for i, r in enumerate(rows) if r[5] == "GS"]
-    return gs[len(gs) // 2] if gs else None
+    ground_shots = [i for i, r in enumerate(rows) if r[5] == "NG"]
+    return ground_shots[len(ground_shots) // 2] if ground_shots else None
 
 
 def make_sample_project(with_surface: bool = True, plant_bust: bool = True,
@@ -186,6 +215,7 @@ def make_sample_project(with_surface: bool = True, plant_bust: bool = True,
 
     pr = Project("Sample site (synthetic)",
                  ProjectCRS.from_epsg(SAMPLE_EPSG, vunit="ftUS", vdatum="NAVD88 (assumed)"))
+    pr.codes = sample_fieldbook_codes()
     rows = sample_field_rows()
     if plant_bust:
         i = sample_bust_row(rows)
@@ -206,8 +236,8 @@ def make_sample_project(with_surface: bool = True, plant_bust: bool = True,
         sf, rep = build_surface_from_project(pr, "Existing ground", {"ground_only": True, "use_breakline_kind": True,
                                                                      "max_edge": 160.0})
         pr.add_surface(sf)
-    pr.notes = ("Synthetic sample: terrain = plane + hill + swale. Point numbers near the middle of the GS shots "
-                "include one deliberate +4.9 ft bust for the Data QA tool.\n"
+    pr.notes = ("Synthetic sample: terrain = plane + hill + swale. Point numbers near the middle of the NG shots "
+                "include one deliberate +4.9 ft bust for the Data QA tool. Carlson-style Field Book commands and code meanings are used.\n"
                 f"Coordinate system {SAMPLE_CRS_LABEL}. The points went in through the Fieldwork Manager "
                 "import path (Survey > Fieldwork Manager), so this project also demonstrates the field-data side.")
     return pr
@@ -391,6 +421,10 @@ shots land on top of each other. That makes it the right sample for learning the
 drawing tools, and the wrong one for seeing the checks work.
 
 The check report in `Reports/` therefore says "0 findings" and means it.
+
+Descriptions use Carlson Field-to-Finish meanings represented by the shipped F2F reference:
+`EA ST` / `EA END` for line boundaries, `FNC X` for a closed feature, `T14 / OAK` for a code plus
+note, and `NG` for natural-ground shots. The project and its Field Book are synthetic.
 
 For a job with real problems in it - three crews, one shared control, genuine duplicate
 point numbers, descriptions that do not parse - open **Real World**, the other shipped

@@ -7,7 +7,10 @@ from plumbline.plugins import exporter
 
 @exporter("Feature-code summary (*.txt)", ".txt")
 def write_summary(project, path, api):
-    counts = Counter(parse_description(p.desc).code or "(none)" for p in project.points.values())
+    commands = (project.settings or {}).get("f2f_commands")
+    known_codes = project.codes.codes
+    counts = Counter(parse_description(p.desc, commands=commands, known_codes=known_codes).code or "(none)"
+                     for p in project.points.values())
     with open(path, "w", encoding="utf-8") as f:
         f.write(f"Project: {project.name}\nPoints: {len(project.points)}\n\n")
         for code, n in counts.most_common():

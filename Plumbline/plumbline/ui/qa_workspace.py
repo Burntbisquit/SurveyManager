@@ -2,7 +2,7 @@
 
 Provides dedicated, non-modal workbenches for fixing field errors:
 1. FixPointErrorsDialog: Point & code errors (Duplicates, Proximity, Unrecognized Codes, Letter Cases)
-2. FixLineworkDialog: Linework errors & sequence cleanup (Missing ST/END, Bowties, Inverted Codes, Gaps)
+2. FixLineworkDialog: Linework errors & sequence cleanup (missing line/curve meanings, bowties, inverted codes, gaps)
 
 Features:
 - Split Layout: Left pane = 2D Plan View + 3D Elevation/Terrain View; Right pane = Issues & Inline Tools
@@ -11,7 +11,7 @@ Features:
 - Deep inline point/linework resolution tools (with point selection highlighting in 2D/3D)
 - Closeness tolerance configuration shown only when editing close points
 - Stacked close points with per-point action dropdowns dialog
-- Smart Description Merging: combines code groups and note descriptions (e.g. 'ec1 st - sw / new' + 'toc1 / broken' -> 'ec1 st - sw - toc1 / new broken')
+- Smart Description Merging: combines code groups and notes with the active Field Book separators
 - Export Check Report to CSV
 - Clean exit prompts on unsaved changes
 """
@@ -33,6 +33,13 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                                QToolButton, QVBoxLayout, QWidget)
 
 from ..core import point_linework_coder as PLC
+from ..core.fieldbook_syntax import (
+    command_joiner,
+    command_map,
+    find_separator,
+    separator_text,
+    split_at_separator,
+)
 from ..core.model import Polyline, SurveyPoint
 from . import icons, theme
 from .canvas import CanvasView
@@ -40,46 +47,105 @@ from .view3d import PRESETS, SceneProvider, View3D
 from .widgets import Banner, Hint
 
 
+class DownTabTableWidget(QTableWidget):
+    """Move Tab vertically through a list/table and stop at its ends instead of wrapping."""
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Tab, Qt.Key_Backtab):
+            step = -1 if event.key() == Qt.Key_Backtab or event.modifiers() & Qt.ShiftModifier else 1
+            row, column = self.currentRow(), max(0, self.currentColumn())
+            target_row = (0 if row < 0 else row + step)
+            if 0 <= target_row < self.rowCount() and self.columnCount():
+                self.setCurrentCell(target_row, column)
+                target = self.cellWidget(target_row, column)
+                if target is not None:
+                    target.setFocus(Qt.TabFocusReason)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def moveCursor(self, cursorAction, modifiers):
+        if cursorAction in (QAbstractItemView.MoveNext, QAbstractItemView.MovePrevious):
+            row = self.currentRow()
+            column = max(0, self.currentColumn())
+            step = 1 if cursorAction == QAbstractItemView.MoveNext else -1
+            target_row = (0 if row < 0 else row + step)
+            if 0 <= target_row < self.rowCount():
+                return self.model().index(target_row, column)
+            if row >= 0 and row < self.rowCount() and self.columnCount():
+                return self.model().index(row, column)
+            return self.model().index(0, 0) if self.rowCount() and self.columnCount() else self.currentIndex()
+        return super().moveCursor(cursorAction, modifiers)
+
+
+class _DownTabComboBox(QComboBox):
+    """Tab from an embedded list combo to the same column in the next row, without wraparound."""
+
+    def __init__(self, table, row: int, column: int, parent=None):
+        super().__init__(parent)
+        self._table = table
+        self._row = row
+        self._column = column
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Tab, Qt.Key_Backtab):
+            step = -1 if event.key() == Qt.Key_Backtab or event.modifiers() & Qt.ShiftModifier else 1
+            target_row = self._row + step
+            if 0 <= target_row < self._table.rowCount():
+                self._table.setCurrentCell(target_row, self._column)
+                target = self._table.cellWidget(target_row, self._column)
+                if target is not None:
+                    target.setFocus(Qt.TabFocusReason)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 # ------------------------------------------------------------------ Helper Functions
-def merge_point_descriptions(descs: Sequence[str]) -> str:
-    """Merge multiple point descriptions by stacking code groups and note descriptions.
+def merge_point_descriptions(descs: Sequence[str], fieldbook_path=None, commands=None) -> str:
+    """Merge code groups and notes using the active Field Book separators and spacing settings."""
+    from ..core.fieldbook_syntax import find_separator, separator_text, split_at_separator
+    from ..fieldwork.config import get_command_map
 
-    Example:
-    'ec1 st - sw / new' + 'toc1 / broken' -> 'ec1 st - sw - toc1 / new broken'
-    """
+    semantic_tokens = get_command_map(fieldbook_path, commands)
+    multicode_token = semantic_tokens.get("multicode", "")
+    description_token = semantic_tokens.get("description", "")
     code_segments = []
+    seen_codes = set()
     notes = []
+    seen_notes = set()
 
-    for d in descs:
-        if not d or not str(d).strip():
+    for description in descs:
+        if not description or not str(description).strip():
             continue
-        d_str = str(d).strip()
-        if "/" in d_str:
-            c_part, _, n_part = d_str.partition("/")
-            c_part = c_part.strip()
-            n_part = n_part.strip()
+        raw = str(description).strip()
+        if find_separator(raw, description_token) >= 0:
+            code_part, note_part = split_at_separator(raw, description_token, maxsplit=1)
+            code_part, note_part = code_part.strip(), note_part.strip()
         else:
-            c_part = d_str.strip()
-            n_part = ""
+            code_part, note_part = raw, ""
 
-        if c_part:
-            for sub_c in [s.strip() for s in c_part.split(" - ") if s.strip()]:
-                if sub_c not in code_segments:
-                    code_segments.append(sub_c)
-        if n_part:
-            for word in n_part.split():
-                if word not in notes:
-                    notes.append(word)
+        code_parts = split_at_separator(code_part, multicode_token, maxsplit=0) if multicode_token else [code_part]
+        for segment in code_parts:
+            segment = segment.strip()
+            if segment and segment.casefold() not in seen_codes:
+                seen_codes.add(segment.casefold())
+                code_segments.append(segment)
+        for note in note_part.split():
+            if note.casefold() not in seen_notes:
+                seen_notes.add(note.casefold())
+                notes.append(note)
 
-    merged_code = " - ".join(code_segments) if code_segments else ""
-    merged_note = " ".join(notes) if notes else ""
-
+    multi_joiner = separator_text("multicode", semantic_tokens) or " "
+    description_joiner = separator_text("description", semantic_tokens)
+    merged_code = multi_joiner.join(code_segments)
+    merged_note = " ".join(notes)
     if merged_code and merged_note:
-        return f"{merged_code} / {merged_note}"
-    elif merged_code:
+        return f"{merged_code}{description_joiner}{merged_note}"
+    if merged_code:
         return merged_code
-    elif merged_note:
-        return f"/ {merged_note}"
+    if merged_note:
+        return f"{description_joiner.lstrip()}{merged_note}" if description_joiner else merged_note
     return ""
 
 
@@ -114,6 +180,9 @@ class ClosePointsResolveDialog(QDialog):
         super().__init__(parent)
         self.state = state
         self.points = list(points)
+        project_settings = getattr(state.project, "settings", {}) or {}
+        self.fieldbook_path = project_settings.get("fieldbook_file")
+        self.commands = project_settings.get("f2f_commands")
         self.is_duplicate = is_duplicate
         self.setWindowTitle("Resolve Point Stack")
         self.resize(780, 480)
@@ -173,7 +242,8 @@ class ClosePointsResolveDialog(QDialog):
         lay_opt = QFormLayout(box_opt)
 
         self.ed_preview_desc = QLineEdit()
-        self.ed_preview_desc.setText(merge_point_descriptions([p.desc for p in self.points]))
+        self.ed_preview_desc.setText(merge_point_descriptions(
+            [p.desc for p in self.points], self.fieldbook_path, self.commands))
         lay_opt.addRow("Merged Description:", self.ed_preview_desc)
 
         self.chk_avg_coords = QCheckBox("Average coordinates of merged points")
@@ -206,7 +276,8 @@ class ClosePointsResolveDialog(QDialog):
         if len(merge_points) > 1:
             self.ed_preview_desc.setEnabled(True)
             self.chk_avg_coords.setEnabled(True)
-            self.ed_preview_desc.setText(merge_point_descriptions([p.desc or "" for p in merge_points]))
+            self.ed_preview_desc.setText(merge_point_descriptions(
+                [p.desc or "" for p in merge_points], self.fieldbook_path, self.commands))
         else:
             # A single target is not a merge. Clear any stale preview so Keep/Ignore/Delete
             # choices cannot accidentally apply a description left over from an earlier choice.
@@ -458,7 +529,7 @@ class BaseQAWorkbenchDialog(QDialog):
         lbl_sum_hint.setProperty("hint", "true")
         lay_sum.addWidget(lbl_sum_hint)
 
-        self.tbl_active = QTableWidget(0, 5)
+        self.tbl_active = DownTabTableWidget(0, 5)
         self.tbl_active.setHorizontalHeaderLabels(["Edit", "Status", "Check", "Resolution Summary / Details", "Points"])
         self.tbl_active.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_active.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -480,7 +551,7 @@ class BaseQAWorkbenchDialog(QDialog):
         self.lbl_resolved_title = QLabel("<b>Resolved Issues (This Session):</b>")
         lay_sum.addWidget(self.lbl_resolved_title)
 
-        self.tbl_resolved = QTableWidget(0, 4)
+        self.tbl_resolved = DownTabTableWidget(0, 4)
         self.tbl_resolved.setHorizontalHeaderLabels(["Level", "Check", "Resolution Summary", "Points"])
         self.tbl_resolved.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_resolved.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -508,14 +579,11 @@ class BaseQAWorkbenchDialog(QDialog):
         self.lay_edit.setContentsMargins(0, 0, 0, 0)
         self.lay_edit.setSpacing(6)
 
-        # Back bar & Issue-Scoped Undo/Redo
-        w_back_bar = QWidget()
-        lay_bb = QHBoxLayout(w_back_bar)
+        # Issue heading & scoped Undo/Redo
+        w_issue_header = QWidget()
+        lay_bb = QHBoxLayout(w_issue_header)
         lay_bb.setContentsMargins(0, 0, 0, 0)
         lay_bb.setSpacing(6)
-        self.btn_back = QPushButton("← Back to All Issues")
-        self.btn_back.clicked.connect(self._on_back_clicked)
-        lay_bb.addWidget(self.btn_back)
 
         self.lbl_edit_title = QLabel("<b>Fix Issue</b>")
         self.lbl_edit_title.setStyleSheet("font-size: 13px;")
@@ -540,7 +608,7 @@ class BaseQAWorkbenchDialog(QDialog):
         self.btn_issue_redo.clicked.connect(self._redo_issue)
         lay_bb.addWidget(self.btn_issue_redo)
 
-        self.lay_edit.addWidget(w_back_bar)
+        self.lay_edit.addWidget(w_issue_header)
 
         self.lbl_edit_detail = QLabel("")
         self.lbl_edit_detail.setWordWrap(True)
@@ -549,7 +617,7 @@ class BaseQAWorkbenchDialog(QDialog):
 
         # Table of Affected Points
         self.lay_edit.addWidget(QLabel("<b>Affected Points (Click on point / stack to highlight):</b>"))
-        self.tbl_edit_pts = QTableWidget(0, 6)
+        self.tbl_edit_pts = DownTabTableWidget(0, 6)
         self.tbl_edit_pts.setHorizontalHeaderLabels(["Edit", "Pt #", "Northing", "Easting", "Elevation", "Description"])
         self.tbl_edit_pts.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_edit_pts.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -577,7 +645,7 @@ class BaseQAWorkbenchDialog(QDialog):
         self.lbl_edit_resolved_title = QLabel("<b>Staged Resolutions for this Issue:</b>")
         self.lay_edit.addWidget(self.lbl_edit_resolved_title)
 
-        self.tbl_edit_resolved = QTableWidget(0, 3)
+        self.tbl_edit_resolved = DownTabTableWidget(0, 3)
         self.tbl_edit_resolved.setHorizontalHeaderLabels(["Check", "Resolution Summary", "Points"])
         self.tbl_edit_resolved.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_edit_resolved.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -591,30 +659,25 @@ class BaseQAWorkbenchDialog(QDialog):
         hh_er.setStretchLastSection(True)
         self.lay_edit.addWidget(self.tbl_edit_resolved, 1)
 
-        # Bottom Action Bar on Active Issue Page: Save & Return, Discard, Back
-        w_issue_bottom = QWidget()
-        lay_ib = QHBoxLayout(w_issue_bottom)
+        # Fixed action bar for the active issue page (kept outside its scroll area)
+        self.w_issue_bottom = QWidget()
+        lay_ib = QHBoxLayout(self.w_issue_bottom)
         lay_ib.setContentsMargins(0, 4, 0, 0)
         lay_ib.setSpacing(8)
 
-        self.btn_issue_save = QPushButton("Save & Return to All Issues")
+        self.btn_issue_save = QPushButton("Save & Return")
         self.btn_issue_save.setProperty("accent", True)
-        self.btn_issue_save.setToolTip("Save staged fixes for this issue and return to the issues list")
+        self.btn_issue_save.setToolTip("Save staged fixes for this issue and return to All Issues")
         self.btn_issue_save.clicked.connect(self._action_save_issue)
         lay_ib.addWidget(self.btn_issue_save)
 
-        self.btn_issue_discard = QPushButton("Discard Issue Changes")
+        self.btn_issue_discard = QPushButton("Discard & Return")
         self.btn_issue_discard.setToolTip("Revert any changes made on this issue in this session and return")
         self.btn_issue_discard.clicked.connect(self._action_discard_issue)
         lay_ib.addWidget(self.btn_issue_discard)
 
         lay_ib.addStretch(1)
-
-        self.btn_issue_back_bottom = QPushButton("← Back to All Issues")
-        self.btn_issue_back_bottom.clicked.connect(self._on_back_clicked)
-        lay_ib.addWidget(self.btn_issue_back_bottom)
-
-        self.lay_edit.addWidget(w_issue_bottom)
+        self.w_issue_bottom.hide()
 
         self.scroll_edit = QScrollArea()
         self.scroll_edit.setWidgetResizable(True)
@@ -623,6 +686,7 @@ class BaseQAWorkbenchDialog(QDialog):
         self.scroll_edit.setWidget(self.page_edit)
         self.stack.addWidget(self.scroll_edit)
         lay_right.addWidget(self.stack, 1)
+        lay_right.addWidget(self.w_issue_bottom)
 
         # Bottom Action Bar: Status, Save & Exit, Discard, Cancel
         w_bottom_bar = QWidget()
@@ -665,11 +729,16 @@ class BaseQAWorkbenchDialog(QDialog):
         self._sync_view_flags()
 
     def _on_stack_page_changed(self, index: int):
-        """Keep workbench-level exit actions on the summary page only."""
-        show_exit_actions = index == 0
-        self.btn_save_exit.setVisible(show_exit_actions)
-        self.btn_discard_exit.setVisible(show_exit_actions)
-        self.btn_cancel.setVisible(show_exit_actions)
+        """Pin the appropriate action bar and identify the active page in the window title."""
+        show_summary_actions = index == 0
+        self.btn_save_exit.setVisible(show_summary_actions)
+        self.btn_discard_exit.setVisible(show_summary_actions)
+        self.btn_cancel.setVisible(show_summary_actions)
+        self.w_issue_bottom.setVisible(index == 1)
+        page_name = "All Issues"
+        if index == 1 and self.current_edit_finding:
+            page_name = str(self.current_edit_finding.get("check") or "Issue").strip()
+        self.setWindowTitle(f"{self.workbench_title} — {page_name}")
 
     # ------------------------------------------------------------------ Subclass Extension Hooks
     def _filter_finding(self, finding: dict) -> bool:
@@ -1209,27 +1278,6 @@ class BaseQAWorkbenchDialog(QDialog):
         self.issue_dirty = False
         self._show_summary_page()
 
-    def _on_back_clicked(self):
-        if self._has_unapplied_issue_edits():
-            mb = QMessageBox(self)
-            mb.setWindowTitle("Unsaved Changes")
-            mb.setText("You have unsaved changes in this issue.\n\nDo you want to save them to the initial view before returning?")
-            b_save = mb.addButton("Save & Return", QMessageBox.AcceptRole)
-            b_discard = mb.addButton("Discard & Return", QMessageBox.DestructiveRole)
-            b_cancel = mb.addButton("Cancel", QMessageBox.RejectRole)
-            mb.setDefaultButton(b_save)
-            mb.exec()
-
-            clicked = mb.clickedButton()
-            if clicked == b_save:
-                self._action_save_issue()
-            elif clicked == b_discard:
-                self._action_discard_issue()
-            else:
-                return
-        else:
-            self._show_summary_page()
-
     @staticmethod
     def _safe_widget_text(widget, getter: str) -> str | None:
         """Read text from a Qt widget, returning None if its C++ object was deleted."""
@@ -1750,6 +1798,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
 
             f2f_set = set(self.code_set) if self.code_set else set()
             fb_path = None
+            commands = (pr.settings or {}).get("f2f_commands")
             try:
                 from ..fieldwork.bridge import vocabulary_for
                 voc = vocabulary_for(pr, getattr(self.state, "job_folder", None))
@@ -1759,7 +1808,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             except Exception:
                 pass
 
-            self.tbl_corrections = QTableWidget(len(pts), 4)
+            self.tbl_corrections = DownTabTableWidget(len(pts), 4)
             self.tbl_corrections.setHorizontalHeaderLabels(["Pt #", "Original Code", "Fixed Code", "Action"])
             self.tbl_corrections.setSelectionBehavior(QAbstractItemView.SelectRows)
             self.tbl_corrections.verticalHeader().setVisible(False)
@@ -1786,10 +1835,12 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                     pass
                 if not sugg:
                     raw_desc = orig_desc
-                    if "/" in raw_desc:
-                        parts = raw_desc.split("/", 1)
-                        c_part, f_part = parts[0].strip(), parts[1].strip()
-                        sugg = f"{f_part} / {c_part}" if c_part else f_part
+                    description_token = command_map(commands).get("description", "")
+                    if find_separator(raw_desc, description_token) >= 0:
+                        c_part, f_part = split_at_separator(raw_desc, description_token, maxsplit=1)
+                        c_part, f_part = c_part.strip(), f_part.strip()
+                        joiner = separator_text("description", commands)
+                        sugg = f"{f_part}{joiner}{c_part}" if c_part and joiner else (f"{f_part} {c_part}" if c_part else f_part)
                     else:
                         sugg = raw_desc
                 if not sugg_num:
@@ -1807,7 +1858,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                 it_fixed.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable)
                 self.tbl_corrections.setItem(r, 2, it_fixed)
 
-                cb_action = QComboBox()
+                cb_action = _DownTabComboBox(self.tbl_corrections, r, 3)
                 cb_action.addItems(["Skip", "Correct", "Correct (Leave # in Descriptor)", "Ignore"])
                 cb_action.setCurrentIndex(0)  # default all dropdowns to skip
 
@@ -2052,7 +2103,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             lay_fb.addLayout(row_fb_filter)
 
             # Fieldbook Table
-            self.fb_table = QTableWidget(0, 3)
+            self.fb_table = DownTabTableWidget(0, 3)
             self.fb_table.setHorizontalHeaderLabels(["Code", "Description", "Category"])
             self.fb_table.setSelectionBehavior(QAbstractItemView.SelectRows)
             self.fb_table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -2381,7 +2432,10 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
         p_primary = pts[0]
         pts_del = pts[1:]
         stack_pids = [p.id for p in pts]
-        merged_desc = merge_point_descriptions([p.desc for p in pts])
+        project_settings = getattr(self.state.project, "settings", {}) or {}
+        merged_desc = merge_point_descriptions(
+            [p.desc for p in pts], project_settings.get("fieldbook_file"),
+            project_settings.get("f2f_commands"))
 
         def do_it():
             if average and pts:
@@ -2634,17 +2688,18 @@ class FixLineworkDialog(BaseQAWorkbenchDialog):
         lay_g = QVBoxLayout(grp)
         lay_g.setSpacing(6)
 
-        # 1. Quick Start / End additions
+        # 1. Quick boundary actions, labelled with the active Field Book tokens
         row_se = QHBoxLayout()
-        btn_add_st = QPushButton("Add ST")
+        commands = command_map((pr.settings or {}).get("f2f_commands"))
+        btn_add_st = QPushButton(f"Add Start Line ({commands.get('start_line', '')})")
         btn_add_st.clicked.connect(lambda: self._action_add_st(pts))
         row_se.addWidget(btn_add_st)
 
-        btn_add_end = QPushButton("Add END")
+        btn_add_end = QPushButton(f"Add End Line ({commands.get('end_line', '')})")
         btn_add_end.clicked.connect(lambda: self._action_add_end(pts))
         row_se.addWidget(btn_add_end)
 
-        btn_add_cls = QPushButton("Close Figure")
+        btn_add_cls = QPushButton(f"Close Figure ({commands.get('close', '')})")
         btn_add_cls.clicked.connect(lambda: self._action_add_cls(pts))
         row_se.addWidget(btn_add_cls)
         row_se.addStretch(1)
@@ -2712,38 +2767,62 @@ class FixLineworkDialog(BaseQAWorkbenchDialog):
     def _action_add_st(self, pts: list[SurveyPoint]):
         if not pts:
             return
-        p = pts[0]
+        point = pts[0]
+        project = self.state.project
+        commands = command_map((project.settings or {}).get("f2f_commands"))
+        start_token = commands.get("start_line", "")
+        if not start_token:
+            return
 
         def do_it():
-            tokens = (p.desc or "").split()
-            code = tokens[0] if tokens else "EP"
-            p.desc = PLC.update_point_token(p.desc or "", code, f"{code} ST")
+            parsed = PLC.parse_description(point.desc or "", commands=commands,
+                                           known_codes=project.codes.codes)
+            code = parsed.code + parsed.string or "EP"
+            point.desc = PLC.update_point_token(
+                point.desc or "", code, code + command_joiner() + start_token, commands)
 
-        self._apply_fix(f"Added ST to Pt #{p.number}", do_it, resolved_points=[p.id], stay_on_edit_page=True)
+        self._apply_fix(f"Added Start Line to Pt #{point.number}", do_it,
+                        resolved_points=[point.id], stay_on_edit_page=True)
 
     def _action_add_end(self, pts: list[SurveyPoint]):
         if not pts:
             return
-        p = pts[-1]
+        point = pts[-1]
+        project = self.state.project
+        commands = command_map((project.settings or {}).get("f2f_commands"))
+        end_token = commands.get("end_line", "")
+        if not end_token:
+            return
 
         def do_it():
-            tokens = (p.desc or "").split()
-            code = tokens[0] if tokens else "EP"
-            p.desc = PLC.update_point_token(p.desc or "", code, f"{code} END")
+            parsed = PLC.parse_description(point.desc or "", commands=commands,
+                                           known_codes=project.codes.codes)
+            code = parsed.code + parsed.string or "EP"
+            point.desc = PLC.update_point_token(
+                point.desc or "", code, code + command_joiner() + end_token, commands)
 
-        self._apply_fix(f"Added END to Pt #{p.number}", do_it, resolved_points=[p.id], stay_on_edit_page=True)
+        self._apply_fix(f"Added End Line to Pt #{point.number}", do_it,
+                        resolved_points=[point.id], stay_on_edit_page=True)
 
     def _action_add_cls(self, pts: list[SurveyPoint]):
         if not pts:
             return
-        p = pts[-1]
+        point = pts[-1]
+        project = self.state.project
+        commands = command_map((project.settings or {}).get("f2f_commands"))
+        close_token = commands.get("close", "")
+        if not close_token:
+            return
 
         def do_it():
-            tokens = (p.desc or "").split()
-            code = tokens[0] if tokens else "BLDG"
-            p.desc = PLC.update_point_token(p.desc or "", code, f"{code} CLS")
+            parsed = PLC.parse_description(point.desc or "", commands=commands,
+                                           known_codes=project.codes.codes)
+            code = parsed.code + parsed.string or "BLDG"
+            point.desc = PLC.update_point_token(
+                point.desc or "", code, code + command_joiner() + close_token, commands)
 
-        self._apply_fix(f"Closed figure on Pt #{p.number}", do_it, resolved_points=[p.id], stay_on_edit_page=True)
+        self._apply_fix(f"Closed figure on Pt #{point.number}", do_it,
+                        resolved_points=[point.id], stay_on_edit_page=True)
 
     def _action_swap_bowtie(self, pts: list[SurveyPoint]):
         c1 = self.ed_c1.text().strip().upper()
@@ -2753,7 +2832,8 @@ class FixLineworkDialog(BaseQAWorkbenchDialog):
         pids = [p.id for p in pts]
 
         def do_it():
-            PLC.swap_parallel_line_codes(pts, c1, c2)
+            PLC.swap_parallel_line_codes(
+                pts, c1, c2, commands=(self.state.project.settings or {}).get("f2f_commands"))
 
         self._apply_fix(f"Swapped parallel line codes {c1} <-> {c2}", do_it, resolved_points=pids, stay_on_edit_page=True)
 
@@ -2768,7 +2848,9 @@ class FixLineworkDialog(BaseQAWorkbenchDialog):
             mid = len(pts) // 2
             s1 = pts[:mid]
             s2 = pts[mid:]
-            PLC.merge_and_reclass_strings(self.state.project, s1, s2, target_code=t_code, new_string_id=t_id)
+            PLC.merge_and_reclass_strings(
+                self.state.project, s1, s2, target_code=t_code, new_string_id=t_id,
+                commands=(self.state.project.settings or {}).get("f2f_commands"))
 
         self._apply_fix(f"Reclassed and merged to {t_code}{t_id}", do_it, resolved_points=pids, stay_on_edit_page=True)
 
@@ -2777,7 +2859,8 @@ class FixLineworkDialog(BaseQAWorkbenchDialog):
 
         def do_it():
             for p in pts:
-                p.desc = PLC.fix_line_command_order(p.desc or "")
+                p.desc = PLC.fix_line_command_order(
+                    p.desc or "", commands=(self.state.project.settings or {}).get("f2f_commands"))
 
         self._apply_fix(f"Standardized line command order on {len(pts)} point(s)", do_it, resolved_points=pids, stay_on_edit_page=True)
 
@@ -2785,7 +2868,8 @@ class FixLineworkDialog(BaseQAWorkbenchDialog):
         pids = [p.id for p in pts]
 
         def do_it():
-            PLC.reverse_string_coding(pts)
+            PLC.reverse_string_coding(
+                pts, commands=(self.state.project.settings or {}).get("f2f_commands"))
 
         self._apply_fix(f"Reversed line direction on {len(pts)} point(s)", do_it, resolved_points=pids, stay_on_edit_page=True)
 
@@ -2843,7 +2927,8 @@ class BowtieRepairDialog(QDialog):
         if not pts or not c1 or not c2:
             return
         with self.state.edit(f"Repair bowtie {c1} <-> {c2}"):
-            PLC.swap_parallel_line_codes(pts, c1, c2)
+            PLC.swap_parallel_line_codes(
+                pts, c1, c2, commands=(self.state.project.settings or {}).get("f2f_commands"))
             self.state.project.process_linework()
             self.state.set_dirty(True)
             self.state.refresh(("points", "entities"))
@@ -2898,15 +2983,32 @@ class ReclassMergeLinesDialog(QDialog):
             return
 
         pr = self.state.project
-        pts1 = [p for p in pr.points.values() if s1_name in (p.desc or "").upper().split()]
-        pts2 = [p for p in pr.points.values() if s2_name in (p.desc or "").upper().split()]
+        commands = (pr.settings or {}).get("f2f_commands")
+        known_codes = pr.codes.codes
+
+        def string_key(value):
+            parsed = PLC.parse_description(value, commands=commands, known_codes=known_codes)
+            return parsed.code.casefold(), parsed.string
+
+        def matches_string(point, target):
+            for part in PLC._split_multicode(point.desc or "", commands):
+                parsed = PLC.parse_description(part, commands=commands, known_codes=known_codes)
+                if (parsed.code.casefold(), parsed.string) == target:
+                    return True
+            return False
+
+        target1, target2 = string_key(s1_name), string_key(s2_name)
+        pts1 = [p for p in pr.points.values() if matches_string(p, target1)]
+        pts2 = [p for p in pr.points.values() if matches_string(p, target2)]
 
         if not pts1 or not pts2:
             QMessageBox.warning(self, "Points Not Found", "Could not find points matching both strings in project.")
             return
 
         with self.state.edit(f"Merge {s1_name} + {s2_name} -> {t_code}{t_id}"):
-            PLC.merge_and_reclass_strings(pr, pts1, pts2, target_code=t_code, new_string_id=t_id)
+            PLC.merge_and_reclass_strings(
+                pr, pts1, pts2, target_code=t_code, new_string_id=t_id,
+                commands=(pr.settings or {}).get("f2f_commands"))
             pr.process_linework()
             self.state.set_dirty(True)
             self.state.refresh(("points", "entities"))

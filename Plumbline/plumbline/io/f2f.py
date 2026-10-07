@@ -344,16 +344,11 @@ def describe_stats(stats: dict, *, mention_kept: bool = True) -> str:
     return line
 
 
-DEFAULT_COMMANDS = ["ST", "PC", "PT", "END", "X", "-", "/"]
-DEFAULT_COMMAND_LABELS = [
-    "Start Line",
-    "Start Curve",
-    "End Curve",
-    "End Line",
-    "Close",
-    "Multicode separator",
-    "Description separator",
-]
+from ..core.fieldbook_syntax import COMMAND_LABELS as DEFAULT_COMMAND_LABELS
+from ..core.fieldbook_syntax import DEFAULT_COMMAND_TOKENS
+
+DEFAULT_COMMANDS = list(DEFAULT_COMMAND_TOKENS)
+DEFAULT_COMMAND_LABELS = list(DEFAULT_COMMAND_LABELS)
 
 
 def read_fwb_extra(path: Path | str) -> dict:

@@ -23,9 +23,10 @@ the dialog says so and offers a one-click swap.
 
 ## 3. Feature codes and linework
 
-Descriptions are parsed as `CODE[string] [flags] [notes]`: `EP B` begins an edge-of-pavement string, `EP` continues
-it, `EP E` ends it, `EP CLS` closes it back to the first point. **Survey > Process Linework** turns coded strings into
-polylines (breaklines for codes flagged as such). Edit the table in **Survey > Feature Codes**.
+Descriptions use a Field Book feature code, optional string identifier, configured line/curve commands, and optional notes.
+The active Field Book assigns each command its meaning: Start Line begins a string, End Line finishes it, and Close returns a
+closed feature to its first point. Intermediate coded points continue the string. **Survey > Process Linework** turns those
+coded strings into polylines (breaklines for codes flagged as such). Edit feature codes and command meanings in the Field Book.
 
 ## 4. Surfaces, contours, volumes, profiles
 

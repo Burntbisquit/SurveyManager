@@ -40,6 +40,9 @@ DEFAULTS = {
     "external_prompt_done": [],       # one-time download offers already made and answered
     "plugin_dirs": [],
     "point_columns": ["source_file", "source_folder"],   # extra columns in the point list
+    "space_between_commands": True,
+    "space_around_multicode_separator": True,
+    "space_around_description_separator": True,
 }
 
 
@@ -51,7 +54,8 @@ DEFAULTS = {
 ALWAYS_SAVED = ("theme", "coord_order", "angle_format", "angle_dms", "angle_decimals",
                 "tile_cache_dir", "custom_tile_sources", "replaced_tile_sources",
                 "hidden_tile_sources", "proj_grid_url", "update_url", "secondary_readout",
-                "plugin_dirs", "crs_favorites", "point_columns")
+                "plugin_dirs", "crs_favorites", "point_columns", "space_between_commands",
+                "space_around_multicode_separator", "space_around_description_separator")
 
 
 class Settings:

@@ -79,7 +79,7 @@ def test_reorder_string_points():
     assert reordered[2].id == p2.id
     assert reordered[2].desc == "BLDG"
     assert reordered[3].id == p4.id
-    assert reordered[3].desc == "BLDG CLS"
+    assert reordered[3].desc == "BLDG X"
 
 
 # ------------------------------------------------------------------ Command Order Engine

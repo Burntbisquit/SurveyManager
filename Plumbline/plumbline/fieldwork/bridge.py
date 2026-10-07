@@ -420,7 +420,7 @@ def write_fieldbook_from_f2f(f2f_csv_path, dest_fwb, name: str = "", commands=No
     dest_fwb = Path(dest_fwb)
     dest_fwb.parent.mkdir(parents=True, exist_ok=True)
     ok = IC.write_fwb_file(dest_fwb, headers, rows,
-                           commands=commands or ["ST", "PC", "PT", "END", "X", "-", "/"], rules=[])
+                           commands=commands or list(F.LINE_COMMAND_DEFAULTS), rules=[])
     if not ok:
         raise IOError(f"could not write {dest_fwb}")
     return dest_fwb
@@ -446,8 +446,8 @@ def batch_from_rows(rows, crs=None, layer_override: str | None = None,
     """Turn working rows into a Plumbline ImportBatch of points.
 
     Descriptions are carried through **exactly as the crew wrote them**, because
-    Plumbline parses linework flags (B / E / CLS / string numbers) out of the raw
-    description at draw time.  A second column keeps the raw text for the check
+    Plumbline interprets the active Field Book's line-control commands and string
+    identifiers from the raw description at draw time. A second column keeps the raw text for the check
     report.  Elevations that are blank become NaN, not 0.0 - a point with no
     elevation must not drag a surface to sea level.
 

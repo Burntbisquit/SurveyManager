@@ -1446,7 +1446,7 @@ class MainWindow(QMainWindow):
         old = pr.crs
         try:
             if mode == "reproject" and not old.is_local:
-                QApplication.setOverrideCursor(Qt.BusyCursor)
+                QApplication.setOverrideCursor(Qt.WaitCursor)
                 try:
                     with self.state.edit("Reproject project"):
                         pr.reproject(new, new.strategy)

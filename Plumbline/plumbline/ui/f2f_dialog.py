@@ -26,9 +26,11 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
                                QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
-                               QRadioButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+                               QMessageBox, QRadioButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..core.featurecodes import kind_for_entity
+from ..core.fieldbook_syntax import (COMMAND_MEANINGS, command_map,
+                                     command_token_validation_error)
 from ..io import f2f
 from .widgets import Banner, Hint, hline
 
@@ -37,25 +39,25 @@ WIDTHS = (130, 0, 80, 260, 120)          # 0 = take the rest
 
 
 class CodeCommandsDialog(QDialog):
-    """Edit the code commands valid after a code (ST, PC, PT, END, X, -, /)."""
+    """Edit Field Book command tokens by their fixed semantic meanings."""
 
     def __init__(self, commands=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Code Commands — Line & Curve Commands")
-        self.resize(540, 360)
+        self.setWindowTitle("Field Book Commands — Linework & Separators")
+        self.resize(540, 390)
         lay = QVBoxLayout(self)
-        lay.addWidget(Hint("Stored with the field book so it travels with the job. "
-                           "\"-\" = Multicode separator, \"/\" = Description separator."))
+        lay.addWidget(Hint("Stored with the Field Book so it travels with the job. The Meaning column explains each role; edit only the token. Defaults follow Carlson Field-to-Finish. Spacing is configured in Settings."))
 
         self.table = QTableWidget()
         self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["Code Command (fillable)", "Meaning (locked)"])
+        self.table.setHorizontalHeaderLabels(["Command token (editable)", "Meaning (fixed)"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
 
-        current = list(commands) if isinstance(commands, list) and commands else list(f2f.DEFAULT_COMMANDS)
+        current_map = command_map(commands)
+        current = [current_map[meaning] for meaning in COMMAND_MEANINGS]
         labels = f2f.DEFAULT_COMMAND_LABELS
         self.table.setRowCount(len(labels))
 
@@ -85,6 +87,13 @@ class CodeCommandsDialog(QDialog):
         btn_row.addWidget(cancel)
         lay.addLayout(btn_row)
 
+    def accept(self):
+        error = command_token_validation_error(self.get_commands())
+        if error:
+            QMessageBox.warning(self, "Field Book Commands", error)
+            return
+        super().accept()
+
     def _reset_defaults(self):
         for row, cmd in enumerate(f2f.DEFAULT_COMMANDS):
             if row < self.table.rowCount():
@@ -97,7 +106,7 @@ class CodeCommandsDialog(QDialog):
         for r in range(self.table.rowCount()):
             it = self.table.item(r, 0)
             txt = it.text().strip().upper() if it else ""
-            cmds.append(txt or (f2f.DEFAULT_COMMANDS[r] if r < len(f2f.DEFAULT_COMMANDS) else ""))
+            cmds.append(txt)
         return cmds
 
 
@@ -193,7 +202,9 @@ class ConvertFieldToFinishDialog(QDialog):
 
         extra = f2f.read_fwb_extra(table.path) if table.path else {}
         proj_settings = getattr(project, "settings", {}) or {}
-        self.commands = list(extra.get("commands") or proj_settings.get("f2f_commands") or f2f.DEFAULT_COMMANDS)
+        stored_commands = extra.get("commands") or proj_settings.get("f2f_commands") or f2f.DEFAULT_COMMANDS
+        normalized_commands = command_map(stored_commands)
+        self.commands = [normalized_commands[meaning] for meaning in COMMAND_MEANINGS]
         self.rules = list(extra.get("rules") or proj_settings.get("f2f_rules") or [])
 
         root = QVBoxLayout(self)
@@ -219,9 +230,9 @@ class ConvertFieldToFinishDialog(QDialog):
         root.addWidget(box)
 
         # ---- commands and rules ---------------------------------------------------------
-        box_extra = QGroupBox("Code Commands & Correction Rules")
+        box_extra = QGroupBox("Field Book Commands & Correction Rules")
         el = QHBoxLayout(box_extra)
-        self.btn_commands = QPushButton("Code Commands (ST, PC, PT, END, X...)...")
+        self.btn_commands = QPushButton("Command Meanings & Separators...")
         self.btn_commands.clicked.connect(self._edit_commands)
         self.btn_rules = QPushButton("Correction Rules...")
         self.btn_rules.clicked.connect(self._edit_rules)

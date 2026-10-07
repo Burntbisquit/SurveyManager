@@ -120,14 +120,14 @@ that sentence is on screen and not in a log. **Every run is recorded on the job*
 the point numbers it named, and which code table it was run against - so the check is still there after the project is closed and reopened, and
 `Save Report...` writes it out as a `.fwc` the field window and Excel both read.
 
-**Line repair reads a line, not a point.** `TOC PC` is a good description whose meaning is wrong - the curve inside the line never ends and the line
-itself never closes - and the two ends of that mistake usually sit on two different points, which is why no description check can see it. The field
-window's **Line Repair** tab reads each code's points as a sequence and names the four ways a line can be incomplete (missing start, missing end,
-missing curve start, missing curve end) against the point whose fix it is. **Fix** offers the description that would mend it, *placed* where the
-field book's order wants it (`ST → PC → PT → END/X`, never appended to the end); **Key-In** takes the corrected description typed by hand; **Ignore**
-records the decision in the check report so the next run does not re-open it. Every fix is then **read back from the line**: the tool says which
-issues it cleared, refuses to call a still-broken line corrected, and names the issue it cleared at *another* point without being asked. The same
-reader feeds the drawing window's dock, so the two windows cannot disagree about where a line ends.
+**Line repair reads a line, not a point.** A point can have a valid feature code while the configured Start Curve meaning has no matching End Curve,
+so the curve inside the line never ends; the two ends of that mistake usually sit on different points, which is why no single-description check can see it.
+The field window's **Line Repair** tab reads each code's points as a sequence and names the four ways a line can be incomplete (missing Start Line,
+End Line, Start Curve, or End Curve) against the point whose fix it is. **Fix** offers the description that would mend it, placed in semantic command order
+(Start Line → Start Curve → End Curve → End Line or Close); **Key-In** takes the corrected description typed by hand; **Ignore** records the decision in the
+check report so the next run does not re-open it. Tokens come from the active Field Book. Every fix is then **read back from the line**: the tool says which
+issues it cleared, refuses to call a still-broken line corrected, and names the issue it cleared at *another* point without being asked. The same reader
+feeds the drawing window's dock, so the two windows cannot disagree about where a line ends.
 
 ![Check Fieldwork](docs/img/check_fieldwork.png)
 
@@ -284,10 +284,12 @@ ground scale - on one panel, so a job cannot start with half a coordinate system
 
 ## Feature codes and linework
 
-A description is parsed as `CODE[string] [flags] [notes]`: `EP B` begins an edge-of-pavement string, `EP` continues it, `EP E` ends it,
-`EP CLS` closes it, `EP2` is string 2 (interleaved strings are kept apart), `TREE 18 OAK` is a point code with notes. **Survey > Feature Code Table**
-edits the 42-code starter library (layer, colour, linetype, point/line/polygon, breakline, counts-as-ground). *Process Linework* builds polylines
-(regenerated, never duplicated); breakline codes feed the surface.
+A description contains a Field Book feature code, optional string identifier, line/curve commands, and optional notes. The active Field Book maps each
+command token to a fixed meaning: Start Line begins a string, End Line finishes it, Close returns a closed feature to its first point, and configured curve
+commands mark the curve's endpoints. Intermediate coded points continue a string; string identifiers keep interleaved strings apart. Multi-code and
+description separators, including their spacing, follow the active Field Book and Settings. **Survey > Feature Code Table** edits the starter library
+(layer, colour, linetype, point/line/polygon, breakline, counts-as-ground). *Process Linework* builds polylines (regenerated, never duplicated);
+breakline codes feed the surface.
 
 **Survey > Convert Field to Finish** reads the office's own code standard straight into those codes - Carlson's Field-to-Finish file, the one every office
 here keeps: **1,717 codes over 216 layers, without retyping anything**. Carlson's layout is the default and asks no questions, and the columns are found

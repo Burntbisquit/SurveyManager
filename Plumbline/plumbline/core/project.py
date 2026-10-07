@@ -304,8 +304,9 @@ class Project:
         """Move points onto the layer of their feature code.  Returns matched/unknown counts."""
         pts = list(self.points.values()) if pts is None else list(pts)
         matched, unknown = 0, {}
+        commands = self.settings.get("f2f_commands")
         for p in pts:
-            pd = parse_description(p.desc)
+            pd = parse_description(p.desc, commands=commands, known_codes=self.codes.codes)
             fc = self.codes.get(pd.code) if pd.code else None
             if fc is not None:
                 if fc.layer:
@@ -320,7 +321,8 @@ class Project:
     def process_linework(self, order: str = "file") -> dict:
         """(Re)build linework from coded points.  Replaces previously generated linework."""
         removed = self.remove_derived("linework")
-        strings = build_linework(self.points.values(), self.codes, order)
+        strings = build_linework(self.points.values(), self.codes, order,
+                                 commands=self.settings.get("f2f_commands"))
         made = 0
         for ls in strings:
             fc = self.codes.get(ls.code)

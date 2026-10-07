@@ -343,8 +343,8 @@ class CorrectionRulesDialog(QDialog):
                 item.setBackground(QBrush(QColor("#FFFFFF")))
                 item.setToolTip("")
                 continue
-            # Fix may be "CODE" or "CODE ST" or "CODE-PC" — first token is the fieldbook code
-            first = fix.strip().split()[0].split("-")[0] if fix.strip() else ""
+            # Fix may contain commands or separators after the Field Book feature code.
+            first = fix.strip().split()[0] if fix.strip() else ""
             if fb_set and first.casefold() not in fb_set:
                 item.setBackground(QBrush(QColor("#FFCCCC")))
                 item.setToolTip(f"'{first}' not in Field Book — autofix would create UnknownCode")
@@ -369,7 +369,7 @@ class CorrectionRulesDialog(QDialog):
             err = err_item.text().strip() if err_item and err_item.text() else ""
             fix = fix_item.text().strip() if fix_item and fix_item.text() else ""
             if err and fix:
-                first = fix.split()[0].split("-")[0] if fix else ""
+                first = fix.split()[0] if fix else ""
                 if fb_set and first.casefold() not in fb_set:
                     bad.append(f"Row {r+1}: '{err}' → '{fix}' (code '{first}' not in Field Book)")
         if bad:
@@ -391,46 +391,36 @@ class CorrectionRulesDialog(QDialog):
         return rules
 
 
-# ----- Code Commands dialog (ST/PC/PT/END/X) — fillable then locked -----
+# ----- Field Book Commands dialog -----
 class CodeCommandsDialog(QDialog):
-    """Edit the code commands that are valid after a code. Stored in fieldbook file extra (.fwb).
-    Column 0 = fillable Command token (editable), Column 1 = locked Meaning (Start Line etc.)."""
+    """Edit Field Book commands by meaning; the meanings stay fixed, while tokens travel with the book."""
     def __init__(self, commands=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Code Commands — Start Line / Curve / End / Close + Separators")
-        self.resize(520, 340)
+        self.setWindowTitle("Field Book Commands — Linework & Separators")
+        self.resize(520, 380)
         lay = QVBoxLayout(self)
-        hint = QLabel("Stored in the Field Book file so it travels with the fieldbook. \"-\" = Multicode, \"/\" = Description — separators as Code Commands to avoid hard-coding.")
+        hint = QLabel("Saved with the Field Book. The locked Meaning column identifies each command's role; edit the token in the first column. Defaults follow Carlson Field-to-Finish. Spacing preferences are in Settings.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #555; font-size: 11px;")
         lay.addWidget(hint)
 
         from PySide6.QtGui import QBrush, QColor
-        try:
-            from .config import LINE_COMMAND_DEFAULTS, LINE_COMMAND_LABELS
-        except Exception:
-            LINE_COMMAND_DEFAULTS = ["ST","PC","PT","END","X"]
-            LINE_COMMAND_LABELS = ["Start Line","Start Curve","End Curve","End Line","Close"]
+        from .config import LINE_COMMAND_LABELS
+        from ..core.fieldbook_syntax import COMMAND_MEANINGS, command_map
 
         self.table = QTableWidget()
         self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["Code Command (fillable)", "Meaning (locked)"])
+        self.table.setHorizontalHeaderLabels(["Command token (editable)", "Meaning (fixed)"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.setRowCount(len(LINE_COMMAND_LABELS))
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
 
-        # Fillable then locked
-        current = commands if isinstance(commands, list) and commands else LINE_COMMAND_DEFAULTS
-        # Pad/truncate to match labels length
-        # If current has same labels count, use in order; else map by position
+        # Keep each token attached to its semantic meaning, including intentionally blank meanings.
+        current = command_map(commands)
         for row, meaning in enumerate(LINE_COMMAND_LABELS):
-            # Determine command token for this row
-            if row < len(current) and current[row]:
-                cmd = str(current[row]).strip().upper()
-            else:
-                cmd = LINE_COMMAND_DEFAULTS[row] if row < len(LINE_COMMAND_DEFAULTS) else ""
+            cmd = str(current[COMMAND_MEANINGS[row]])
             item_cmd = QTableWidgetItem(cmd)
             item_cmd.setFlags(item_cmd.flags() | Qt.ItemFlag.ItemIsEditable)
             item_cmd.setToolTip(f"Editable — token for {meaning}")
@@ -461,25 +451,24 @@ class CodeCommandsDialog(QDialog):
         lay.addLayout(bot)
 
     def _update_info(self):
-        cmds = self.get_commands()
-        self.info.setText(f"Will store {len(cmds)} code commands in order Start Line→Close: {', '.join(cmds) if cmds else '(none)'} — parse will treat these as valid after a code. Locked column shows meaning.")
+        commands = self.get_commands()
+        assigned = sum(bool(token) for token in commands)
+        self.info.setText(f"{assigned} of {self.table.rowCount()} command meanings assigned. Row order is fixed and saved with the Field Book.")
+
+    def accept(self):
+        from ..core.fieldbook_syntax import command_token_validation_error
+        error = command_token_validation_error(self.get_commands())
+        if error:
+            QMessageBox.warning(self, "Field Book Commands", error)
+            return
+        super().accept()
 
     def get_commands(self):
-        cmds = []
-        for row in range(self.table.rowCount()):
-            it = self.table.item(row, 0)
-            txt = it.text().strip().upper() if it else ""
-            if txt:
-                cmds.append(txt)
-        # Deduplicate case-insensitive, preserve order
-        seen=set()
-        out=[]
-        for c in cmds:
-            low=c.casefold()
-            if low not in seen:
-                seen.add(low)
-                out.append(c)
-        return out
+        # Keep empty cells in place: each row is bound to one fixed semantic meaning.
+        return [
+            self.table.item(row, 0).text().strip().upper() if self.table.item(row, 0) else ""
+            for row in range(self.table.rowCount())
+        ]
 
 class CoordinateSystemDialog(QDialog):
     """Coordinate System Manager — 2011 Texas only per user request.
@@ -1806,7 +1795,8 @@ class MainWindow(QMainWindow):
                         if tbl is getattr(self,'check_table',None) and tbl.item(r0,1):
                             issue = tbl.item(r0,1).text().strip()
                         elif tbl is getattr(self,'line_table',None) and tbl.item(r0,1):
-                            issue = tbl.item(r0,1).text().strip()
+                            issue_item = tbl.item(r0,1)
+                            issue = str(issue_item.data(Qt.UserRole) or issue_item.text()).strip()
                 except: pass
                 while len(wr)<7: wr.append("")
                 if len(wr)==7: wr.append(src)
@@ -2385,8 +2375,12 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Convert Field Book", "Field Book creation cancelled — code commands not set.")
                 return
             line_cmds_to_store = dlg_cmd.get_commands()
-            if not line_cmds_to_store:
-                QMessageBox.warning(self, "Convert Field Book", "At least one code command required — creation cancelled.")
+            if not any(line_cmds_to_store):
+                QMessageBox.warning(self, "Convert Field Book", "Assign at least one Field Book command meaning — creation cancelled.")
+                return
+            assigned = [token.casefold() for token in line_cmds_to_store if token]
+            if len(assigned) != len(set(assigned)):
+                QMessageBox.warning(self, "Convert Field Book", "Each Field Book command token must be unique.")
                 return
             # Use dialog result as commands to store
             existing_cmds = line_cmds_to_store
@@ -2613,35 +2607,28 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Code Commands", f"No Field Book loaded — load or convert a Field Book ({FIELDBOOK_EXT}) first to store code commands.")
             return
         try:
-            from .config import get_command_set
-            from .io_carlson import read_fwb_extra, write_fwb_extra, read_fwb_file
+            from .io_carlson import read_fwb_extra, write_fwb_extra
             from .config import set_command_set_global
         except Exception as e:
-            QMessageBox.warning(self, "Code Commands", f"Failed to load commands module: {e}")
+            QMessageBox.warning(self, "Field Book Commands", f"Failed to load commands module: {e}")
             return
-        current = list(get_command_set(self.fieldbook_path))
-        # Preserve original case/order from extra if possible
+        current = None
         try:
-            extra = read_fwb_extra(Path(self.fieldbook_path))
-            cmds_raw = extra.get("commands")
-            if isinstance(cmds_raw, list) and cmds_raw:
-                current = cmds_raw
+            current = read_fwb_extra(Path(self.fieldbook_path)).get("commands")
         except Exception:
             pass
-        dlg = LineCommandsDialog(current, self)
+        dlg = CodeCommandsDialog(current, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             new_cmds = dlg.get_commands()
-            if not new_cmds:
-                QMessageBox.warning(self, "Code Commands", "At least one command required (e.g., ST).")
-                return
             if write_fwb_extra(Path(self.fieldbook_path), commands=new_cmds):
-                # Update global for current session
+                # Update global command membership for the current session.
                 try:
-                    set_command_set_global(new_cmds)
+                    set_command_set_global(token for token in new_cmds if token)
                 except Exception:
                     pass
-                self.summary_label.setText(f"Code commands saved to {Path(self.fieldbook_path).name}: {', '.join(new_cmds)}")
-                QMessageBox.information(self, "Code Commands", f"Saved code commands to Field Book {Path(self.fieldbook_path).name}: {', '.join(new_cmds)}")
+                active_count = sum(bool(token) for token in new_cmds)
+                self.summary_label.setText(f"Field Book command meanings saved: {active_count} assigned")
+                QMessageBox.information(self, "Field Book Commands", f"Saved {active_count} command meanings to Field Book {Path(self.fieldbook_path).name}.")
                 # Refresh desc parse label hint and ensure dependencies loaded
                 try:
                     self._refresh_fieldbook_tab()
@@ -3194,7 +3181,9 @@ class MainWindow(QMainWindow):
             # Try to get actual status from line_table
             try:
                 for r2 in range(self.line_table.rowCount()):
-                    if self.line_table.item(r2,2) and self.line_table.item(r2,2).text().strip()==str(oid) and self.line_table.item(r2,1) and self.line_table.item(r2,1).text()==issue:
+                    issue_item = self.line_table.item(r2, 1)
+                    issue_type = (issue_item.data(Qt.UserRole) or issue_item.text()) if issue_item else ""
+                    if self.line_table.item(r2,2) and self.line_table.item(r2,2).text().strip()==str(oid) and issue_type==issue:
                         status = self.line_table.item(r2,7).text() if self.line_table.item(r2,7) else "Open"
                         break
             except: pass
@@ -3333,8 +3322,8 @@ class MainWindow(QMainWindow):
         # Hint tooltip has the detailed explanation
         self.desc_parse_hint_label.setToolTip(
             "Unified .fwc is OID-minimal — raw PtNum/N/E/Z/Desc live-pulled from Edit via OID.\n"
-            "Handles missing dash/space: NG- Ec1 / ec -ec1 / ec ec1 all → [NG, EC1]. Code check: exact F2F → strip trailing digits only if miss.\n"
-            "Commands ST/PC/PT/END/X only valid after a code: ec1 st st → second st orphan, st ec1 st → first st orphan. Free desc after separator flagged MisplacedAfterSeparator."
+            "Codes and command tokens are read using the active Field Book; commands are recognized by meaning and must follow a feature code.\n"
+            "Potential feature codes after the active description separator are flagged for review."
         )
         layout.addWidget(self.desc_parse_hint_label)
 
@@ -3381,8 +3370,9 @@ class MainWindow(QMainWindow):
 
         hint = QLabel(
             "Tolerances are definitive in code (NE 0.1, Elev 0.1, N=X,E=Y). Future: tan vs non-tan code separation, State Plane, units picker.\n"
-            "Code commands ST (start line), PC (start curve), PT (end curve), END (end line), X (close). "
-            "Valid flows: ST → … → (PC → PT) → END/X. Invalid: ST PT (no PC), PC after END/X, PT without PC, ST after END without new ST, starting curve while ending/closing is nonsensical."
+            "Line and curve command tokens come from the active Field Book and are checked by meaning. "
+            "Valid flow: Start Line → Start Curve → End Curve → End Line or Close. "
+            "A curve must have both ends, and a line must start before it ends or closes."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #555; font-size: 11px;")
@@ -3395,32 +3385,32 @@ class MainWindow(QMainWindow):
         form.addRow("Elev tolerance:", self.tol_elev_label)
 
         from PySide6.QtWidgets import QCheckBox
-        self.protect_st_pc_cb = QCheckBox("Protect ST → PC (flag ST PT without PC)")
+        self.protect_st_pc_cb = QCheckBox("Protect Start Curve before End Curve")
         self.protect_st_pc_cb.setChecked(True)
-        self.protect_st_pc_cb.setToolTip("Flag ST immediately followed by PT without intervening PC")
+        self.protect_st_pc_cb.setToolTip("Flag an End Curve command that is not preceded by Start Curve")
         form.addRow(self.protect_st_pc_cb)
 
-        self.protect_pt_end_cb = QCheckBox("Protect PT → END")
+        self.protect_pt_end_cb = QCheckBox("Protect End Curve → End Line")
         self.protect_pt_end_cb.setChecked(True)
-        self.protect_pt_end_cb.setToolTip("Flag PT not followed by END/X properly, or END without PT when curve was started")
+        self.protect_pt_end_cb.setToolTip("Check curve completion before the line ends")
         form.addRow(self.protect_pt_end_cb)
 
-        self.protect_pt_x_cb = QCheckBox("Protect PT → X (close)")
+        self.protect_pt_x_cb = QCheckBox("Protect End Curve → Close")
         self.protect_pt_x_cb.setChecked(True)
         form.addRow(self.protect_pt_x_cb)
 
-        self.protect_orphan_cb = QCheckBox("Protect orphan commands (ST/PC/PT/END/X without code)")
+        self.protect_orphan_cb = QCheckBox("Protect orphan commands (a command without a feature code)")
         self.protect_orphan_cb.setChecked(True)
         self.protect_orphan_cb.setToolTip("Already flagged in Description Parse, but also influences line-order checks")
         form.addRow(self.protect_orphan_cb)
 
-        self.protect_pc_after_end_cb = QCheckBox("Protect PC after END/X (starting curve while ending/closing)")
+        self.protect_pc_after_end_cb = QCheckBox("Protect Start Curve after End Line/Close")
         self.protect_pc_after_end_cb.setChecked(True)
         form.addRow(self.protect_pc_after_end_cb)
 
-        self.protect_st_after_end_cb = QCheckBox("Protect ST after END/X without new line")
+        self.protect_st_after_end_cb = QCheckBox("Protect Start Line after End Line/Close without a new segment")
         self.protect_st_after_end_cb.setChecked(False)
-        self.protect_st_after_end_cb.setToolTip("If checked, flag ST appearing after a line was already ENDed without closing")
+        self.protect_st_after_end_cb.setToolTip("Flag Start Line appearing after a line was already ended without a new segment")
         form.addRow(self.protect_st_after_end_cb)
 
         layout.addLayout(form)
@@ -3445,11 +3435,11 @@ class MainWindow(QMainWindow):
         self.line_repair_tab = QWidget()
         layout = QVBoxLayout(self.line_repair_tab)
         layout.setContentsMargins(6,4,6,4)
-        title = QLabel("Line Repair — START/END/CLOSE per line + curves (ST/PC/PT/END/X) — missing segments, TOC reuse, any code can be line")
+        title = QLabel("Line Repair — semantic line and curve commands, missing segments, string reuse; any feature code can define a line")
         title.setWordWrap(True)
         title.setStyleSheet("font-weight: bold; font-size: 12px;")
         layout.addWidget(title)
-        hint = QLabel("Detects: missing ST before PC/PT/END, missing END/X at end of segment, PC without PT, PT without PC, PC after END/X, ST after END without new line. Allows reuse after END. Feature numbers per segment Toc,TOC1,TOC2 etc. Descending OID neighbor assumed END/START for fix. Use Fix buttons.")
+        hint = QLabel("Detects missing Start Line, End Line or Close, and unmatched Start Curve/End Curve commands. Command meanings and tokens come from the active Field Book. Allows string reuse after a segment ends; fixes are proposed and validated against the complete line.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#555; font-size:11px;")
         layout.addWidget(hint)
@@ -3473,14 +3463,20 @@ class MainWindow(QMainWindow):
                                         "status in the check report instead of coming back every run")
         self.line_ignore_btn.clicked.connect(self._line_ignore)
         self.line_fix_auto_btn = QPushButton("Fix Auto (Dialog)")
-        self.line_fix_auto_btn.setToolTip("Dialog-based Auto-fix: review proposed ST/END/PC/PT fixes in table before applying")
+        self.line_fix_auto_btn.setToolTip("Dialog-based auto-fix: review proposed Start Line, End Line, Start Curve, and End Curve repairs before applying")
         self.line_fix_auto_btn.clicked.connect(self._line_fix_auto_dialog)
         self.line_final_btn = QPushButton("Final Check")
         self.line_final_btn.setToolTip("Final Check — include Line errors in validation")
         self.line_final_btn.clicked.connect(self._on_final_report)
         self.line_filter_combo = QComboBox()
-        self.line_filter_combo.addItems(["All","Missing ST","Missing END","Missing PC","Missing PT","LineOrder"])
-        self.line_filter_combo.currentTextChanged.connect(self._apply_line_filter)
+        self.line_filter_combo.addItem("All", "")
+        for issue_type, label in (("Missing ST", "Missing Start Line"),
+                                  ("Missing END", "Missing End Line"),
+                                  ("Missing PC", "Missing Start Curve"),
+                                  ("Missing PT", "Missing End Curve"),
+                                  ("LineOrder", "Line Command Order")):
+            self.line_filter_combo.addItem(label, issue_type)
+        self.line_filter_combo.currentIndexChanged.connect(self._apply_line_filter)
         top.addWidget(self.line_refresh_btn)
         top.addWidget(self.line_fix_first_btn)
         top.addWidget(self.line_key_in_btn)
@@ -3546,7 +3542,7 @@ class MainWindow(QMainWindow):
         if errors:
             self._show_tab(self.line_repair_tab, "Line Repair")
         self.line_path_label.setText(f"Line repair: {len(errors)} issues found — {', '.join(set(e['issue_type'] for e in errors)) if errors else 'no issues'}")
-        self.summary_label.setText(f"Line Check: {len(errors)} line issues (ST/PC/PT/END/X)")
+        self.summary_label.setText(f"Line Check: {len(errors)} line issues (active Field Book command meanings)")
         try: self._refresh_steps()
         except: pass
 
@@ -3584,7 +3580,16 @@ class MainWindow(QMainWindow):
                 suggestion = f"{suggestion} [{saved['comments']}]"
             r=self.line_table.rowCount(); self.line_table.insertRow(r)
             self.line_table.setItem(r,0, NumericSortItem(gid)); self.line_table.item(r,0).setText(str(gid))
-            self.line_table.setItem(r,1, QTableWidgetItem(issue))
+            display_issue = {
+                "Missing ST": "Missing Start Line",
+                "Missing END": "Missing End Line",
+                "Missing PC": "Missing Start Curve",
+                "Missing PT": "Missing End Curve",
+                "LineOrder": "Line Command Order",
+            }.get(issue, issue)
+            issue_item = QTableWidgetItem(display_issue)
+            issue_item.setData(Qt.UserRole, issue)
+            self.line_table.setItem(r,1, issue_item)
             self.line_table.setItem(r,2, NumericSortItem(oid)); self.line_table.item(r,2).setText(str(oid))
             self.line_table.setItem(r,3, NaturalSortItem(pt, letters_first=True))
             self.line_table.setItem(r,4, QTableWidgetItem(line_id))
@@ -3606,15 +3611,15 @@ class MainWindow(QMainWindow):
         self.line_table.blockSignals(False)
         self._apply_line_filter()
 
-    def _apply_line_filter(self, _text=None):
+    def _apply_line_filter(self, _index=None):
         if not hasattr(self,'line_table') or self.line_table is None or not hasattr(self,'line_filter_combo'):
             return
-        filt=self.line_filter_combo.currentText()
-        for r in range(self.line_table.rowCount()):
-            it=self.line_table.item(r,1)
-            txt=it.text() if it else ""
-            show=(filt=="All") or (filt in txt)
-            self.line_table.setRowHidden(r, not show)
+        issue_filter = self.line_filter_combo.currentData()
+        for row in range(self.line_table.rowCount()):
+            item = self.line_table.item(row, 1)
+            issue_type = item.data(Qt.UserRole) if item else ""
+            show = not issue_filter or issue_type == issue_filter
+            self.line_table.setRowHidden(row, not show)
 
     # ----- line issues: Fix / Key-In / Ignore, validated against the line itself -------------
     def _line_working_rows(self):
@@ -3694,7 +3699,8 @@ class MainWindow(QMainWindow):
         if not done:
             return
         for r in range(self.line_table.rowCount()):
-            issue = self.line_table.item(r, 1).text().strip() if self.line_table.item(r, 1) else ""
+            issue_item = self.line_table.item(r, 1)
+            issue = str(issue_item.data(Qt.UserRole) or issue_item.text()).strip() if issue_item else ""
             roid = self.line_table.item(r, 2).text().strip() if self.line_table.item(r, 2) else ""
             if (issue, roid) in done:
                 self._line_mark(r, "Corrected" if roid == str(oid).strip() else f"Cleared by fix at OID {oid}", "#E8F5E9")
@@ -3770,7 +3776,7 @@ class MainWindow(QMainWindow):
         new_desc, ok = QInputDialog.getText(
             self, f"Key-In Fix - {issue.get('issue_type','line issue')} at OID {oid}",
             f"{issue.get('detail','')}\n\nCurrent description: '{cur}'\n"
-            f"Commands run ST -> PC -> PT -> END/X, and all of them belong to the code before them.",
+            "Tokens are interpreted by their active Field Book meanings and belong to the feature code before them.",
             text=cur)
         new_desc = (new_desc or "").strip()
         if not ok or not new_desc or new_desc == cur:
@@ -4935,7 +4941,7 @@ class MainWindow(QMainWindow):
 
     def _write_kml(self, dest: Path, working_rows, epsg, factor, mode, has_pyproj, is_ground=False):
         import re, zipfile
-        """Write KML/KMZ with points + lines (if ST/END detected). TXDOT SAF from origin 0,0, clampToGround (drop elev). Selected points only when passed."""
+        """Write KML/KMZ points and any coded lines using the active Field Book meanings."""
         try:
             from .coord_systems import convert_to_wgs84
         except:
@@ -4981,47 +4987,51 @@ class MainWindow(QMainWindow):
         <Point><altitudeMode>clampToGround</altitudeMode><coordinates>{lon},{lat},0</coordinates></Point>
     </Placemark>"""
             point_placemarks.append(placemark)
-        # Try to build line placemarks from descriptions with ST/END
+        # Use Field Book command meanings rather than searching descriptions for token text.
         line_placemarks = []
         try:
             from .parse import parse_desc_field, build_f2f_set_from_fieldbook
-            f2f = build_f2f_set_from_fieldbook(getattr(self, "fieldbook_path",""))
-            # Group by parsed line segments — simplified: collect points per description line_id
-            # For each row, parse_desc_field to get codes + commands, and if has ST or END, group
-            # This is draft: we will create lines per "LineID" extracted via type detection
-            # Use clean.detect_line_errors grouping logic? Reuse but quick here: build map line_id -> list of (pt, lat, lon)
+            from ..core.fieldbook_syntax import COMMAND_MEANINGS
+            fieldbook_path = getattr(self, "fieldbook_path", None)
+            f2f = build_f2f_set_from_fieldbook(fieldbook_path or "")
+            line_meanings = set(COMMAND_MEANINGS[:5])
             line_groups = {}
             for row in working_rows:
-                oid = row[0]; pt=row[1]; n=row[2]; e=row[3]; desc=row[5] if len(row)>5 else ""
+                oid = row[0]; pt = row[1]; n = row[2]; e = row[3]
+                desc = row[5] if len(row) > 5 else ""
                 if not desc:
                     continue
                 try:
-                    parsed = parse_desc_field(desc, f2f, fieldbook_path=getattr(self,"fieldbook_path",None))
-                    cl = parsed.get("code_classified",[])
-                    for item in cl:
-                        if item.get("type")=="code":
-                            lid = item.get("raw","").strip()
-                            # Check if its commands include ST/END etc. Quick: look at raw_desc contains ST/END
-                            if " st" in desc.lower() or " end" in desc.lower() or " pc" in desc.lower():
-                                # Use lid as line id
-                                lon, lat = convert_to_wgs84(n, e, epsg, factor, mode, is_ground=is_ground)
-                                if lon is None:
-                                    continue
-                                line_groups.setdefault(lid, []).append((oid, pt, lon, lat))
-                except: pass
-            for lid, pts in line_groups.items():
-                if len(pts) < 2:
+                    parsed = parse_desc_field(desc, f2f, fieldbook_path=fieldbook_path)
+                    classified = parsed.get("code_classified", [])
+                    for code_index, item in enumerate(classified):
+                        if item.get("type") != "code" or item.get("status") not in ("exact", "line_instance"):
+                            continue
+                        attached = [command for command in classified
+                                    if command.get("type") == "command"
+                                    and command.get("status") == "valid"
+                                    and command.get("attached_to") == code_index]
+                        if not any(command.get("meaning") in line_meanings for command in attached):
+                            continue
+                        line_id = item.get("raw", "").strip()
+                        lon, lat = convert_to_wgs84(n, e, epsg, factor, mode, is_ground=is_ground)
+                        if lon is not None and lat is not None:
+                            line_groups.setdefault(line_id, []).append((oid, pt, lon, lat))
+                except Exception:
                     continue
-                # Sort by OID numeric
+            for line_id, points in line_groups.items():
+                if len(points) < 2:
+                    continue
                 try:
-                    pts.sort(key=lambda x: int(x[0]) if str(x[0]).isdigit() else x[0])
-                except: pass
-                coords = " ".join([f"{lon},{lat},0" for _,_,lon,lat in pts])
+                    points.sort(key=lambda point: int(point[0]) if str(point[0]).isdigit() else str(point[0]))
+                except Exception:
+                    pass
+                coordinates = " ".join(f"{lon},{lat},0" for _, _, lon, lat in points)
                 line_placemarks.append(f"""    <Placemark>
-        <name>Line {lid} ({len(pts)} pts)</name>
-        <description><![CDATA[Line {lid} via ST/END parsing — verify in field]]></description>
+        <name>Line {line_id} ({len(points)} pts)</name>
+        <description><![CDATA[Line {line_id} uses active Field Book command meanings — verify in field]]></description>
         <Style><LineStyle><color>ff0000ff</color><width>2</width></LineStyle></Style>
-        <LineString><tessellate>1</tessellate><coordinates>{coords}</coordinates></LineString>
+        <LineString><tessellate>1</tessellate><coordinates>{coordinates}</coordinates></LineString>
     </Placemark>""")
         except Exception as e:
             print(f"KML line build failed {e}")
@@ -6262,7 +6272,7 @@ class MainWindow(QMainWindow):
             return
         crew = DEFAULT_CREW_NUMBER
         blocks = crew_blocks(crew)
-        # TODO: actual renumber logic preserving line order (ST/PC/PT/END/X sequence) and crew blocks + type ranges
+        # TODO: preserve Field Book line/curve command order alongside crew blocks and type ranges.
         QMessageBox.information(self, "Renumber", f"Renumber ready for crew {crew} — blocks {blocks[:3]}... + Control {CONTROL_RANGE}, Boundary {BOUNDARY_RANGE}, General {GENERAL_START}+\n\nAll descriptions clean. Next: implement renumber that walks OIDs in line order (not numeric sort) and assigns next available in crew's blocks by type.\n\nFor now, this is a placeholder — no numbers changed. Tell me the exact renumber rule for Control vs Boundary vs General within crew blocks and I'll wire it.")
 
     def _run_all_checks(self):

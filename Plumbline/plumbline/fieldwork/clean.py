@@ -27,29 +27,35 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
 
-from .config import crew_blocks, MULTICODE_SEP, DESCRIPTION_SEP, CONTROL_RANGE, BOUNDARY_RANGE, GENERAL_START
+from .config import (crew_blocks, CONTROL_RANGE, BOUNDARY_RANGE, GENERAL_START,
+                    get_command_map, get_command_set, get_separator_texts, get_separator_tokens)
+from ..core.fieldbook_syntax import (command_joiner, find_separator, normalize_separator_spacing,
+                                     spacing_preference, split_at_separator, trim_separator_edges)
 from .parse import parse_desc_field, _validate_line_command_order, build_f2f_set_from_fieldbook, _strip_trailing_digits
 from .detectors import normalize_point_number
 
 import re
 
-def _split_concatenated_code_command(token: str, f2f_set: set, command_set=None) -> list[str]:
-    """Split concatenated like TOC1ST -> [TOC1, ST] or TOCEND -> [TOC, END] if token is code+command without space.
-    Returns [code, command] if split valid, else [token]."""
+
+def _trim_separator_edges(text: str, tokens) -> str:
+    """Remove whole active separator tokens from the edges of a free-text fragment."""
+    return trim_separator_edges(text, tokens)
+
+
+def _split_concatenated_code_command(token: str, f2f_set: set, command_set=None,
+                                     fieldbook_path=None, commands=None) -> list[str]:
+    """Split a known feature code from an active command token when no space was entered.
+
+    Returns the resolved ``[code, command]`` pair when valid, otherwise ``[token]``.
+    """
     try:
         if not token or not f2f_set:
             return [token]
         low = token.casefold()
-        if command_set is None:
-            try:
-                from .config import COMMAND_SET as _CS
-                cs = _CS
-            except:
-                cs = {"st","pc","pt","end","x","-","/"}
-        else:
-            cs = command_set
+        cs = command_set if command_set is not None else get_command_set(fieldbook_path, commands)
+        separator_set = {token.casefold() for token in get_separator_tokens(fieldbook_path, commands).values() if token}
         for cmd in sorted(cs, key=len, reverse=True):
-            if cmd in ("-","/"):
+            if str(cmd).casefold() in separator_set:
                 continue
             if low.endswith(cmd):
                 prefix = token[:len(token)-len(cmd)]
@@ -64,14 +70,16 @@ def _split_concatenated_code_command(token: str, f2f_set: set, command_set=None)
     except Exception:
         return [token]
 
-def _extract_tokens_with_split(code_part: str, f2f_set: set = None, command_set=None):
+def _extract_tokens_with_split(code_part: str, f2f_set: set = None, command_set=None,
+                               fieldbook_path=None, commands=None):
     """Extract tokens but also split concatenated code+command like TOC1ST."""
     from .parse import _extract_tokens as _et
     raw = _et(code_part)
     out = []
     for tok in raw:
         if f2f_set is not None:
-            split = _split_concatenated_code_command(tok, f2f_set, command_set=command_set)
+            split = _split_concatenated_code_command(tok, f2f_set, command_set=command_set,
+                                                     fieldbook_path=fieldbook_path, commands=commands)
             if len(split) == 2:
                 out.extend(split)
             else:
@@ -206,16 +214,22 @@ def _best_guess_for_token(bad_token: str, f2f_set: set, fieldbook_path=None) -> 
         return _canonical(candidates[0])
     return None
 
-def _autocorrect_desc(raw_desc: str, f2f_set: set, fieldbook_path=None, rules=None) -> str | None:
-    """Try to pull valid codes out of description and rebuild with ' - ' separators.
-    First checks correction rules (common_error -> fix) from fieldbook, then does generic best-guess.
-    Handles missing dash/space: NG-EC1 / NG EC1 / NGEC1 (if extractable) → NG - EC1.
-    For UnknownCode tokens, substitutes best guess; preserves commands (ST/PC/PT/END/X) attached to codes.
-    Returns corrected desc if different and now parses without UnknownCode/Orphan, else None.
+def _autocorrect_desc(raw_desc: str, f2f_set: set, fieldbook_path=None, rules=None, commands=None) -> str | None:
+    """Repair a description with the active Field Book's meanings and separator tokens.
+
+    Field Book correction rules run first, followed by code matching and command-order repair.
+    The selected meaning-to-token map controls both line commands and separator placement.
+    Returns a changed description only when it parses without an unknown code or orphan command.
     """
     if not raw_desc or not f2f_set:
         return None
-    # Check rules first — exact match on raw_desc (case-insensitive, dash/space tolerant)
+    multicode_sep, description_sep = get_separator_texts(fieldbook_path, commands)
+    multicode_sep = multicode_sep or " "
+    description_sep = description_sep or " "
+    separator_tokens = get_separator_tokens(fieldbook_path, commands)
+    description_token = separator_tokens.get("description", "")
+    command_glue = command_joiner()
+    # Check rules first — exact match on raw_desc (case-insensitive, separator-spacing tolerant)
     if rules is None and fieldbook_path:
         try:
             from .config import get_correction_rules
@@ -239,34 +253,18 @@ def _autocorrect_desc(raw_desc: str, f2f_set: set, fieldbook_path=None, rules=No
                 if _re2.search(rf'\b{re.escape(err.strip())}\b', raw_stripped, flags=re.I):
                     # Use fix as replacement for that token (preserve dash/space around)
                     return _re2.sub(rf'\b{re.escape(err.strip())}\b', fix, raw_stripped, count=1, flags=re.I)
-    # Early handling for concatenated like TOC1ST / TOCEND -> TOC1 ST / TOC END (code+command without space)
+    # Early handling for a feature code concatenated directly with an active command token.
     try:
         if f2f_set and raw_desc:
             import re as _re2
-            # Build command list
-            try:
-                cs_for_split = None
-                if fieldbook_path:
-                    try:
-                        from .config import get_command_set
-                        cs_for_split = get_command_set(fieldbook_path)
-                    except:
-                        pass
-                if cs_for_split is None:
-                    try:
-                        from .config import COMMAND_SET as _CS2
-                        cs_for_split = _CS2
-                    except:
-                        cs_for_split = {"st","pc","pt","end","x"}
-            except:
-                cs_for_split = {"st","pc","pt","end","x"}
+            # The active book controls both line commands and separator meanings.
+            cs_for_split = get_command_set(fieldbook_path, commands)
             # Try to find concatenated token and insert space
             for cmd in sorted(cs_for_split, key=len, reverse=True):
-                if cmd in ("-","/"):
+                if str(cmd).casefold() in {token.casefold() for token in separator_tokens.values() if token}:
                     continue
                 # Pattern: word chars ending with command without space, and prefix is code-like
-                # Use regex to find occurrences like TOC1ST, TOCEND, FLEND etc. without space
-                # We look for \b([A-Za-z]+\d*)(ST|PC|PT|END|X)\b case-insensitive, but ensure the full token is not already spaced
+                # Match a code-like prefix immediately followed by this active command token.
                 pat = re.compile(r'\b([A-Za-z]+\d*)(' + re.escape(cmd) + r')\b', re.I)
                 m = pat.search(raw_desc)
                 if m:
@@ -281,13 +279,13 @@ def _autocorrect_desc(raw_desc: str, f2f_set: set, fieldbook_path=None, rules=No
                         if base and base.casefold() in f2f_set:
                             is_code = True
                     if is_code:
-                        # Insert space: TOC1ST -> TOC1 ST
-                        corrected_split = pat.sub(r'\1 ' + cmd.upper(), raw_desc, count=1)
+                        # Separate the resolved feature code and active command token.
+                        corrected_split = pat.sub(r'\1' + command_glue + cmd.upper(), raw_desc, count=1)
                         if corrected_split != raw_desc:
                             # Validate corrected has no UnknownCode for this part
                             try:
                                 from .parse import parse_desc_field as _pdf2
-                                chk = _pdf2(corrected_split, f2f_set, fieldbook_path=fieldbook_path, command_set=cs_for_split, rules=rules)
+                                chk = _pdf2(corrected_split, f2f_set, fieldbook_path=fieldbook_path, command_set=cs_for_split, rules=rules, commands=commands)
                                 if not any("UnknownCode" in f for f in chk.get("flags", [])):
                                     return corrected_split
                             except:
@@ -298,14 +296,8 @@ def _autocorrect_desc(raw_desc: str, f2f_set: set, fieldbook_path=None, rules=No
         from .parse import parse_desc_field, _extract_tokens, _classify_tokens_sequential
         from .config import COMMAND_SET
         # Use custom command set if fieldbook has one
-        cmd_set = None
-        if fieldbook_path:
-            try:
-                from .config import get_command_set
-                cmd_set = get_command_set(fieldbook_path)
-            except Exception:
-                pass
-        parsed = parse_desc_field(raw_desc, f2f_set, fieldbook_path=fieldbook_path, command_set=cmd_set, rules=rules)
+        cmd_set = get_command_set(fieldbook_path, commands)
+        parsed = parse_desc_field(raw_desc, f2f_set, fieldbook_path=fieldbook_path, command_set=cmd_set, rules=rules, commands=commands)
         # Only attempt if has UnknownCode, Orphan, MisplacedAfterSeparator, or SeparatorSpacingError
         has_unknown = any("UnknownCode" in f for f in parsed.get("flags", []))
         has_orphan = any("OrphanCommand" in f for f in parsed.get("flags", []))
@@ -313,7 +305,7 @@ def _autocorrect_desc(raw_desc: str, f2f_set: set, fieldbook_path=None, rules=No
         has_slash_err = any("SeparatorSpacingError" in f for f in parsed.get("flags", []))
         if not has_unknown and not has_orphan and not has_misplaced and not has_slash_err:
             return None
-        # Handle MisplacedAfterSeparator first: pull misplaced code(s) into description by appending MULTICODE_SEP + misplaced + free desc
+        # Handle MisplacedAfterSeparator first: pull misplaced code(s) into description by appending multicode_sep + misplaced + free desc
         if has_misplaced:
             code_part = parsed.get("code_part", "").strip()
             free_desc = parsed.get("free_desc", "").strip()
@@ -329,9 +321,9 @@ def _autocorrect_desc(raw_desc: str, f2f_set: set, fieldbook_path=None, rules=No
             if misplaced_sets:
                 # Build corrected code part
                 if code_part:
-                    corrected_code = code_part + MULTICODE_SEP + MULTICODE_SEP.join(misplaced_sets)
+                    corrected_code = code_part + multicode_sep + multicode_sep.join(misplaced_sets)
                 else:
-                    corrected_code = MULTICODE_SEP.join(misplaced_sets)
+                    corrected_code = multicode_sep.join(misplaced_sets)
                 # Remove misplaced codes from free_desc to get remaining free text
                 remaining = free_desc
                 import re as _re_mis
@@ -343,43 +335,44 @@ def _autocorrect_desc(raw_desc: str, f2f_set: set, fieldbook_path=None, rules=No
                         pat = r'\b' + r'\s+'.join(map(_re_mis.escape, toks)) + r'\b'
                     remaining = _re_mis.sub(pat, '', remaining, count=1, flags=re.I)
                     remaining = _re_mis.sub(r'\s{2,}', ' ', remaining).strip()
-                    remaining = _re_mis.sub(r'^\s*[-/]+\s*', '', remaining).strip()
+                    remaining = _trim_separator_edges(remaining, separator_tokens.values())
                     remaining = _re_mis.sub(r'\s+', ' ', remaining).strip()
-                remaining = remaining.strip(" -/").strip()
+                remaining = _trim_separator_edges(remaining, separator_tokens.values())
                 if remaining:
-                    corrected = f"{corrected_code}{DESCRIPTION_SEP}{remaining}" if corrected_code else remaining
+                    corrected = f"{corrected_code}{description_sep}{remaining}" if corrected_code else remaining
                 else:
                     corrected = corrected_code
                 if corrected and corrected.strip() != raw_desc.strip():
                     # Validate corrected has no misplaced and no unknown for the moved codes
                     try:
-                        check = parse_desc_field(corrected, f2f_set, fieldbook_path=fieldbook_path, command_set=cmd_set, rules=rules)
+                        check = parse_desc_field(corrected, f2f_set, fieldbook_path=fieldbook_path, command_set=cmd_set, rules=rules, commands=commands)
                         if not any("MisplacedAfterSeparator" in f for f in check.get("flags", [])):
                             return corrected
                     except Exception:
                         return corrected
-        # Handle SeparatorSpacingError: ensure first slash is DESCRIPTION_SEP with single spaces (only first slash is separator)
-        try:
-            parsed_slash = parse_desc_field(raw_desc, f2f_set, fieldbook_path=fieldbook_path, command_set=cmd_set, rules=rules)
-            if any("SeparatorSpacingError" in f for f in parsed_slash.get("flags", [])):
-                # Rebuild with correct spacing: code_part + DESCRIPTION_SEP + free_desc (only first slash)
-                # Use already-split code_part/free_desc from parsed
-                cp = parsed_slash.get("code_part", "").strip()
-                fd = parsed_slash.get("free_desc", "").strip()
-                has_sl = parsed_slash.get("has_slash", False)
-                if has_sl:
-                    # If free_desc contains additional slashes, keep them as-is (only first is separator)
-                    corrected_slash = f"{cp}{DESCRIPTION_SEP}{fd}" if cp and fd else (f"{cp}{DESCRIPTION_SEP.strip()}" if cp else fd)
-                    # Preserve trailing slash case: if original had slash but free empty, ensure DESCRIPTION_SEP
-                    if raw_desc.strip().endswith('/') or raw_desc.strip().endswith('/ ') or '/ ' in raw_desc:
-                        # Ensure at least DESCRIPTION_SEP
-                        pass
-                    if corrected_slash.strip() != raw_desc.strip():
-                        check_sl = parse_desc_field(corrected_slash, f2f_set, fieldbook_path=fieldbook_path, command_set=cmd_set, rules=rules)
-                        if not any("SeparatorSpacingError" in f for f in check_sl.get("flags", [])):
-                            return corrected_slash
-        except Exception:
-            pass
+        # Normalize spacing around the Field Book's separators using the Settings preferences.
+        if any("SeparatorSpacingError" in flag for flag in parsed.get("flags", [])):
+            corrected_spacing = raw_desc
+            multicode_token = separator_tokens.get("multicode", "")
+            description_token = separator_tokens.get("description", "")
+            if multicode_token:
+                description_index = find_separator(corrected_spacing, description_token)
+                code_region = corrected_spacing[:description_index] if description_index >= 0 else corrected_spacing
+                remainder = corrected_spacing[description_index:] if description_index >= 0 else ""
+                code_region = normalize_separator_spacing(
+                    code_region, multicode_token,
+                    spaced=spacing_preference("space_around_multicode_separator"))
+                corrected_spacing = code_region + remainder
+            if description_token:
+                corrected_spacing = normalize_separator_spacing(
+                    corrected_spacing, description_token,
+                    spaced=spacing_preference("space_around_description_separator"))
+            if corrected_spacing.strip() != raw_desc.strip():
+                check_spacing = parse_desc_field(
+                    corrected_spacing, f2f_set, fieldbook_path=fieldbook_path,
+                    command_set=cmd_set, rules=rules, commands=commands)
+                if not any("SeparatorSpacingError" in flag for flag in check_spacing.get("flags", [])):
+                    return corrected_spacing
         
         # Work on code_part + free_desc handling: if misplaced after slash, free tokens are ignored — we fix code_part only
         code_part = parsed.get("code_part", raw_desc)
@@ -387,7 +380,7 @@ def _autocorrect_desc(raw_desc: str, f2f_set: set, fieldbook_path=None, rules=No
         cl = parsed.get("code_classified", [])
         if not cl:
             # Fallback: extract tokens directly from raw_desc and try to map each to best guess
-            toks = _extract_tokens_with_split(raw_desc, f2f_set, cmd_set) if cmd_set is not None else _extract_tokens(raw_desc)
+            toks = _extract_tokens_with_split(raw_desc, f2f_set, cmd_set, fieldbook_path, commands) if cmd_set is not None else _extract_tokens(raw_desc)
             if not toks:
                 return None
             # Try to map each tok
@@ -395,7 +388,7 @@ def _autocorrect_desc(raw_desc: str, f2f_set: set, fieldbook_path=None, rules=No
             changed=False
             for tok in toks:
                 low = tok.casefold()
-                if low in f2f_set or low in COMMAND_SET:
+                if low in f2f_set or low in cmd_set:
                     mapped.append(tok)
                 else:
                     guess = _best_guess_for_token(tok, f2f_set, fieldbook_path=fieldbook_path)
@@ -410,7 +403,7 @@ def _autocorrect_desc(raw_desc: str, f2f_set: set, fieldbook_path=None, rules=No
             # Heuristic: group code + following commands
             # For now join with ' - ' if multiple codes, else space
             # Use parse to validate groups
-            return MULTICODE_SEP.join(mapped) if len(mapped)>1 else mapped[0]
+            return multicode_sep.join(mapped) if len(mapped)>1 else mapped[0]
 
         # Build corrected token list with best guesses for unknowns
         new_items = []  # list of dicts with raw corrected
@@ -428,51 +421,51 @@ def _autocorrect_desc(raw_desc: str, f2f_set: set, fieldbook_path=None, rules=No
 
         if not changed:
             # No unknown could be guessed — try to pull valid codes out and preserve free text
-            # Build groups from only valid code+command items, join with ' - '
-            # For case like "EC ST - UNDER ROOTS" where UNDER ROOTS is free text not a misspelling, preserve as DESCRIPTION_SEP (simple: if unknown looks like free text, move to description)
+            # Build groups from valid code+command items using the configured multi-code separator.
+            # Preserve unknown free text as a note when it follows a valid code group.
             valid_groups=[]
             cur=[]
             unknown_texts=[]
             for it in cl:
                 if it.get("type")=="code" and it.get("status") in ("exact","line_instance"):
                     if cur:
-                        valid_groups.append(" ".join(cur))
+                        valid_groups.append(command_glue.join(cur))
                     cur=[it["raw"]]
                 elif it.get("type")=="command" and it.get("status")=="valid":
                     if cur:
                         cur.append(it["raw"])
                     else:
                         if cur:
-                            valid_groups.append(" ".join(cur))
+                            valid_groups.append(command_glue.join(cur))
                         valid_groups.append(it["raw"])
                         cur=[]
                 else:
                     # unknown/orphan — collect as potential free text (e.g., UNDER ROOTS)
                     if cur:
-                        valid_groups.append(" ".join(cur))
+                        valid_groups.append(command_glue.join(cur))
                         cur=[]
                     # collect unknown token for free text preservation
                     unknown_texts.append(it.get("raw",""))
             if cur:
-                valid_groups.append(" ".join(cur))
+                valid_groups.append(command_glue.join(cur))
             if valid_groups:
-                corrected_code = MULTICODE_SEP.join(valid_groups)
+                corrected_code = multicode_sep.join(valid_groups)
                 free_desc = parsed.get("free_desc","")
                 has_slash = parsed.get("has_slash", False)
                 # Combine unknown_texts as free text if they look like free description (not close to F2F)
                 unknown_free = " ".join(unknown_texts).strip() if unknown_texts else ""
-                # If we have unknown free text and no slash originally, propose DESCRIPTION_SEP version
+                # If we have unknown free text and no slash originally, propose description_sep version
                 # Simple: if unknown_free exists, treat it as free description
                 if unknown_free:
-                    # Build two candidates: one without free (drop), one with free as DESCRIPTION_SEP
+                    # Build two candidates: one without free (drop), one with free as description_sep
                     # Prefer the one with free if it validates clean
                     # First try with free
                     try:
                         # Combine original free_desc and unknown_free
                         combined_free = " ".join(filter(None, [unknown_free, free_desc])).strip()
-                        corrected_with_free = f"{corrected_code}{DESCRIPTION_SEP}{combined_free}" if corrected_code and combined_free else (corrected_code or combined_free)
+                        corrected_with_free = f"{corrected_code}{description_sep}{combined_free}" if corrected_code and combined_free else (corrected_code or combined_free)
                         if corrected_with_free and corrected_with_free.strip() != raw_desc.strip():
-                            check_free = parse_desc_field(corrected_with_free, f2f_set, fieldbook_path=fieldbook_path, command_set=cmd_set, rules=rules)
+                            check_free = parse_desc_field(corrected_with_free, f2f_set, fieldbook_path=fieldbook_path, command_set=cmd_set, rules=rules, commands=commands)
                             # Check if corrected_with_free has no UnknownCode (since unknown moved to free, it should be clean)
                             if not any("UnknownCode" in f for f in check_free.get("flags", [])):
                                 # Also ensure we are not creating a new Misplaced issue
@@ -481,11 +474,11 @@ def _autocorrect_desc(raw_desc: str, f2f_set: set, fieldbook_path=None, rules=No
                         pass
                 # Fallback: without free (original drop behavior)
                 if has_slash and free_desc:
-                    corrected = f"{corrected_code}{DESCRIPTION_SEP}{free_desc}" if corrected_code else free_desc
+                    corrected = f"{corrected_code}{description_sep}{free_desc}" if corrected_code else free_desc
                 else:
                     corrected = corrected_code
                 if corrected and corrected.strip() != raw_desc.strip():
-                    check2 = parse_desc_field(corrected, f2f_set, fieldbook_path=fieldbook_path, command_set=cmd_set, rules=rules)
+                    check2 = parse_desc_field(corrected, f2f_set, fieldbook_path=fieldbook_path, command_set=cmd_set, rules=rules, commands=commands)
                     if not any("UnknownCode" in f for f in check2.get("flags", [])):
                         return corrected
             # If only orphan, we can't fix without reordering — leave for line order fix
@@ -495,13 +488,14 @@ def _autocorrect_desc(raw_desc: str, f2f_set: set, fieldbook_path=None, rules=No
         # Need to reconstruct attachment based on new_items order
         # Simulate classify again for new token raws to get proper attachment
         new_raws = [it.get("raw","") for it in new_items]
-        reclassified = _classify_tokens_sequential(new_raws, f2f_set)
+        reclassified = _classify_tokens_sequential(
+            new_raws, f2f_set, command_set=cmd_set, commands=commands)
         groups = []
         current_group = []
         for it in reclassified:
             if it["type"] == "code" and it["status"] in ("exact","line_instance"):
                 if current_group:
-                    groups.append(" ".join(current_group))
+                    groups.append(command_glue.join(current_group))
                 current_group = [it["raw"]]
             elif it["type"] == "command" and it.get("status") == "valid":
                 # attach to current group if exists, else start new
@@ -510,31 +504,31 @@ def _autocorrect_desc(raw_desc: str, f2f_set: set, fieldbook_path=None, rules=No
                 else:
                     # orphan command without code — keep as separate
                     if current_group:
-                        groups.append(" ".join(current_group))
+                        groups.append(command_glue.join(current_group))
                     groups.append(it["raw"])
                     current_group = []
             else:
                 # unknown/orphan remains — keep as separate group
                 if current_group:
-                    groups.append(" ".join(current_group))
+                    groups.append(command_glue.join(current_group))
                     current_group=[]
                 groups.append(it["raw"])
         if current_group:
-            groups.append(" ".join(current_group))
+            groups.append(command_glue.join(current_group))
 
-        corrected_code = MULTICODE_SEP.join(groups)
+        corrected_code = multicode_sep.join(groups)
         # Preserve free_desc after slash if present (free text not codes)
         free_desc = parsed.get("free_desc","")
         has_slash = parsed.get("has_slash", False)
         if has_slash and free_desc:
-            corrected = f"{corrected_code}{DESCRIPTION_SEP}{free_desc}" if corrected_code else free_desc
+            corrected = f"{corrected_code}{description_sep}{free_desc}" if corrected_code else free_desc
         else:
             corrected = corrected_code
 
         if not corrected or corrected.strip() == raw_desc.strip():
             return None
         # Validate corrected has no UnknownCode
-        check = parse_desc_field(corrected, f2f_set, fieldbook_path=fieldbook_path, command_set=cmd_set, rules=rules)
+        check = parse_desc_field(corrected, f2f_set, fieldbook_path=fieldbook_path, command_set=cmd_set, rules=rules, commands=commands)
         if any("UnknownCode" in f for f in check.get("flags", [])):
             # Still has unknown — try more aggressive: if corrected still has unknown, return None
             return None
@@ -543,24 +537,18 @@ def _autocorrect_desc(raw_desc: str, f2f_set: set, fieldbook_path=None, rules=No
         return None
 
 
-def _autocorrect_desc_leave_number(raw_desc: str, f2f_set=None, fieldbook_path=None, command_set=None, rules=None) -> str:
-    """Correct a description by moving detected codes before separator but leaving numbers in descriptor (supporting both leading and trailing numbers).
+def _autocorrect_desc_leave_number(raw_desc: str, f2f_set=None, fieldbook_path=None, command_set=None, rules=None, commands=None) -> str:
+    """Move recognized codes into the code section while preserving numeric note values.
 
-    e.g. 'MH / 30rcp' -> 'MH - rcp / 30'
-         'MH / rcp30' -> 'MH - rcp / 30'
-         'MH / 30"rcp' -> 'MH - rcp / 30"'
-         'MH / rcp 30"' -> 'MH - rcp / 30"'
-         'MH / 30 rcp' -> 'MH - rcp / 30'
-         'MH / rcp 30' -> 'MH - rcp / 30'
-         '30"rcp' -> 'rcp / 30"'
-         'rcp 30"' -> 'rcp / 30"'
-         '30 rcp' -> 'rcp / 30'
-         'rcp 30' -> 'rcp / 30'
-         '30rcp' -> 'rcp / 30'
-         'rcp30' -> 'rcp / 30'
+    Supports measurements written before or after a detected code, with the final separator
+    and spacing determined by the active Field Book and Settings preferences.
     """
     import re
-    from .config import MULTICODE_SEP, DESCRIPTION_SEP
+    multicode_sep, description_sep = get_separator_texts(fieldbook_path, commands)
+    multicode_sep = multicode_sep or " "
+    description_sep = description_sep or " "
+    separator_tokens = get_separator_tokens(fieldbook_path, commands)
+    description_token = separator_tokens.get("description", "")
     from .parse import parse_desc_field, _strip_leading_digits, _strip_trailing_digits
 
     if raw_desc is None:
@@ -569,10 +557,11 @@ def _autocorrect_desc_leave_number(raw_desc: str, f2f_set=None, fieldbook_path=N
     if not raw:
         return ""
 
-    parsed = parse_desc_field(raw, f2f_set or set(), fieldbook_path=fieldbook_path, command_set=command_set, rules=rules)
+    parsed = parse_desc_field(raw, f2f_set or set(), fieldbook_path=fieldbook_path, command_set=command_set, rules=rules, commands=commands)
     code_part = parsed.get("code_part", "").strip()
     free_desc = parsed.get("free_desc", "").strip()
     misplaced_sets = parsed.get("misplaced_sets", []) or []
+    has_description_separator = bool(parsed.get("has_description_separator", parsed.get("has_slash", False)))
 
     if not misplaced_sets:
         for f in parsed.get("flags", []):
@@ -581,7 +570,7 @@ def _autocorrect_desc_leave_number(raw_desc: str, f2f_set=None, fieldbook_path=N
                 if ms:
                     misplaced_sets.append(ms)
 
-    if not misplaced_sets and "/" in raw:
+    if not misplaced_sets and has_description_separator:
         tokens = free_desc.split()
         for tok in tokens:
             clean_tok = tok.strip("\"'")
@@ -594,7 +583,7 @@ def _autocorrect_desc_leave_number(raw_desc: str, f2f_set=None, fieldbook_path=N
             elif f2f_set and clean_tok.casefold() in f2f_set:
                 misplaced_sets.append(tok)
 
-    if not misplaced_sets and "/" not in raw:
+    if not misplaced_sets and not has_description_separator:
         # Check patterns like: 30"rcp, 30 rcp, 30rcp, rcp30, rcp 30", rcp 30
         # 1. Leading number followed by code (e.g. 30"rcp, 30 rcp, 30rcp)
         m_lead = re.match(r'^(\d+["\']?)\s*([a-zA-Z_]\w*)(.*)$', raw)
@@ -603,7 +592,7 @@ def _autocorrect_desc_leave_number(raw_desc: str, f2f_set=None, fieldbook_path=N
             cd = m_lead.group(2).strip()
             rem = m_lead.group(3).strip()
             desc_val = f"{num} {rem}".strip() if rem else num
-            return f"{cd}{DESCRIPTION_SEP}{desc_val}"
+            return f"{cd}{description_sep}{desc_val}"
 
         # 2. Code followed by trailing number (e.g. rcp 30", rcp 30, rcp30)
         m_trail = re.match(r'^([a-zA-Z_]\w*)\s*(\d+["\']?)(.*)$', raw)
@@ -612,15 +601,15 @@ def _autocorrect_desc_leave_number(raw_desc: str, f2f_set=None, fieldbook_path=N
             num = m_trail.group(2).strip()
             rem = m_trail.group(3).strip()
             desc_val = f"{num} {rem}".strip() if rem else num
-            return f"{cd}{DESCRIPTION_SEP}{desc_val}"
+            return f"{cd}{description_sep}{desc_val}"
 
         clean_raw = raw.strip("\"'")
         num_lead, base_lead = _strip_leading_digits(clean_raw)
         base_trail, num_trail = _strip_trailing_digits(clean_raw)
         if num_lead and base_lead and f2f_set and base_lead.casefold() in f2f_set:
-            return f"{base_lead}{DESCRIPTION_SEP}{num_lead}"
+            return f"{base_lead}{description_sep}{num_lead}"
         elif num_trail and base_trail and f2f_set and base_trail.casefold() in f2f_set:
-            return f"{base_trail}{DESCRIPTION_SEP}{num_trail}"
+            return f"{base_trail}{description_sep}{num_trail}"
         return raw
 
     moved_codes = []
@@ -656,8 +645,7 @@ def _autocorrect_desc_leave_number(raw_desc: str, f2f_set=None, fieldbook_path=N
                 remaining = re.sub(pat, '', remaining, count=1, flags=re.I)
 
     remaining = re.sub(r'\s{2,}', ' ', remaining).strip()
-    remaining = re.sub(r'^\s*[-/]+\s*', '', remaining).strip()
-    remaining = remaining.strip(" -/").strip()
+    remaining = _trim_separator_edges(remaining, separator_tokens.values())
 
     code_part_has_valid = False
     if code_part and f2f_set:
@@ -669,16 +657,16 @@ def _autocorrect_desc_leave_number(raw_desc: str, f2f_set=None, fieldbook_path=N
 
     if code_part and not code_part_has_valid:
         combined_desc = f"{remaining} {code_part}".strip() if remaining else code_part
-        corrected_code = MULTICODE_SEP.join(moved_codes)
-        return f"{corrected_code}{DESCRIPTION_SEP}{combined_desc}" if combined_desc else corrected_code
+        corrected_code = multicode_sep.join(moved_codes)
+        return f"{corrected_code}{description_sep}{combined_desc}" if combined_desc else corrected_code
 
     if code_part:
-        corrected_code = code_part + MULTICODE_SEP + MULTICODE_SEP.join(moved_codes)
+        corrected_code = code_part + multicode_sep + multicode_sep.join(moved_codes)
     else:
-        corrected_code = MULTICODE_SEP.join(moved_codes)
+        corrected_code = multicode_sep.join(moved_codes)
 
     if remaining:
-        return f"{corrected_code}{DESCRIPTION_SEP}{remaining}"
+        return f"{corrected_code}{description_sep}{remaining}"
     return corrected_code
 
 def _get_autofix_for_desc(raw_desc: str, flags: str, flag_detail: str, f2f_set: set, fieldbook_path=None) -> str | None:
@@ -698,47 +686,14 @@ def _get_autofix_for_desc(raw_desc: str, flags: str, flag_detail: str, f2f_set: 
                 return auto
     except Exception:
         pass
-    # LineOrderError
+    # LineOrderError — order the active semantic meanings using the Field Book token map.
     if flags and "LineOrderError" in flags:
         try:
-            from .parse import parse_desc_field as _pdf_lo
-            from .config import get_command_set as _gcs_lo
-            from collections import defaultdict as _dd_lo
-            import re as _re_lo
-            cs_lo = None
-            if fieldbook_path:
-                try:
-                    cs_lo = _gcs_lo(fieldbook_path)
-                except Exception:
-                    cs_lo = None
-            parsed_lo = _pdf_lo(raw_desc, f2f_set, fieldbook_path=fieldbook_path, command_set=cs_lo)
-            cl_lo = parsed_lo.get("code_classified", [])
-            code_to_cmds_lo = _dd_lo(list)
-            code_to_indices_lo = _dd_lo(list)
-            code_raw_lo = {}
-            for i_lo, item_lo in enumerate(cl_lo):
-                if item_lo["type"] == "command" and item_lo.get("status") == "valid" and "attached_to" in item_lo:
-                    cidx_lo = item_lo["attached_to"]
-                    code_item_lo = cl_lo[cidx_lo] if 0 <= cidx_lo < len(cl_lo) else None
-                    if code_item_lo and code_item_lo["type"] == "code":
-                        line_id_lo = code_item_lo["raw"].strip().casefold()
-                        code_to_cmds_lo[line_id_lo].append(item_lo["norm"].casefold())
-                        code_to_indices_lo[line_id_lo].append(i_lo)
-                        code_raw_lo[line_id_lo] = code_item_lo["raw"]
-            corrected_lo = raw_desc
-            order_lo = {"st": 0, "pc": 1, "pt": 2, "end": 3, "x": 3}
-            changed_lo = False
-            for line_id_lo, cmds_lo in code_to_cmds_lo.items():
-                ranks_lo = [order_lo.get(c, 99) for c in cmds_lo]
-                if ranks_lo != sorted(ranks_lo):
-                    sorted_cmds_lo = [p[0] for p in sorted(zip(cmds_lo, ranks_lo), key=lambda x: x[1])]
-                    orig_cmds_raw_lo = [cl_lo[i]["raw"] for i in code_to_indices_lo[line_id_lo]]
-                    orig_group_lo = f"{code_raw_lo[line_id_lo]} {' '.join(orig_cmds_raw_lo)}" if orig_cmds_raw_lo else code_raw_lo[line_id_lo]
-                    corrected_group_lo = f"{code_raw_lo[line_id_lo]} {' '.join(c.upper() for c in sorted_cmds_lo)}" if sorted_cmds_lo else code_raw_lo[line_id_lo]
-                    corrected_lo = _re_lo.sub(_re_lo.escape(orig_group_lo), corrected_group_lo, corrected_lo, count=1, flags=_re_lo.I)
-                    changed_lo = True
-            if changed_lo and corrected_lo != raw_desc:
-                return corrected_lo
+            from ..core.point_linework_coder import fix_line_command_order
+            commands = get_command_map(fieldbook_path)
+            corrected = fix_line_command_order(raw_desc, commands)
+            if corrected and corrected != raw_desc:
+                return corrected
         except Exception:
             pass
     # UnknownCode token guess
@@ -1002,47 +957,16 @@ class CleanDescriptionDialog(QDialog):
                     self.best_guess = auto  # for Fix button — will apply full desc
         except Exception:
             pass
-        # For any LineOrderError, best guess is sorted ST→PC→PT→END/X (line outside curve: ST PC, PT END, PT X)
+        # For a line-order issue, use semantic meanings from the active Field Book map.
         if not self.best_guess and "LineOrderError" in flags:
             try:
-                from .parse import parse_desc_field as _pdf_lo
-                from .config import get_command_set as _gcs_lo
-                from collections import defaultdict as _dd_lo
-                import re as _re_lo
-                fb_path_lo = getattr(self, '_fb_path', None) or fieldbook_path
-                cs_lo = None
-                if fb_path_lo:
-                    try:
-                        cs_lo = _gcs_lo(fb_path_lo)
-                    except Exception:
-                        cs_lo = None
-                parsed_lo = _pdf_lo(raw_desc, f2f_set, fieldbook_path=fb_path_lo, command_set=cs_lo)
-                cl_lo = parsed_lo.get("code_classified", [])
-                code_to_cmds_lo = _dd_lo(list)
-                code_to_indices_lo = _dd_lo(list)
-                code_raw_lo = {}
-                for i_lo, item_lo in enumerate(cl_lo):
-                    if item_lo["type"] == "command" and item_lo.get("status") == "valid" and "attached_to" in item_lo:
-                        cidx_lo = item_lo["attached_to"]
-                        code_item_lo = cl_lo[cidx_lo] if 0 <= cidx_lo < len(cl_lo) else None
-                        if code_item_lo and code_item_lo["type"] == "code":
-                            line_id_lo = code_item_lo["raw"].strip().casefold()
-                            code_to_cmds_lo[line_id_lo].append(item_lo["norm"].casefold())
-                            code_to_indices_lo[line_id_lo].append(i_lo)
-                            code_raw_lo[line_id_lo] = code_item_lo["raw"]
-                corrected_lo = raw_desc
-                order_lo = {"st": 0, "pc": 1, "pt": 2, "end": 3, "x": 3}
-                changed_lo = False
-                for line_id_lo, cmds_lo in code_to_cmds_lo.items():
-                    ranks_lo = [order_lo.get(c, 99) for c in cmds_lo]
-                    if ranks_lo != sorted(ranks_lo):
-                        sorted_cmds_lo = [p[0] for p in sorted(zip(cmds_lo, ranks_lo), key=lambda x: x[1])]
-                        orig_cmds_raw_lo = [cl_lo[i]["raw"] for i in code_to_indices_lo[line_id_lo]]
-                        orig_group_lo = f"{code_raw_lo[line_id_lo]} {' '.join(orig_cmds_raw_lo)}" if orig_cmds_raw_lo else code_raw_lo[line_id_lo]
-                        corrected_group_lo = f"{code_raw_lo[line_id_lo]} {' '.join(c.upper() for c in sorted_cmds_lo)}" if sorted_cmds_lo else code_raw_lo[line_id_lo]
-                        corrected_lo = _re_lo.sub(_re_lo.escape(orig_group_lo), corrected_group_lo, corrected_lo, count=1, flags=_re_lo.I)
-                        changed_lo = True
-                if changed_lo and corrected_lo != raw_desc:
+                from ..core.point_linework_coder import fix_line_command_order
+                from .config import get_command_map as _get_commands
+
+                fb_path_lo = getattr(self, "_fb_path", None) or fieldbook_path
+                commands_lo = _get_commands(fb_path_lo)
+                corrected_lo = fix_line_command_order(raw_desc, commands_lo)
+                if corrected_lo and corrected_lo != raw_desc:
                     self.best_guess_desc = corrected_lo
                     self.best_guess = corrected_lo
             except Exception:
@@ -1071,7 +995,7 @@ class CleanDescriptionDialog(QDialog):
         row2 = QHBoxLayout()
         row2.addWidget(QLabel("Entire Code:"))
         self.entire_edit = QLineEdit()
-        self.entire_edit.setPlaceholderText("e.g., NG ST or EC1 PC  — full rewrite")
+        self.entire_edit.setPlaceholderText("Full description using Field Book codes and active command tokens")
         self.entire_edit.setText(raw_desc)
         row2.addWidget(self.entire_edit)
         k_lay.addLayout(row2)
@@ -1433,21 +1357,45 @@ class CleanDescriptionDialog(QDialog):
         code = self._fb_selected_code()
         if not code:
             return
-        # Replace first token in entire_edit with code, keep rest (e.g., ST PC)
+        # Replace the first feature-code token while preserving configured separators and commands.
         import re as _re
+        from ..core.fieldbook_syntax import find_separator, separator_pattern
+
         cur = self.entire_edit.text().strip()
-        parts = _re.split(r'(\s+|-)', cur)
-        for i, p in enumerate(parts):
-            if _re.fullmatch(r'[A-Za-z0-9]+', p.strip()) and p.strip().lower() not in ('st','pc','pt','end','x'):
-                parts[i] = code
-                break
-        else:
+        command_tokens = get_command_map(self._fb_path)
+        line_commands = {command_tokens.get(meaning, "").casefold()
+                         for meaning in ("start_line", "start_curve", "end_curve", "end_line", "close")
+                         if command_tokens.get(meaning)}
+        description_token = command_tokens.get("description", "")
+        multicode_token = command_tokens.get("multicode", "")
+        description_index = find_separator(cur, description_token)
+        code_end = description_index if description_index >= 0 else len(cur)
+        code_region = cur[:code_end]
+        masked = (_re.sub(separator_pattern(multicode_token),
+                           lambda match: " " * len(match.group()), code_region, flags=_re.I)
+                  if multicode_token else code_region)
+        match_to_replace = None
+        replacement = code
+        known_codes = {str(item).casefold() for item in self.f2f_set or ()}
+        for match in _re.finditer(r"[A-Za-z0-9]+", masked):
+            token = cur[match.start():match.end()]
+            folded = token.casefold()
+            if folded in line_commands:
+                continue
+            suffix = next((command for command in sorted(line_commands, key=len, reverse=True)
+                           if folded.endswith(command) and len(token) > len(command)), "")
+            if suffix and folded not in known_codes:
+                replacement = f"{code}{token[-len(suffix):]}"
+            match_to_replace = match
+            break
+        if match_to_replace is None:
             self.entire_edit.setText(code)
             self.entire_edit.setFocus()
             # Submit entire change immediately
             self._do_key_entire()
             return
-        self.entire_edit.setText("".join(parts))
+        cur = (cur[:match_to_replace.start()] + replacement + cur[match_to_replace.end():])
+        self.entire_edit.setText(cur)
         self.entire_edit.setFocus()
         # Submit change immediately
         self._do_key_entire()
@@ -1530,7 +1478,7 @@ class CleanDescriptionDialog(QDialog):
             edited = None
         if edited:
             # Validate edited text contains at least one valid code or is correctable
-            # Allow full desc edit (e.g., FL END / RCP18" -> FL END - RCP18 / )
+            # Allow a complete rewrite using the active Field Book's commands and separators.
             # If edited differs from raw, validate it parses without UnknownCode or is non-empty
             try:
                 from .parse import parse_desc_field as _pdf_fix
@@ -1835,28 +1783,20 @@ class RenumberSuggestionDialog(QDialog):
         self.accept()
 
 # ----- Duplicate Merge Helper -----
-def _merge_duplicate_descriptions(raw_descs: list[str], f2f_set: set, fieldbook_path=None) -> str:
-    """Merge multiple raw descs into one: collect unique codes with MULTICODE_SEP and combine free descs.
-    Uses parse_desc_field to split code_part / free_desc for each raw, then dedup codes via MULTICODE_SEP.
-    Returns merged_desc = ' - '.join(unique_codes) + (' / ' + ' '.join(unique_frees) if any free)
-    If no codes, returns ' / '.join(frees) or first raw as fallback.
-    """
+def _merge_duplicate_descriptions(raw_descs: list[str], f2f_set: set, fieldbook_path=None, commands=None) -> str:
+    """Merge descriptions using the active Field Book separator meanings and spacing preferences."""
     if not raw_descs:
         return ""
-    # Try to parse each raw
+    multicode_sep, description_sep = get_separator_texts(fieldbook_path, commands)
+    separator_tokens = get_separator_tokens(fieldbook_path, commands)
+    multicode_token = separator_tokens.get("multicode", "")
+    multicode_sep = multicode_sep or " "
+    description_sep = description_sep or " "
     try:
         from .parse import parse_desc_field
-        from .config import get_command_set, MULTICODE_SEP, DESCRIPTION_SEP
     except Exception:
-        # Fallback: just join unique raw descs with ' - '
-        uniq = []
-        seen = set()
-        for rd in raw_descs:
-            r = rd.strip()
-            if r and r not in seen:
-                seen.add(r)
-                uniq.append(r)
-        return " - ".join(uniq) if uniq else ""
+        uniq = list(dict.fromkeys(str(rd).strip() for rd in raw_descs if str(rd).strip()))
+        return multicode_sep.join(uniq) if uniq else ""
     codes = []
     seen_codes = set()
     frees = []
@@ -1866,13 +1806,13 @@ def _merge_duplicate_descriptions(raw_descs: list[str], f2f_set: set, fieldbook_
         if not rd:
             continue
         try:
-            parsed = parse_desc_field(rd, f2f_set or set(), fieldbook_path=fieldbook_path)
+            parsed = parse_desc_field(rd, f2f_set or set(), fieldbook_path=fieldbook_path, commands=commands)
             code_part = parsed.get("code_part", "").strip() if isinstance(parsed, dict) else ""
             free_part = parsed.get("free_desc", "").strip() if isinstance(parsed, dict) else ""
             # code_part may contain MULTICODE_SEP already
             if code_part:
                 # split by MULTICODE_SEP
-                parts = [p.strip() for p in code_part.split(MULTICODE_SEP) if p.strip()]
+                parts = [p.strip() for p in split_at_separator(code_part, multicode_token, maxsplit=0) if p.strip()] if multicode_token else [code_part]
                 if not parts:
                     parts = [code_part]
                 for cp in parts:
@@ -1900,15 +1840,10 @@ def _merge_duplicate_descriptions(raw_descs: list[str], f2f_set: set, fieldbook_
                 seen_codes.add(low)
                 codes.append(rd)
     # Build merged
-    try:
-        from .config import MULTICODE_SEP as _MCS, DESCRIPTION_SEP as _DS
-    except Exception:
-        _MCS = " - "
-        _DS = " / "
-    merged_code = _MCS.join(codes) if codes else ""
+    merged_code = multicode_sep.join(codes) if codes else ""
     merged_free = " ".join(frees) if frees else ""
     if merged_code and merged_free:
-        return f"{merged_code}{_DS}{merged_free}"
+        return f"{merged_code}{description_sep}{merged_free}"
     elif merged_code:
         return merged_code
     elif merged_free:
@@ -1922,7 +1857,7 @@ def _merge_duplicate_descriptions(raw_descs: list[str], f2f_set: set, fieldbook_
             if r and r.casefold() not in seen:
                 seen.add(r.casefold())
                 uniq.append(r)
-        return " - ".join(uniq)
+        return multicode_sep.join(uniq)
 
 class DuplicateMergeDialog(QDialog):
     """Duplicate Set Merge — Primary/Merge/Ignore/Remove per OID in a GroupID set.
@@ -2625,144 +2560,9 @@ class GlobalRenumberDialog(QDialog):
 
 # ----- Line Repair helpers (2026-09-24) -----
 def detect_line_errors(working_rows, fieldbook_path=None):
-    """Detect line command errors across OIDs (not just per-desc): each line code must have ST and END/X per segment, PC/PT matched, TOC reuse after END allowed.
-    Returns list of dicts {gid, issue_type, oid, detail, fix_suggestion, line_id, seg_id}
-    Groups by line_id+segment.
-    """
-    if not working_rows:
-        return []
-    from .parse import parse_desc_field, _strip_trailing_digits
-    from .config import get_command_set
-    try:
-        f2f_set = set()
-        if fieldbook_path:
-            from .parse import build_f2f_set_from_fieldbook
-            f2f_set = build_f2f_set_from_fieldbook(fieldbook_path)
-    except:
-        f2f_set=set()
-    try:
-        command_set = get_command_set(fieldbook_path) if fieldbook_path else None
-    except:
-        command_set=None
-    # Build per-OID parsed line commands
-    oid_list=[]
-    for wr in working_rows:
-        oid=str(wr[0]).strip()
-        raw=str(wr[5]).strip() if len(wr)>5 else ""
-        # OID numeric sort later
-        oid_list.append((oid, raw, wr))
-    # Sort by OID numeric
-    try:
-        oid_list.sort(key=lambda x: int(x[0]) if x[0].isdigit() else x[0])
-    except:
-        pass
-
-    # Group by line_id (code base + number) — e.g., TOC1, TOC, EP2 etc. Also any code that has line commands attached
-    # We need to parse each raw to extract code+commands
-    line_segments = {}  # line_id -> list of (oid, cmds_list, raw)
-    for oid, raw, wr in oid_list:
-        parsed = parse_desc_field(raw, f2f_set, fieldbook_path=fieldbook_path, command_set=command_set)
-        cl = parsed.get("code_classified", [])
-        # Map code idx -> attached cmds
-        from collections import defaultdict
-        code_to_cmds = defaultdict(list)
-        code_raw = {}
-        for i, item in enumerate(cl):
-            if item["type"]=="command" and item.get("status")=="valid" and "attached_to" in item:
-                cidx=item["attached_to"]
-                code_item = cl[cidx] if 0 <= cidx < len(cl) else None
-                if code_item and code_item["type"]=="code":
-                    line_id = code_item["raw"].strip().casefold()
-                    # Also handle numeric suffix: keep as is for segment grouping (TOC vs TOC1)
-                    code_to_cmds[line_id].append(item["norm"].casefold())
-                    code_raw[line_id]=code_item["raw"]
-            elif item["type"]=="code" and item["status"] in ("exact","line_instance"):
-                line_id=item["raw"].strip().casefold()
-                # Ensure entry exists even if no cmds (to detect missing ST/END? but non-line codes without commands are not lines)
-                if line_id not in code_to_cmds:
-                    code_to_cmds[line_id]=[]  # keep empty to know code present
-                    code_raw[line_id]=item["raw"]
-        for line_id, cmds in code_to_cmds.items():
-            # Only track if code ever has line commands in any point OR current has cmds
-            # For now track any code that has at least one line command somewhere — but we need global view
-            # Determine if line_id is ever a line: if any point has ST/PC/PT/END/X for that code
-            line_segments.setdefault(line_id, []).append((oid, cmds, raw, code_raw[line_id]))
-
-    # Now detect per line_id segments
-    errors=[]
-    gid=1
-    for line_id, pts in line_segments.items():
-        # Check if this line_id is actually a line: does it have any line command across all its points?
-        has_any_line_cmd = any(any(c in ("st","pc","pt","end","x") for c in cmds) for _,cmds,_,_ in pts)
-        if not has_any_line_cmd:
-            # Check if code is known line type? For now skip non-line codes without commands
-            continue
-        # pts already OID sorted
-        # Segment tracking: a segment starts at ST, ends at END/X. After END/X, next ST starts new segment.
-        segments = []  # list of list of (oid, cmds, raw)
-        cur_seg=[]
-        in_line=False
-        for oid, cmds, raw, raw_code in pts:
-            # cmds may be empty (intermediate point without command but same code continues line)
-            # Heuristic: if in_line and no END yet, intermediate points are part of line even without explicit cmds
-            if "st" in cmds:
-                if in_line and cur_seg:
-                    # Previous segment missing END before new ST — flag missing END
-                    errors.append({"gid": str(gid), "issue_type": "Missing END", "oid": cur_seg[-1][0], "line_id": line_id, "detail": f"Line {raw_code} segment missing END/X before new ST at OID {oid} ({raw}) — previous segment started at OID {cur_seg[0][0]}", "fix_suggestion": f"Add END to OID {cur_seg[-1][0]} or assume descending OID neighbor is END", "seg_id": len(segments)+1})
-                    gid+=1
-                    segments.append(cur_seg)
-                    cur_seg=[]
-                in_line=True
-                cur_seg.append((oid, cmds, raw))
-                # Immediate check: ST PT without PC is already flagged per-desc but also cross?
-            elif in_line:
-                cur_seg.append((oid, cmds, raw))
-                if "end" in cmds or "x" in cmds:
-                    # Segment ends
-                    segments.append(cur_seg)
-                    cur_seg=[]
-                    in_line=False
-                # else continue segment
-            else:
-                # Not in line but point has code without ST — missing ST
-                if cmds:
-                    # Has line commands but not ST while not in_line -> missing ST
-                    errors.append({"gid": str(gid), "issue_type": "Missing ST", "oid": oid, "line_id": line_id, "detail": f"Line {raw_code} has {cmds} at OID {oid} ({raw}) without prior ST — each segment needs START", "fix_suggestion": f"Add ST to OID {oid} or assume descending OID neighbor {pts[pts.index((oid, cmds, raw, raw_code))-1][0] if pts.index((oid, cmds, raw, raw_code))>0 else 'none'} is START", "seg_id": len(segments)+1})
-                    gid+=1
-                    # Start segment anyway to capture PC/PT checks?
-                    in_line=True
-                    cur_seg=[(oid, cmds, raw)]
-                    if "end" in cmds or "x" in cmds:
-                        segments.append(cur_seg); cur_seg=[]; in_line=False
-                else:
-                    # Code present without line commands while not in line — not a line point, ignore
-                    pass
-
-        # After loop, check unclosed segments
-        if cur_seg:
-            # Missing END at end of data
-            last_oid = cur_seg[-1][0]
-            errors.append({"gid": str(gid), "issue_type": "Missing END", "oid": last_oid, "line_id": line_id, "detail": f"Line {line_segments[line_id][0][3] if line_segments[line_id] else line_id} segment starting at OID {cur_seg[0][0]} never closed with END/X (ends at OID {last_oid})", "fix_suggestion": f"Add END/X to OID {last_oid} or assume next OID after is END", "seg_id": len(segments)+1})
-            gid+=1
-            segments.append(cur_seg)
-
-        # Now check per segment PC/PT pairing
-        for seg_idx, seg in enumerate(segments, start=1):
-            # seg is list of (oid, cmds, raw)
-            pcs = [(oid, raw) for oid, cmds, raw in seg if "pc" in cmds]
-            pts_ = [(oid, raw) for oid, cmds, raw in seg if "pt" in cmds]
-            if pcs and not pts_:
-                # PC without PT
-                errors.append({"gid": str(gid), "issue_type": "Missing PT", "oid": pcs[0][0], "line_id": line_id, "detail": f"Line {line_id} segment {seg_idx} has PC at OID {pcs[0][0]} without matching PT before END", "fix_suggestion": f"Add PT to segment {seg_idx} before END/X"})
-                gid+=1
-            if pts_ and not pcs:
-                errors.append({"gid": str(gid), "issue_type": "Missing PC", "oid": pts_[0][0], "line_id": line_id, "detail": f"Line {line_id} segment {seg_idx} has PT at OID {pts_[0][0]} without prior PC", "fix_suggestion": f"Add PC to start of curve in segment {seg_idx}"})
-                gid+=1
-            # Also check PC after END already handled per-desc
-
-    # Also need to handle generic: any point with PC without ST? That's per-desc already but we also catch cross.
-    return errors
-
+    """Compatibility wrapper around the shared, Field Book-aware linework checker."""
+    from .linecheck import detect_line_errors as detect
+    return detect(working_rows, fieldbook_path=fieldbook_path)
 
 def is_descriptions_clean(desc_table_row_count: int) -> bool:
     """Clean if Description Error tab has zero flagged rows (or all Skipped via dialog handling)."""

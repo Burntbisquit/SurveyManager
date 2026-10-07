@@ -4,7 +4,7 @@ Steps in required order:
 
   1. Fix All Description Errors      (DescFlag: UnknownCode, OrphanCommand, etc. — flagged only)
   2. Fix Duplicate Errors            (ExactDuplicate, SimilarNumber, CloseNE)
-  3. Fix Line Code Errors            (LineRepair: START/END/PC/PT validation)
+  3. Fix Line Code Errors            (LineRepair: configured line and curve command validation)
   4. Master Check                    (Global Renumber vs master, merge/remove/renumber, master protection)
   5. Final Export / Google Earth     (KML draft + final _VALID.csv)
 
@@ -20,7 +20,7 @@ from pathlib import Path
 STEPS = [
     {"id": 1, "key": "desc", "title": "1. Fix All Description Errors", "desc": "Flagged-only: UnknownCode, OrphanCommand, MisplacedAfterSeparator, LineOrderError, EmptyDescription. Use Clean First / Clean Auto. All must be Corrected / Ignored / Removed before next step."},
     {"id": 2, "key": "duplicate", "title": "2. Fix Duplicate Errors", "desc": "ExactDuplicate, SimilarNumber, CloseNE (NE≤0.1, EL≤0.1). Merge (keep smallest OID), Remove, or Renumber. Renumber single/range offered here."},
-    {"id": 3, "key": "line", "title": "3. Fix Line Code Errors", "desc": "Line Repair tab: each line needs START and END/CLOSE, curves PC→PT, reuse after END allowed, field ties ascending. Fix per segment."},
+    {"id": 3, "key": "line", "title": "3. Fix Line Code Errors", "desc": "Line Repair tab: each line needs Start Line and End Line or Close commands; curves need paired Start Curve and End Curve commands. Reuse after an End Line is allowed; field ties ascend. Fix per segment."},
     {"id": 4, "key": "master", "title": "4. Check Against Master — Duplicate Points, Merge / Remove / Renumber", "desc": "Global Renumber vs master file CSV — master points are PROTECTED (cannot be overwritten). New conflicts must renumber single or range. Also checks duplicate points already merged/removed."},
     {"id": 5, "key": "export", "title": "5. Final Export & Google Earth", "desc": "Final Error Report → _VALID.csv + KML (Texas State Plane → WGS84, with/without surface factor). Choose EPSG and factor in Coordinate Settings."},
 ]

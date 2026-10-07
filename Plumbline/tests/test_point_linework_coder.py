@@ -18,6 +18,7 @@ from plumbline.core.point_linework_coder import (
     remove_point_token,
     reverse_string_coding,
     split_string_coding,
+    start_string_coding,
     update_point_token,
 )
 from plumbline.core.project import Project
@@ -42,7 +43,7 @@ def test_join_points_to_string():
     pts = [p1, p2, p3]
     modified = join_points_to_string(pts, code="EP", string_id="1", closed=False)
     assert len(modified) == 3
-    assert p1.desc == "EP1 ST / GS" or "EP1 ST" in p1.desc
+    assert p1.desc == "EP1 ST - GS"
     assert "EP1" in p2.desc
     assert "EP1 END" in p3.desc
 
@@ -63,7 +64,7 @@ def test_join_points_closed():
     modified = join_points_to_string(pts, code="BLDG", closed=True)
     assert p1.desc == "BLDG ST"
     assert p2.desc == "BLDG"
-    assert p3.desc == "BLDG CLS"
+    assert p3.desc == "BLDG X"
 
     res = pr.process_linework()
     assert res["strings"] == 1
@@ -114,9 +115,9 @@ def test_reverse_with_curves():
 # ------------------------------------------------------------------ Multicodes
 def test_join_and_update_with_multicodes():
     pr = Project()
-    p1 = pr.add_point(0, 0, 0, number="1", desc="TREE / TOC ST")
-    p2 = pr.add_point(10, 0, 0, number="2", desc="TREE / TOC")
-    p3 = pr.add_point(20, 0, 0, number="3", desc="TREE / TOC END")
+    p1 = pr.add_point(0, 0, 0, number="1", desc="TREE - TOC ST")
+    p2 = pr.add_point(10, 0, 0, number="2", desc="TREE - TOC")
+    p3 = pr.add_point(20, 0, 0, number="3", desc="TREE - TOC END")
 
     pts = [p1, p2, p3]
     change_string_code(pts, old_code_prefix="TOC", new_code_prefix="CURB2")
@@ -133,7 +134,7 @@ def test_close_and_open_string_coding():
 
     # Close string
     close_string_coding(pts[-1])
-    assert pr.points[4].desc == "EP CLS"
+    assert pr.points[4].desc == "EP X"
 
     pr.process_linework()
     poly = next(e for e in pr.entities.values() if isinstance(e, Polyline))
@@ -188,8 +189,65 @@ def test_update_and_remove_token():
     d1 = update_point_token(desc, "TOC", "BC ST")
     assert d1 == "BC ST"
 
-    d2 = update_point_token("TOC ST / EP 1", "EP", "EP 2 ST")
-    assert d2 == "TOC ST / EP 2 ST"
+    d2 = update_point_token("TOC ST - EP 1", "EP", "EP 2 ST")
+    assert d2 == "TOC ST - EP 2 ST"
 
-    d3 = remove_point_token("TOC ST / EP 1", "EP")
+    d3 = remove_point_token("TOC ST - EP 1", "EP")
     assert d3 == "TOC ST"
+
+
+def test_boundary_helpers_use_active_fieldbook_meanings_and_keep_notes():
+    commands = {
+        "start_line": "BEGINLN",
+        "start_curve": "BC",
+        "end_curve": "EC",
+        "end_line": "FINISH",
+        "close": "CLOSEFIG",
+        "multicode": "PLUS",
+        "description": "NOTE",
+    }
+    point = SurveyPoint(1, "1", 0, 0, 0, "EA NOTE curb")
+    start_string_coding(point, "EA", commands)
+    assert point.desc == "EA BEGINLN NOTE curb"
+    open_string_coding(point, "EA", commands)
+    assert point.desc == "EA FINISH NOTE curb"
+    close_string_coding(point, "EA", commands)
+    assert point.desc == "EA CLOSEFIG NOTE curb"
+
+
+def test_custom_fieldbook_tokens_drive_linework_and_string_ids(monkeypatch):
+    from plumbline.core.featurecodes import FeatureCode
+    from plumbline.core.point_linework_coder import find_free_string_id
+    from plumbline.core.settings import settings
+
+    commands = {
+        "start_line": "BEGINLN",
+        "start_curve": "BC",
+        "end_curve": "EC",
+        "end_line": "FINISH",
+        "close": "CLOSEFIG",
+        "multicode": "PLUS",
+        "description": "NOTE",
+    }
+    monkeypatch.setitem(settings()._data, "space_between_commands", True)
+    monkeypatch.setitem(settings()._data, "space_around_multicode_separator", True)
+    monkeypatch.setitem(settings()._data, "space_around_description_separator", True)
+
+    pr = Project("Custom Field Book")
+    pr.settings["f2f_commands"] = commands
+    pr.codes.add(FeatureCode(code="EA", kind="line", layer="ASPHALT", breakline=True))
+    pr.codes.add(FeatureCode(code="SW", kind="line", layer="WALK", breakline=True))
+    first = pr.add_point(0, 0, 1, number="1", desc="EA NOTE curb")
+    last = pr.add_point(10, 0, 1, number="2", desc="EA NOTE curb")
+
+    join_points_to_string([first, last], "EA", closed=True, commands=commands)
+    assert first.desc == "EA BEGINLN NOTE curb"
+    assert last.desc == "EA CLOSEFIG NOTE curb"
+    result = pr.process_linework()
+    assert result["strings"] == 1
+    line = next(entity for entity in pr.entities.values() if isinstance(entity, Polyline))
+    assert line.closed
+
+    pr.add_point(20, 0, 1, number="3", desc="EA1 BEGINLN")
+    pr.add_point(20, 10, 1, number="4", desc="EA3 PLUS SW")
+    assert find_free_string_id(pr, "EA") == "2"
