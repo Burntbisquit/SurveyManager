@@ -102,6 +102,19 @@ class _DownTabComboBox(QComboBox):
         super().keyPressEvent(event)
 
 
+class _PointSnapshot(dict[int, tuple]):
+    """Point data captured for one affected scope or for the full project.
+
+    ``scope=None`` means a full-project snapshot. A set scope also records points
+    that were absent at capture time, so restoring a partial snapshot can remove
+    points added later without touching unrelated points.
+    """
+
+    def __init__(self, points=(), *, scope: set[int] | None = None):
+        super().__init__(points)
+        self.scope = None if scope is None else set(scope)
+
+
 # ------------------------------------------------------------------ Helper Functions
 def merge_point_descriptions(descs: Sequence[str], fieldbook_path=None, commands=None) -> str:
     """Merge code groups and notes using the active Field Book separators and spacing settings."""
@@ -335,15 +348,22 @@ class BaseQAWorkbenchDialog(QDialog):
     """Base class for full-screen QA Workbenches with 2D/3D split views and inline resolution."""
 
     workbench_title = "QA Workbench"
+    start_maximized = False
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
         self.state = state
         self.setWindowTitle(self.workbench_title)
-        self.setMinimumSize(1100, 720)
+        minimum_size = (900, 600) if self.start_maximized else (1100, 720)
+        self.setMinimumSize(*minimum_size)
         self.resize(1350, 850)
+        if self.start_maximized:
+            self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
+            self.setWindowFlag(Qt.WindowMinimizeButtonHint, True)
+            self.setSizeGripEnabled(True)
 
         # Baseline snapshot for Discard on Exit
+        self.baseline_app_dirty = self.state.dirty
         self.baseline_snapshot = self._take_snapshot()
 
         # Local undo/redo history stacks
@@ -366,6 +386,8 @@ class BaseQAWorkbenchDialog(QDialog):
         self.fieldbook_path = ""
 
         self._build_ui()
+        if self.start_maximized:
+            self.setWindowState(self.windowState() | Qt.WindowMaximized)
 
     def _build_ui(self):
         root_lay = QVBoxLayout(self)
@@ -488,24 +510,12 @@ class BaseQAWorkbenchDialog(QDialog):
         lay_right.setContentsMargins(0, 0, 0, 0)
         lay_right.setSpacing(4)
 
-        # Top Action Bar: Undo, Redo, Export
+        # The summary page has no global Undo/Redo controls; history is scoped to
+        # the active issue and appears only in that issue's header.
         self.w_top_actions = QWidget()
         self.lay_top_actions = QHBoxLayout(self.w_top_actions)
         self.lay_top_actions.setContentsMargins(0, 0, 0, 0)
         self.lay_top_actions.setSpacing(6)
-
-        self.btn_undo = QPushButton("Undo")
-        self.btn_undo.setIcon(icons.icon("undo"))
-        self.btn_undo.setEnabled(False)
-        self.btn_undo.clicked.connect(self._undo)
-        self.lay_top_actions.addWidget(self.btn_undo)
-
-        self.btn_redo = QPushButton("Redo")
-        self.btn_redo.setIcon(icons.icon("redo"))
-        self.btn_redo.setEnabled(False)
-        self.btn_redo.clicked.connect(self._redo)
-        self.lay_top_actions.addWidget(self.btn_redo)
-
         self.lay_top_actions.addStretch(1)
 
         self.btn_export = QPushButton("Export Check Report...")
@@ -609,6 +619,11 @@ class BaseQAWorkbenchDialog(QDialog):
         self.btn_issue_redo.clicked.connect(self._redo_issue)
         lay_bb.addWidget(self.btn_issue_redo)
 
+        # Compatibility aliases point at this single, issue-scoped pair; there is
+        # deliberately no second pair in the summary/global toolbar.
+        self.btn_undo = self.btn_issue_undo
+        self.btn_redo = self.btn_issue_redo
+
         self.lay_edit.addWidget(w_issue_header)
 
         self.lbl_edit_detail = QLabel("")
@@ -689,7 +704,7 @@ class BaseQAWorkbenchDialog(QDialog):
         lay_right.addWidget(self.stack, 1)
         lay_right.addWidget(self.w_issue_bottom)
 
-        # Bottom Action Bar: Status, Save & Exit, Discard, Cancel
+        # Bottom Action Bar: Status, Save & Exit, Discard & Exit
         w_bottom_bar = QWidget()
         lay_bot = QHBoxLayout(w_bottom_bar)
         lay_bot.setContentsMargins(4, 4, 4, 4)
@@ -710,10 +725,6 @@ class BaseQAWorkbenchDialog(QDialog):
         self.btn_discard_exit.clicked.connect(self._discard_and_exit)
         lay_bot.addWidget(self.btn_discard_exit)
 
-        self.btn_cancel = QPushButton("Cancel")
-        self.btn_cancel.clicked.connect(self.close)
-        lay_bot.addWidget(self.btn_cancel)
-
         lay_right.addWidget(w_bottom_bar)
         self.stack.currentChanged.connect(self._on_stack_page_changed)
         self._on_stack_page_changed(self.stack.currentIndex())
@@ -722,7 +733,7 @@ class BaseQAWorkbenchDialog(QDialog):
         self.split_views.setChildrenCollapsible(False)
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([650, 650])
+        self.splitter.setSizes([560, 790])
 
         # Initial run
         self._refresh_vocabulary()
@@ -734,7 +745,6 @@ class BaseQAWorkbenchDialog(QDialog):
         show_summary_actions = index == 0
         self.btn_save_exit.setVisible(show_summary_actions)
         self.btn_discard_exit.setVisible(show_summary_actions)
-        self.btn_cancel.setVisible(show_summary_actions)
         self.w_issue_bottom.setVisible(index == 1)
         page_name = "All Issues"
         if index == 1 and self.current_edit_finding:
@@ -1012,9 +1022,24 @@ class BaseQAWorkbenchDialog(QDialog):
         )
 
     # ------------------------------------------------------------------ Inline Detail View (Page 1)
+    def _finding_point_scope(self, finding: dict) -> set[int] | None:
+        """Return the point IDs an issue can affect, or None if history is project-wide."""
+        scope = set(finding.get("pids", []) or [])
+        scope.update(finding.get("resolved_pids", set()) or set())
+        scope.update(finding.get("ignored_pids", set()) or set())
+        for group in finding.get("stack_groups", []) or []:
+            scope.update(group)
+        for history_name in ("history_undo", "history_redo"):
+            for _description, snapshot in finding.get(history_name, []) or []:
+                snapshot_scope = getattr(snapshot, "scope", None)
+                if snapshot_scope is None:
+                    return None
+                scope.update(snapshot_scope)
+        return scope
+
     def _capture_issue_session(self, finding: dict):
-        """Remember the state at issue entry so Discard can undo applied fixes too."""
-        self.issue_snapshot = self._take_snapshot()
+        """Remember only this issue's points so Discard can restore without a full-project copy."""
+        self.issue_snapshot = self._take_snapshot(self._finding_point_scope(finding))
         self.issue_metadata_snapshot = {
             "finding": {
                 "status": finding.get("status", "active"),
@@ -1064,10 +1089,8 @@ class BaseQAWorkbenchDialog(QDialog):
         # Update Scoped Undo/Redo button states
         h_undo = finding.get("history_undo", [])
         h_redo = finding.get("history_redo", [])
-        self.btn_issue_undo.setEnabled(len(h_undo) > 0)
-        self.btn_issue_redo.setEnabled(len(h_redo) > 0)
-        self.btn_undo.setEnabled(len(h_undo) > 0)
-        self.btn_redo.setEnabled(len(h_redo) > 0)
+        self.btn_issue_undo.setEnabled(bool(h_undo))
+        self.btn_issue_redo.setEnabled(bool(h_redo))
 
         pr = self.state.project
         is_close = "close" in chk.lower()
@@ -1224,31 +1247,39 @@ class BaseQAWorkbenchDialog(QDialog):
             self.tbl_edit_pts.selectRow(0)
             self._select_stack_points(stacks[0])
 
-    def _show_summary_page(self):
+    def _show_summary_page(self, *, recheck: bool = True, refresh: bool = True):
         self.current_edit_finding = None
+        self.current_selected_stack = []
         self.issue_snapshot = None
         self.issue_metadata_snapshot = None
         self.issue_dirty = False
+        self.desc_edits = []
+        self.sep_corrections = []
+        self.current_focused_ed = None
         if hasattr(self, "w_close_tol_bar"):
             self.w_close_tol_bar.hide()
         self.stack.setCurrentIndex(0)
-        self.run_check()
+        if recheck:
+            self.run_check()
+        elif refresh:
+            self._populate_findings()
+            self._sync_view_flags()
 
     def _action_save_issue(self):
         if self._has_unapplied_issue_edits():
-            self._apply_pending_issue_edits()
-        f = self.current_edit_finding
-        if f:
-            if not f.get("pids") or len(f.get("pids", [])) == 0:
-                f["status"] = "resolved"
-            elif f.get("resolutions"):
-                f["status"] = "partial"
-        self.issue_dirty = False
-        self._show_summary_page()
+            # Save is the single commit point for inline dropdown/text edits. If
+            # validation fails, keep the user on the issue instead of losing input.
+            if not self._apply_pending_issue_edits(return_to_summary=True):
+                return
+        elif self.stack.currentIndex() != 0:
+            # Actions already recheck when applied, so returning must not trigger a
+            # second full QA pass.
+            self._show_summary_page(recheck=False, refresh=False)
 
     def _action_discard_issue(self):
+        data_changed = False
         if self.issue_snapshot is not None:
-            self._restore_snapshot(self.issue_snapshot)
+            data_changed = self._restore_snapshot(self.issue_snapshot)
 
         finding = self.current_edit_finding
         session = self.issue_metadata_snapshot
@@ -1274,10 +1305,8 @@ class BaseQAWorkbenchDialog(QDialog):
         if finding is not None:
             self.btn_issue_undo.setEnabled(bool(finding.get("history_undo")))
             self.btn_issue_redo.setEnabled(bool(finding.get("history_redo")))
-        self.btn_undo.setEnabled(bool(self.history_undo))
-        self.btn_redo.setEnabled(bool(self.history_redo))
         self.issue_dirty = False
-        self._show_summary_page()
+        self._show_summary_page(recheck=data_changed, refresh=not data_changed)
 
     @staticmethod
     def _safe_widget_text(widget, getter: str) -> str | None:
@@ -1290,6 +1319,8 @@ class BaseQAWorkbenchDialog(QDialog):
             return None
 
     def _has_unapplied_issue_edits(self) -> bool:
+        if not hasattr(self, "stack") or self.stack.currentIndex() != 1:
+            return False
         for item in getattr(self, "desc_edits", []):
             if len(item) < 2:
                 continue
@@ -1303,20 +1334,19 @@ class BaseQAWorkbenchDialog(QDialog):
             action = self._safe_widget_text(cb_action, "currentText")
             if action in ("Correct", "Correct (Leave # in Descriptor)", "Ignore"):
                 return True
-        return bool(getattr(self, "issue_dirty", False))
+        return False
 
-    def _apply_pending_issue_edits(self):
+    def _apply_pending_issue_edits(self, *, return_to_summary: bool = False) -> bool:
         # A stale wrapper is ignored rather than dereferenced. Normally the editor
         # lists are cleared during rebuild; this is a final guard for queued Qt
-        # deferred-delete events on Back and Save Issue paths.
+        # deferred-delete events on Save/Discard paths.
         desc_edits = [
             item for item in getattr(self, "desc_edits", [])
             if len(item) >= 2 and self._safe_widget_text(item[1], "text") is not None
         ]
         if desc_edits:
             self.desc_edits = desc_edits
-            self._action_apply_descriptions()
-            return
+            return bool(self._action_apply_descriptions(return_to_summary=return_to_summary))
 
         sep_corrections = []
         for item in getattr(self, "sep_corrections", []):
@@ -1328,7 +1358,8 @@ class BaseQAWorkbenchDialog(QDialog):
             sep_corrections.append(item)
         if sep_corrections:
             self.sep_corrections = sep_corrections
-            self._action_apply_separator_corrections()
+            return bool(self._action_apply_separator_corrections(return_to_summary=return_to_summary))
+        return False
 
     def _discard_issue_edits(self):
         self._action_discard_issue()
@@ -1387,7 +1418,6 @@ class BaseQAWorkbenchDialog(QDialog):
         pad = 20.0
         self.state.zoom_to_bbox((min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad))
         self.view3d.center_on_point(sum(xs) / len(xs), sum(ys) / len(ys), sum(zs) / len(zs))
-        self._sync_view_flags()
 
     def _select_and_focus_points(self, pids: list[int]):
         pr = self.state.project
@@ -1401,7 +1431,6 @@ class BaseQAWorkbenchDialog(QDialog):
         pad = 20.0
         self.state.zoom_to_bbox((min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad))
         self.view3d.center_on_point(sum(xs) / len(xs), sum(ys) / len(ys), sum(zs) / len(zs))
-        self._sync_view_flags()
 
     def _zoom_to_highlighted_point(self):
         pr = self.state.project
@@ -1461,55 +1490,78 @@ class BaseQAWorkbenchDialog(QDialog):
             self.tbl_edit_resolved.setRowCount(0)
 
     # ------------------------------------------------------------------ Transaction & Undo/Redo
-    def _take_snapshot(self) -> dict[int, tuple]:
+    def _take_snapshot(self, point_ids: Sequence[int] | set[int] | None = None) -> _PointSnapshot:
+        """Copy point fields for the affected IDs, or the full project when scope is None."""
         pr = self.state.project
-        return {
-            pid: (p.number, p.x, p.y, p.z, p.desc, p.layer, dict(p.attrs))
-            for pid, p in pr.points.items()
-        }
+        scope = None if point_ids is None else set(point_ids)
+        points = (pr.points.items() if scope is None
+                  else ((pid, pr.points[pid]) for pid in scope if pid in pr.points))
+        return _PointSnapshot(
+            ((pid, (p.number, p.x, p.y, p.z, p.desc, p.layer, dict(p.attrs)))
+             for pid, p in points),
+            scope=scope,
+        )
 
-    def _restore_snapshot(self, snap: dict[int, tuple]):
+    def _restore_snapshot(self, snap: dict[int, tuple]) -> bool:
+        """Restore a full or scoped snapshot and refresh derived data only if it changed."""
         pr = self.state.project
-        # Remove points not in snapshot
-        current_ids = list(pr.points.keys())
-        for pid in current_ids:
-            if pid not in snap:
-                pr.points.pop(pid, None)
+        scope = getattr(snap, "scope", None)
+        full_snapshot = scope is None
+        restore_scope = set(snap) if full_snapshot else set(scope)
+        changed = False
 
-        # Restore / add points from snapshot
+        # A partial snapshot removes only new points inside its own scope; unrelated
+        # points are left alone. A full baseline snapshot restores the whole point set.
+        remove_scope = set(pr.points) - set(snap) if full_snapshot else restore_scope - set(snap)
+        for pid in remove_scope:
+            if pid in pr.points:
+                del pr.points[pid]
+                changed = True
+
         for pid, data in snap.items():
             num, x, y, z, desc, layer, attrs = data
-            if pid in pr.points:
-                p = pr.points[pid]
-                p.number = num
-                p.x = x
-                p.y = y
-                p.z = z
-                p.desc = desc
-                p.layer = layer
-                p.attrs = dict(attrs)
-            else:
-                p = SurveyPoint(id=pid, number=num, x=x, y=y, z=z, desc=desc, layer=layer, attrs=dict(attrs))
-                pr.points[pid] = p
+            p = pr.points.get(pid)
+            if p is None:
+                pr.points[pid] = SurveyPoint(
+                    id=pid, number=num, x=x, y=y, z=z, desc=desc, layer=layer, attrs=dict(attrs))
+                changed = True
+                continue
 
-        pr.process_linework()
-        pr.touch()
-        self.state.set_dirty(True)
-        self.state.refresh(("points", "entities"))
+            current = (p.number, p.x, p.y, p.z, p.desc, p.layer, dict(p.attrs))
+            if current == data:
+                continue
+            p.number = num
+            p.x = x
+            p.y = y
+            p.z = z
+            p.desc = desc
+            p.layer = layer
+            p.attrs = dict(attrs)
+            changed = True
 
-    def _push_undo(self, desc: str):
-        snap = self._take_snapshot()
-        self.history_undo.append((desc, snap))
-        self.history_redo.clear()
-        self.btn_undo.setEnabled(True)
-        self.btn_redo.setEnabled(False)
+        if changed:
+            pr.process_linework()
+            self.state.set_dirty(True)
+            self.state.refresh(("points", "entities"))
+        return changed
+
+    def _push_undo(self, desc: str, point_ids: Sequence[int] | set[int] | None = None):
+        if point_ids is None and self.current_edit_finding:
+            point_ids = self._finding_point_scope(self.current_edit_finding)
+        snap = self._take_snapshot(point_ids)
         self.dirty = True
         self.issue_dirty = True
         if self.current_edit_finding:
-            self.current_edit_finding.setdefault("history_undo", []).append((desc, snap))
-            self.current_edit_finding.setdefault("history_redo", []).clear()
+            finding = self.current_edit_finding
+            finding.setdefault("history_undo", []).append((desc, snap))
+            finding.setdefault("history_redo", []).clear()
             self.btn_issue_undo.setEnabled(True)
             self.btn_issue_redo.setEnabled(False)
+        else:
+            self.history_undo.append((desc, snap))
+            self.history_redo.clear()
+            self.btn_undo.setEnabled(True)
+            self.btn_redo.setEnabled(False)
 
     def _undo_issue(self):
         f = self.current_edit_finding
@@ -1520,21 +1572,23 @@ class BaseQAWorkbenchDialog(QDialog):
         if not h_undo:
             return
         desc, snap = h_undo.pop()
-        h_redo.append((desc, self._take_snapshot()))
-        self._restore_snapshot(snap)
+        h_redo.append((desc, self._take_snapshot(getattr(snap, "scope", None))))
+        data_changed = self._restore_snapshot(snap)
         if f.get("resolutions"):
             f["resolutions"].pop()
         if f.get("resolved_history"):
             last_item = f["resolved_history"].pop()
             f.setdefault("redo_resolved_history", []).append(last_item)
             f.setdefault("ignored_pids", set()).difference_update(last_item.get("ignored_pids", []))
-        self.btn_issue_undo.setEnabled(len(h_undo) > 0)
+        self.btn_issue_undo.setEnabled(bool(h_undo))
         self.btn_issue_redo.setEnabled(True)
-        self.btn_undo.setEnabled(len(h_undo) > 0)
-        self.btn_redo.setEnabled(True)
         if self.resolved_findings:
             self.resolved_findings.pop()
-        self.run_check()
+        if data_changed:
+            self.run_check()
+        else:
+            self._populate_findings()
+            self._sync_view_flags()
         self.lbl_status.setText(f"Undo: {desc}")
         self._open_inline_editor(f, start_session=False)
 
@@ -1547,8 +1601,8 @@ class BaseQAWorkbenchDialog(QDialog):
         if not h_redo:
             return
         desc, snap = h_redo.pop()
-        h_undo.append((desc, self._take_snapshot()))
-        self._restore_snapshot(snap)
+        h_undo.append((desc, self._take_snapshot(getattr(snap, "scope", None))))
+        data_changed = self._restore_snapshot(snap)
         f.setdefault("resolutions", []).append(desc)
         if f.get("redo_resolved_history"):
             last_item = f["redo_resolved_history"].pop()
@@ -1562,44 +1616,25 @@ class BaseQAWorkbenchDialog(QDialog):
                 "points": list(f.get("points", [])),
             }
             f.setdefault("resolved_history", []).append(res_item)
-        self.btn_issue_redo.setEnabled(len(h_redo) > 0)
+        self.btn_issue_redo.setEnabled(bool(h_redo))
         self.btn_issue_undo.setEnabled(True)
-        self.btn_redo.setEnabled(len(h_redo) > 0)
-        self.btn_undo.setEnabled(True)
-        self.run_check()
+        if data_changed:
+            self.run_check()
+        else:
+            self._populate_findings()
+            self._sync_view_flags()
         self.lbl_status.setText(f"Redo: {desc}")
         self._open_inline_editor(f, start_session=False)
 
     def _undo(self):
+        # Kept as a compatibility handler for callers of the former global controls.
+        # Visible Undo/Redo now exist only on the active issue page.
         if self.stack.currentIndex() == 1 and self.current_edit_finding:
             self._undo_issue()
-            return
-        if not self.history_undo:
-            return
-        desc, snap = self.history_undo.pop()
-        self.history_redo.append((desc, self._take_snapshot()))
-        self._restore_snapshot(snap)
-        self.btn_undo.setEnabled(len(self.history_undo) > 0)
-        self.btn_redo.setEnabled(True)
-        if self.resolved_findings:
-            self.resolved_findings.pop()
-            self._update_resolved_tables()
-        self.run_check()
-        self.lbl_status.setText(f"Undo: {desc}")
 
     def _redo(self):
         if self.stack.currentIndex() == 1 and self.current_edit_finding:
             self._redo_issue()
-            return
-        if not self.history_redo:
-            return
-        desc, snap = self.history_redo.pop()
-        self.history_undo.append((desc, self._take_snapshot()))
-        self._restore_snapshot(snap)
-        self.btn_redo.setEnabled(len(self.history_redo) > 0)
-        self.btn_undo.setEnabled(True)
-        self.run_check()
-        self.lbl_status.setText(f"Redo: {desc}")
 
     def _apply_fix(
         self,
@@ -1608,6 +1643,7 @@ class BaseQAWorkbenchDialog(QDialog):
         resolved_points: list[int] | None = None,
         stay_on_edit_page: bool = True,
         ignored_points: list[int] | None = None,
+        project_changed: bool = True,
     ):
         pr = self.state.project
         cur_finding = self.current_edit_finding
@@ -1618,15 +1654,15 @@ class BaseQAWorkbenchDialog(QDialog):
         elif cur_finding:
             p_nums = list(cur_finding.get("points", []))
 
-        self._push_undo(resolution_desc)
+        self._push_undo(resolution_desc, point_ids=resolved_points)
         ignored_pids = list(dict.fromkeys(ignored_points or []))
         if cur_finding and ignored_pids:
             cur_finding.setdefault("ignored_pids", set()).update(ignored_pids)
         fix_fn()
-        pr.process_linework()
-        self.state.project.touch()
-        self.state.set_dirty(True)
-        self.state.refresh(("points", "entities"))
+        if project_changed:
+            pr.process_linework()
+            self.state.set_dirty(True)
+            self.state.refresh(("points", "entities"))
 
         res_item = {
             "level": cur_finding.get("level", "warn") if cur_finding else "warn",
@@ -1642,20 +1678,25 @@ class BaseQAWorkbenchDialog(QDialog):
             if resolved_points:
                 cur_finding.setdefault("resolved_pids", set()).update(resolved_points)
 
-        self.run_check()
+        if project_changed:
+            self.run_check()
+        else:
+            self._populate_findings()
+            self._sync_view_flags()
 
         if stay_on_edit_page and cur_finding:
             self._open_inline_editor(cur_finding, start_session=False)
         else:
-            self._show_summary_page()
+            self._show_summary_page(recheck=False, refresh=False)
 
     def _action_ignore(self, key: str):
         if not key and self.current_edit_finding:
             key = self.current_edit_finding.get("key", "")
         if key:
             self.ignored_keys.add(key)
-        self._show_summary_page()
-        self.run_check()
+        # Ignoring hides an existing result; it does not change project data, so
+        # refresh the tracked rows without running the expensive QA checks again.
+        self._show_summary_page(recheck=False, refresh=True)
 
     # ------------------------------------------------------------------ Save & Discard Exits
     def export_report_csv(self):
@@ -1676,17 +1717,22 @@ class BaseQAWorkbenchDialog(QDialog):
         except Exception as ex:
             QMessageBox.critical(self, "Export Error", f"Failed to save CSV report:\n{ex}")
 
-    def _save_and_exit(self):
+    def _save_and_exit(self) -> bool:
+        if self._has_unapplied_issue_edits():
+            if not self._apply_pending_issue_edits(return_to_summary=True):
+                return False
         self.dirty = False
         self.accept()
+        return True
 
     def _discard_and_exit(self):
         self._restore_snapshot(self.baseline_snapshot)
+        self.state.set_dirty(self.baseline_app_dirty)
         self.dirty = False
         self.reject()
 
     def closeEvent(self, event):
-        if self.dirty:
+        if self.dirty or self._has_unapplied_issue_edits():
             mb = QMessageBox(self)
             mb.setWindowTitle("Unsaved Changes")
             mb.setText("You have unsaved changes in this workbench.\nDo you want to save them before exiting?")
@@ -1698,8 +1744,10 @@ class BaseQAWorkbenchDialog(QDialog):
 
             clicked = mb.clickedButton()
             if clicked == b_save:
-                self._save_and_exit()
-                event.accept()
+                if self._save_and_exit():
+                    event.accept()
+                else:
+                    event.ignore()
             elif clicked == b_discard:
                 self._discard_and_exit()
                 event.accept()
@@ -1716,6 +1764,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
     """Workbench dedicated to Category 1: Point & Code Errors."""
 
     workbench_title = "Fix Point Errors"
+    start_maximized = True
 
     def __init__(self, state, parent=None):
         self.close_tol = 0.05
@@ -1888,7 +1937,9 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                 actions = ["Skip", "Correct", "Ignore"] if is_spacing else [
                     "Skip", "Correct", "Correct (Leave # in Descriptor)", "Ignore"]
                 cb_action.addItems(actions)
-                cb_action.setCurrentIndex(0)  # default all dropdowns to skip
+                # Spacing fixes are safe, deterministic, and limited to whitespace;
+                # other separator corrections remain opt-in.
+                cb_action.setCurrentText("Correct" if is_spacing else "Skip")
 
                 # Connect dropdown change to update the Fixed Code column preview in real time
                 def _make_on_action_changed(it_f=it_fixed, s=sugg, sn=sugg_num, od=orig_desc):
@@ -1934,25 +1985,16 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             lay_g.addWidget(Hint(hint_text))
             lay_g.addWidget(self.tbl_corrections)
 
-            # Bottom buttons: Apply and Correct All
-            row_btns = QHBoxLayout()
-            row_btns.setSpacing(8)
-
-            btn_apply = QPushButton("Apply")
-            btn_apply.setProperty("accent", True)
-            btn_apply.setToolTip("Process selections (Correct / Ignore / Skip) for points")
-            btn_apply.clicked.connect(self._action_apply_separator_corrections)
-            row_btns.addWidget(btn_apply)
-
-            btn_correct_all = QPushButton("Fix All Spacing" if is_spacing else "Correct All")
-            btn_correct_all.setToolTip(
-                "Normalize configured separator spacing for all listed descriptions"
-                if is_spacing else "Set all points to Correct and apply fixed codes immediately")
-            btn_correct_all.clicked.connect(self._action_correct_all_separator_corrections)
-            row_btns.addWidget(btn_correct_all)
-
-            row_btns.addStretch(1)
-            lay_g.addLayout(row_btns)
+            # Batch selection is staged; Save & Return performs the actual correction.
+            if not is_spacing:
+                row_btns = QHBoxLayout()
+                row_btns.setSpacing(8)
+                btn_correct_all = QPushButton("Select All Correct")
+                btn_correct_all.setToolTip("Set every row to Correct; Save & Return applies the selections.")
+                btn_correct_all.clicked.connect(self._action_correct_all_separator_corrections)
+                row_btns.addWidget(btn_correct_all)
+                row_btns.addStretch(1)
+                lay_g.addLayout(row_btns)
             self.lay_edit_tools.addWidget(grp)
 
         elif is_close or is_exact_dup or is_lookalike:
@@ -1989,14 +2031,20 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
 
             if is_lookalike:
                 btn_ignore_point = QPushButton("Ignore Point")
-                btn_ignore_point.setToolTip("Ignore only the selected point for this look-alike finding; other points remain active.")
+                btn_ignore_point.setToolTip(
+                    "Ignore the selected affected-point stack only; other stacks remain active.")
                 btn_ignore_point.clicked.connect(self._action_ignore_selected_lookalike_point)
                 row_c_btns.addWidget(btn_ignore_point)
 
             row_c_btns.addStretch(1)
 
-            btn_skip = QPushButton("Skip Finding")
-            btn_skip.clicked.connect(lambda: self._action_ignore(finding.get("key", "")))
+            if is_lookalike:
+                btn_skip = QPushButton("Skip Stack")
+                btn_skip.setToolTip("Skip only the selected look-alike stack; other stacks remain active.")
+                btn_skip.clicked.connect(self._action_ignore_selected_lookalike_point)
+            else:
+                btn_skip = QPushButton("Skip Finding")
+                btn_skip.clicked.connect(lambda: self._action_ignore(finding.get("key", "")))
             row_c_btns.addWidget(btn_skip)
 
             self.lay_edit_tools.addLayout(row_c_btns)
@@ -2095,15 +2143,9 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             scroll_pts.setWidget(w_pts_inner)
             lay_keyin.addWidget(scroll_pts, 1)
 
-            # Bottom buttons for Key-in
+            # Edits remain staged until Save & Return.
             row_d_btns = QHBoxLayout()
             row_d_btns.setSpacing(6)
-
-            btn_apply_desc = QPushButton("Apply")
-            btn_apply_desc.setProperty("accent", True)
-            btn_apply_desc.setToolTip("Validate and apply corrected point descriptions")
-            btn_apply_desc.clicked.connect(self._action_apply_descriptions)
-            row_d_btns.addWidget(btn_apply_desc)
 
             btn_autofix = QPushButton("Auto Fix All")
             btn_autofix.setEnabled(False)
@@ -2387,8 +2429,13 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
         avg_coords = res["average_coords"]
 
         pts_to_remove = [p for p in merge_pts if p.id != target_p.id] + delete_pts
+        next_number = (
+            max((int(pt.number) for pt in pr.points.values() if pt.number.isdigit()), default=0) + 1
+            if renumber_pts else 1
+        )
 
         def do_it():
+            nonlocal next_number
             if avg_coords and len(merge_pts) > 1:
                 target_p.x = sum(p.x for p in merge_pts) / len(merge_pts)
                 target_p.y = sum(p.y for p in merge_pts) / len(merge_pts)
@@ -2396,9 +2443,8 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             if len(merge_pts) > 1 and merged_desc:
                 target_p.desc = merged_desc
             for p in renumber_pts:
-                all_nums = [int(pt.number) for pt in pr.points.values() if pt.number.isdigit()]
-                next_num = str(max(all_nums) + 1) if all_nums else "1"
-                p.number = next_num
+                p.number = str(next_number)
+                next_number += 1
             remove_ids = [p.id for p in pts_to_remove if p.id in pr.points]
             if remove_ids:
                 pr.remove_points(remove_ids)
@@ -2414,34 +2460,51 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             resolved_points=stack_pids,
             stay_on_edit_page=True,
             ignored_points=[p.id for p in ignore_pts],
+            project_changed=bool(
+                pts_to_remove or renumber_pts
+                or (avg_coords and len(merge_pts) > 1)
+                or (len(merge_pts) > 1 and merged_desc and target_p.desc != merged_desc)
+            ),
         )
 
     def _action_ignore_selected_lookalike_point(self):
-        """Persist an issue-scoped ignore for just the selected look-alike point."""
+        """Ignore the selected look-alike stack without suppressing other stacks."""
         finding = self.current_edit_finding
         if not finding or "look-alike" not in str(finding.get("check", "")).casefold():
             return
+
+        stacks = finding.get("stack_groups") or [finding.get("pids", [])]
         row = self.tbl_edit_pts.currentRow()
-        pid = None
+        stack = []
         if row >= 0:
             item = self.tbl_edit_pts.item(row, 1)
             data = item.data(Qt.UserRole) if item else None
-            if isinstance(data, tuple) and len(data) >= 3:
-                pid = data[2]
+            if isinstance(data, tuple) and len(data) >= 2:
+                stack = list(data[1])
             elif isinstance(data, int):
-                pid = data
-        if pid not in self.state.project.points:
-            pids = finding.get("pids", [])
-            pid = pids[row] if 0 <= row < len(pids) else None
-        if pid not in self.state.project.points:
+                stack = next((list(group) for group in stacks if data in group), [data])
+
+        if not stack:
+            selected = list(getattr(self, "current_selected_stack", []) or [])
+            if selected and any(selected == list(group) for group in stacks):
+                stack = selected
+        if not stack:
             return
-        point = self.state.project.points[pid]
+
+        active_pids = set(finding.get("pids", []) or [])
+        stack = list(dict.fromkeys(
+            pid for pid in stack if pid in active_pids and pid in self.state.project.points))
+        if not stack:
+            return
+
+        numbers = [str(self.state.project.points[pid].number) for pid in stack]
         self._apply_fix(
-            f"Ignored look-alike point #{point.number}",
+            f"Ignored look-alike stack ({', '.join(numbers)})",
             lambda: None,
-            resolved_points=[pid],
+            resolved_points=stack,
             stay_on_edit_page=True,
-            ignored_points=[pid],
+            ignored_points=stack,
+            project_changed=False,
         )
 
     def _action_resolve_selected_stack(self, is_duplicate: bool = False):
@@ -2582,9 +2645,9 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
         self._apply_fix(f"Kept Pt #{p_keep.number}, removed {len(pts_del)} duplicate(s)", do_it,
                         resolved_points=stack_pids, stay_on_edit_page=True)
 
-    def _action_apply_descriptions(self):
+    def _action_apply_descriptions(self, *, return_to_summary: bool = False) -> bool:
         if not hasattr(self, "desc_edits") or not self.desc_edits:
-            return
+            return False
 
         f2f_set = self.code_set or set()
         changes: list[tuple[SurveyPoint, str, QLineEdit]] = []
@@ -2596,7 +2659,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                 changes.append((p, txt, ed))
 
         if not changes:
-            return
+            return False
 
         # Pre-validate only changed descriptions: if any contains unknown codes, self-flag and show error
         invalid_entries = []
@@ -2617,7 +2680,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                 f"Keyed-in codes must exist in the Field Book so linework and point processing do not fail. "
                 f"Please correct the error or select a valid code from Fieldbook Lookup before applying.",
             )
-            return
+            return False
 
         pids = [p.id for p, _, _ in changes]
 
@@ -2627,11 +2690,12 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
 
         descs_str = ", ".join(f"Pt #{p.number} -> '{txt}'" for p, txt, _ in changes)
         self._apply_fix(f"Updated description(s): {descs_str}", do_it,
-                        resolved_points=pids, stay_on_edit_page=True)
+                        resolved_points=pids, stay_on_edit_page=not return_to_summary)
+        return True
 
-    def _action_apply_separator_corrections(self):
+    def _action_apply_separator_corrections(self, *, return_to_summary: bool = False) -> bool:
         if not hasattr(self, "sep_corrections") or not self.sep_corrections:
-            return
+            return False
 
         to_correct: list[tuple[SurveyPoint, str]] = []
         to_ignore: list[SurveyPoint] = []
@@ -2659,7 +2723,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
 
         resolved_pts = [p for p, _ in to_correct] + to_ignore
         if not resolved_pts:
-            return
+            return False
 
         resolved_pids = [p.id for p in resolved_pts]
 
@@ -2686,9 +2750,13 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             summary,
             do_it,
             resolved_points=resolved_pids,
-            stay_on_edit_page=True,
+            stay_on_edit_page=not return_to_summary,
             ignored_points=[p.id for p in to_ignore],
+            project_changed=any((p.desc or "") != txt for p, txt in to_correct),
         )
+
+        if return_to_summary:
+            return True
 
         finding = self.current_edit_finding
         if not to_skip:
@@ -2703,17 +2771,17 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                         sub = it.layout().takeAt(0)
                         if sub.widget():
                             sub.widget().deleteLater()
-        else:
-            if finding:
-                finding["pids"] = [p.id for p in to_skip]
-                finding["numbers"] = [str(p.number) for p in to_skip]
-                self._open_inline_editor(finding, start_session=False)
+        elif finding:
+            finding["pids"] = [p.id for p in to_skip]
+            finding["numbers"] = [str(p.number) for p in to_skip]
+            self._open_inline_editor(finding, start_session=False)
+        return True
 
     def _action_correct_all_separator_corrections(self):
+        """Stage Correct for every row; Save & Return commits the selection."""
         if hasattr(self, "sep_corrections") and self.sep_corrections:
             for item in self.sep_corrections:
                 item[3].setCurrentText("Correct")
-            self._action_apply_separator_corrections()
 
     def _action_ignore_separator_finding(self, finding: dict):
         pids = finding.get("pids", [])

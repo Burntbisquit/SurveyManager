@@ -113,6 +113,44 @@ def test_theme_toggle_does_not_break(win, app):
     win.toggle_theme()
 
 
+def test_button_highlights_use_neutral_theme_colors(win):
+    from plumbline.ui import theme
+
+    for colors in theme.THEMES.values():
+        css = theme.stylesheet(colors)
+        assert (f"QPushButton:default, QPushButton[accent=\"true\"] {{ background: {colors['button']}; "
+                f"border-color: {colors['border']}; color: {colors['text']}; font-weight: 600;") in css
+        assert (f"QToolButton:checked {{ background: {colors['alt']}; "
+                f"border-color: {colors['border']}; }}") in css
+
+
+def test_escape_returns_to_pan_from_toolbar_and_panel_focus(win, app):
+    win.set_tool("polyline")
+    draw_button = win.tb_draw_tools.widgetForAction(win.tool_acts["polyline"])
+    assert draw_button is not None
+    draw_button.setFocus()
+    pump(app)
+    assert QApplication.focusWidget() == draw_button
+    QTest.keyClick(draw_button, Qt.Key_Escape)
+    pump(app)
+    assert win.canvas.tool.name == "pan"
+    assert win.tool_acts["pan"].isChecked()
+    assert win.canvas.cursor().shape() == Qt.OpenHandCursor
+
+    # Dock/panel focus follows the same global Escape shortcut.
+    win.set_tool("select")
+    win.d_pts.show()
+    win.d_pts.raise_()
+    win.points.view.setFocus()
+    pump(app)
+    assert QApplication.focusWidget() == win.points.view
+    QTest.keyClick(win.points.view, Qt.Key_Escape)
+    pump(app)
+    assert win.canvas.tool.name == "pan"
+    assert win.canvas.hasFocus()
+    assert win.canvas.cursor().shape() == Qt.OpenHandCursor
+
+
 # ------------------------------------------------------------------ tools with real mouse events
 def test_draw_polyline_with_clicks_and_undo_redo(win, app):
     pr = win.state.project

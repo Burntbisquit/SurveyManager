@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDockWidget, QFileDialog, QFormLayout,
                                QHBoxLayout, QVBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
                                QPushButton, QSizePolicy, QSpinBox, QToolBar, QToolButton, QWidget)
@@ -632,6 +632,13 @@ class MainWindow(QMainWindow):
         cv.cursor_moved.connect(self._cursor)
         cv.hint_changed.connect(self._hint)
         cv.escape_pressed.connect(self._escape)
+        self._escape_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        self._escape_shortcut.setContext(Qt.WindowShortcut)
+        self._escape_shortcut.activated.connect(self._escape)
+        app = QApplication.instance()
+        if app is not None:
+            app.focusChanged.connect(self._update_escape_shortcut)
+            self._update_escape_shortcut(None, app.focusWidget())
         cv.files_dropped.connect(self._files_dropped)
         self.layers.current_changed.connect(self._current_layer)
         self.cmb_layer.activated.connect(lambda i: self.layers.set_current(self.cmb_layer.currentText()))
@@ -767,22 +774,30 @@ class MainWindow(QMainWindow):
             a.setChecked(True)
             a.blockSignals(False)
 
-    def _escape(self):
-        """Escape: put down whatever is being picked, then hand the view back to Pan.
+    def _update_escape_shortcut(self, _old_focus, focus=None):
+        """Enable the window shortcut for toolbar/panel focus, leaving canvas Esc to its tool."""
+        widget = focus
+        while widget is not None:
+            if widget is self.canvas or widget == self.canvas:
+                self._escape_shortcut.setEnabled(False)
+                return
+            widget = widget.parentWidget()
+        self._escape_shortcut.setEnabled(True)
 
-        Done once or twice, the second Esc matters - after a tool is cancelled the drawing is
-        in a known state, and the next thing a surveyor does is usually look somewhere else.
-        """
+    def _escape(self):
+        """Cancel the current tool/action and return keyboard focus and cursor to Pan."""
         tool = self.canvas.tool
         if tool is not None and tool.name != "pan":
             try:
                 tool.cancel()
             except Exception:
                 pass
-            self.set_tool("pan")
             self.state.log("Tool released - Pan.  Drag to move the view.", "info")
-        else:
-            self.set_tool("pan")
+        self.set_tool("pan")
+        self.canvas._panning = False
+        self.canvas._pan_last = None
+        self.canvas.setCursor(self.tools["pan"].cursor)
+        self.canvas.setFocus(Qt.OtherFocusReason)
 
     def _command_entered(self):
         text = self.ed_cmd.text().strip()

@@ -238,6 +238,8 @@ def test_close_points_resolve_popup_and_merge(win, app, auto):
 
 # ------------------------------------------------------------------ Fix Point Errors Dialog UI
 def test_fix_point_errors_dialog_opens_and_resolves(win, app, auto):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QPushButton
     from plumbline.ui.qa_workspace import FixPointErrorsDialog
 
     pr = win.state.project
@@ -249,6 +251,21 @@ def test_fix_point_errors_dialog_opens_and_resolves(win, app, auto):
     assert dlg.canvas is not None
     assert dlg.view3d is not None
     assert dlg.stack.count() == 2
+    dlg.show()
+    app.processEvents()
+    assert dlg.isMaximized()
+    assert dlg.windowFlags() & Qt.WindowMaximizeButtonHint
+    assert dlg.sizeGripEnabled()
+    dlg.showNormal()
+    app.processEvents()
+    assert not dlg.isMaximized()
+    dlg.showMaximized()
+    app.processEvents()
+
+    # There is one issue-scoped pair, hidden on the summary page.
+    assert sum(button.text() == "Undo" for button in dlg.findChildren(QPushButton)) == 1
+    assert sum(button.text() == "Redo" for button in dlg.findChildren(QPushButton)) == 1
+    assert not dlg.btn_issue_undo.isVisible() and not dlg.btn_issue_redo.isVisible()
 
     # Check Active Issues table
     assert dlg.tbl_active.rowCount() >= 1
@@ -272,6 +289,7 @@ def test_fix_point_errors_dialog_opens_and_resolves(win, app, auto):
     dlg._open_inline_editor(first_item)
     assert dlg.stack.currentIndex() == 1
     assert dlg.tbl_edit_pts.rowCount() >= 1
+    assert dlg.btn_issue_undo.isVisible() and dlg.btn_issue_redo.isVisible()
 
     # Test point selection sync
     dlg.tbl_edit_pts.selectRow(0)
@@ -377,7 +395,7 @@ def test_fix_linework_dialog_opens_and_resolves(win, app, auto):
 
 # ------------------------------------------------------------------ Potential Code in Descriptor & Corrections UI
 def test_potential_code_in_descriptor_corrections_ui(win, app, auto):
-    from PySide6.QtWidgets import QHeaderView
+    from PySide6.QtWidgets import QHeaderView, QPushButton
     from plumbline.fieldwork.bridge import FLAG_TITLES
     from plumbline.fieldwork.clean import _autocorrect_desc_leave_number
     from plumbline.fieldwork.parse import parse_desc_field
@@ -423,7 +441,7 @@ def test_potential_code_in_descriptor_corrections_ui(win, app, auto):
     dlg.show()
     app.processEvents()
 
-    # Verify splitter default sizes (~20-30% left, ~70-80% right)
+    # Verify the issue workspace keeps more width than the synchronized 2D/3D views.
     sizes = dlg.splitter.sizes()
     assert len(sizes) == 2
     assert sizes[0] < sizes[1]
@@ -452,6 +470,7 @@ def test_potential_code_in_descriptor_corrections_ui(win, app, auto):
 
     dlg._open_inline_editor(sep_finding)
     assert dlg.stack.currentIndex() == 1
+    assert not any(button.text() == "Apply" for button in dlg.findChildren(QPushButton))
 
     # Verify points list has 5 data columns without Edit button in Col 0
     assert dlg.tbl_edit_pts.columnCount() == 5
@@ -536,10 +555,15 @@ def test_separator_spacing_fix_stays_independent_from_misplaced_code(win, app, m
                for i in range(dialog.sep_corrections[0][3].count())]
     assert actions == ["Skip", "Correct", "Ignore"]
     first_fix = next(item for item in dialog.sep_corrections if item[0].id == point.id)
+    second_fix = next(item for item in dialog.sep_corrections if item[0].id == second_point.id)
     assert first_fix[2].text() == "MH / 30RCP"
-    first_fix[3].setCurrentText("Correct")
-    dialog._action_apply_separator_corrections()
+    assert first_fix[3].currentText() == "Correct"
+    assert second_fix[3].currentText() == "Correct"
+    second_fix[3].setCurrentText("Skip")
+    assert point.desc == "MH/30RCP"  # Staged until Save & Return.
+    dialog._action_save_issue()
 
+    assert dialog.stack.currentIndex() == 0
     assert point.desc == "MH / 30RCP"
     assert point.attrs["fieldwork_raw_desc"] == "MH/30RCP"
     assert second_point.desc == "MH   /30RCP"
@@ -561,12 +585,55 @@ def test_separator_spacing_fix_stays_independent_from_misplaced_code(win, app, m
     dialog._open_inline_editor(spacing)
     assert len(dialog.sep_corrections) == 1
     assert dialog.sep_corrections[0][2].text() == "MH / 30RCP"
-    dialog.sep_corrections[0][3].setCurrentText("Correct")
-    dialog._action_apply_separator_corrections()
+    assert dialog.sep_corrections[0][3].currentText() == "Correct"
+    dialog._action_save_issue()
+    assert dialog.stack.currentIndex() == 0
     assert second_point.desc == "MH / 30RCP"
     spacing_after = next(f for f in dialog.active_findings if f.get("flag") == "SeparatorSpacingError")
     assert spacing_after["status"] == "resolved"
     assert not spacing_after["pids"]
+
+
+def test_save_return_rechecks_once_for_staged_separator_corrections(win, monkeypatch):
+    from plumbline.fieldwork import bridge as FB
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    point = win.state.project.add_point(925, 1035, 50, number="9911", desc="MH/30RCP")
+    calls = []
+
+    def fake_check_project(project, **kwargs):
+        calls.append(1)
+        ids = list(project.points)
+        row = ids.index(point.id)
+        return {
+            "findings": [{
+                "check": "Separator spacing at the separator",
+                "flag": "SeparatorSpacingError",
+                "level": "error",
+                "detail": "Spacing differs from configured separators.",
+                "rows": [row],
+                "groups": [[row]],
+                "key": "save-separator-perf",
+            }],
+            "ids": ids,
+            "rows": [],
+            "stats": {},
+            "flags": {},
+            "line_issues": [],
+        }
+
+    monkeypatch.setattr(FB, "check_project", fake_check_project)
+    dialog = FixPointErrorsDialog(win.state, win)
+    finding = next(f for f in dialog.active_findings if f["key"] == "save-separator-perf")
+    dialog._open_inline_editor(finding)
+    assert dialog.sep_corrections[0][3].currentText() == "Correct"
+    assert len(calls) == 1
+
+    dialog._action_save_issue()
+    assert point.desc == "MH / 30RCP"
+    assert dialog.stack.currentIndex() == 0
+    assert len(calls) == 2  # Save performs the correction and does not trigger a second recheck.
+    dialog._save_and_exit()
 
 
 def test_separator_ignore_clears_warning_and_discard_restores_it(win, monkeypatch):
@@ -583,8 +650,10 @@ def test_separator_ignore_clears_warning_and_discard_restores_it(win, monkeypatc
         "pids": [point.id],
         "key": "separator-ignore-regression",
     }
+    calls = []
 
     def fake_check_project(project, **kwargs):
+        calls.append(1)
         return {
             "findings": [dict(check_finding)],
             "ids": list(project.points),
@@ -597,11 +666,13 @@ def test_separator_ignore_clears_warning_and_discard_restores_it(win, monkeypatc
     monkeypatch.setattr(FB, "check_project", fake_check_project)
     dialog = FixPointErrorsDialog(win.state, win)
     finding = next(f for f in dialog.active_findings if f["key"] == check_finding["key"])
+    assert len(calls) == 1
     dialog._open_inline_editor(finding)
 
     dialog.sep_corrections[0][3].setCurrentText("Ignore")
     dialog._action_apply_separator_corrections()
 
+    assert len(calls) == 1  # Metadata-only ignore does not rerun the QA checks.
     assert point.id not in dialog.error_point_ids
     assert dialog.current_edit_finding["status"] == "resolved"
     assert dialog.tbl_active.item(0, 1).text() == "RESOLVED"
@@ -616,9 +687,10 @@ def test_separator_ignore_clears_warning_and_discard_restores_it(win, monkeypatc
     dialog._action_discard_issue()
     assert point.id in dialog.error_point_ids
     assert dialog.active_findings[0]["status"] == "active"
+    assert len(calls) == 1  # Undo, redo, and discard all avoid redundant QA passes.
 
 
-def test_lookalike_toolbar_can_ignore_only_the_selected_point(win, monkeypatch):
+def test_lookalike_ignore_and_skip_only_affect_the_selected_stack(win, monkeypatch):
     from PySide6.QtWidgets import QPushButton
     from plumbline.fieldwork import bridge as FB
     from plumbline.ui.qa_workspace import FixPointErrorsDialog
@@ -626,17 +698,27 @@ def test_lookalike_toolbar_can_ignore_only_the_selected_point(win, monkeypatch):
     pr = win.state.project
     p1 = pr.add_point(940, 1040, 50, number="8941", desc="EP")
     p2 = pr.add_point(941, 1041, 50, number="8942", desc="EP")
+    p3 = pr.add_point(950, 1050, 50, number="8951", desc="EP")
+    p4 = pr.add_point(951, 1051, 50, number="8952", desc="EP")
+    p5 = pr.add_point(960, 1060, 50, number="8961", desc="EP")
+    p6 = pr.add_point(961, 1061, 50, number="8962", desc="EP")
+    point_groups = [[p1.id, p2.id], [p3.id, p4.id], [p5.id, p6.id]]
+    point_ids = [pid for group in point_groups for pid in group]
     check_finding = {
         "check": "look-alike numbers",
         "flag": "SimilarPointNumbers",
         "level": "warn",
-        "detail": "Two numbers are similar.",
-        "pids": [p1.id, p2.id],
+        "detail": "Three unrelated number stacks are similar.",
         "key": "lookalike-point-ignore-regression",
     }
 
     def fake_check_project(project, **kwargs):
-        return {"findings": [dict(check_finding)], "ids": list(project.points),
+        ids = list(project.points)
+        row_by_pid = {pid: row for row, pid in enumerate(ids)}
+        finding = dict(check_finding)
+        finding["rows"] = [row_by_pid[pid] for pid in point_ids]
+        finding["groups"] = [[row_by_pid[pid] for pid in group] for group in point_groups]
+        return {"findings": [finding], "ids": ids,
                 "rows": [], "stats": {}, "flags": {}, "line_issues": []}
 
     monkeypatch.setattr(FB, "check_project", fake_check_project)
@@ -646,13 +728,29 @@ def test_lookalike_toolbar_can_ignore_only_the_selected_point(win, monkeypatch):
     ignore_button = next(button for button in dialog.findChildren(QPushButton)
                          if button.text() == "Ignore Point")
     assert ignore_button.isEnabled()
+    assert any(button.text() == "Skip Stack" for button in dialog.findChildren(QPushButton))
 
+    # Selecting a point inside stack one applies to both points in that stack only.
     dialog.tbl_edit_pts.selectRow(1)
-    dialog._action_ignore_selected_lookalike_point()
-    assert dialog.current_edit_finding["ignored_pids"] == {p2.id}
-    assert dialog.current_edit_finding["pids"] == [p1.id]
-    assert p1.id in dialog.error_point_ids
-    assert p2.id not in dialog.error_point_ids
+    ignore_button.click()
+    assert dialog.current_edit_finding["ignored_pids"] == {p1.id, p2.id}
+    assert dialog.current_edit_finding["pids"] == [p3.id, p4.id, p5.id, p6.id]
+    assert p3.id in dialog.error_point_ids and p4.id in dialog.error_point_ids
+    assert p5.id in dialog.error_point_ids and p6.id in dialog.error_point_ids
+    assert p1.id not in dialog.error_point_ids and p2.id not in dialog.error_point_ids
+
+    # Skip uses the same stack scope but leaves the third stack active.
+    dialog.tbl_edit_pts.selectRow(2)
+    skip_button = next(button for button in dialog.findChildren(QPushButton)
+                       if button.text() == "Skip Stack")
+    skip_button.click()
+    assert dialog.current_edit_finding["ignored_pids"] == {p1.id, p2.id, p5.id, p6.id}
+    assert dialog.current_edit_finding["pids"] == [p3.id, p4.id]
+    assert dialog.error_point_ids == {p3.id, p4.id}
+
+    dialog._undo_issue()
+    assert dialog.current_edit_finding["ignored_pids"] == {p1.id, p2.id}
+    assert dialog.current_edit_finding["pids"] == [p3.id, p4.id, p5.id, p6.id]
 
 
 def test_common_conversion_dialog_orders_correct_before_ignore_and_preserves_codes(app, tmp_path):
@@ -736,14 +834,17 @@ def test_close_stack_ignore_suppresses_only_the_selected_point(win, monkeypatch)
 
 def test_issue_page_hides_exit_controls_and_deleted_separator_widgets_are_safe(win, app):
     from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QPushButton
     from plumbline.ui.qa_workspace import FixPointErrorsDialog
 
     pr = win.state.project
     point = pr.add_point(910, 1010, 50, number="8911", desc="BADCODE1 ST")
     dialog = FixPointErrorsDialog(win.state, win)
 
-    exit_controls = (dialog.btn_save_exit, dialog.btn_discard_exit, dialog.btn_cancel)
+    exit_controls = (dialog.btn_save_exit, dialog.btn_discard_exit)
     assert all(not button.isHidden() for button in exit_controls)
+    assert not hasattr(dialog, "btn_cancel")
+    assert not any(button.text() == "Cancel" for button in dialog.findChildren(QPushButton))
 
     sep_finding = {
         "check": "Potential code in descriptor",
@@ -914,6 +1015,7 @@ def test_qa_fixes_and_rollbacks_rebuild_derived_linework(win):
     start = pr.add_point(0.0, 0.0, 10.0, number="99101", desc="QA ST")
     end = pr.add_point(10.0, 0.0, 20.0, number="99102", desc="QA END")
     duplicate = pr.add_point(100.0, 100.0, 30.0, number="99101", desc="OTHER")
+    unrelated = pr.add_point(500.0, 500.0, 30.0, number="99103", desc="OTHER")
     pr.process_linework()
 
     def line_start():
@@ -942,8 +1044,10 @@ def test_qa_fixes_and_rollbacks_rebuild_derived_linework(win):
     assert start.x == pytest.approx(2.0)
     assert line_start()[0] == pytest.approx(2.0)
 
+    unrelated.desc = "Changed outside this issue"
     dialog._action_discard_issue()
     assert start.x == pytest.approx(0.0)
+    assert unrelated.desc == "Changed outside this issue"
     assert line_start() == pytest.approx(initial_line_start)
     assert dialog.resolved_findings == []
     assert dialog.history_undo == []
@@ -1033,12 +1137,12 @@ def test_initial_view_staging_and_issue_scoped_undo_redo(win, app, auto):
     dlg._open_inline_editor(sep_finding)
     assert dlg.stack.currentIndex() == 1
 
-    # Apply fix on Issue 2
+    # Correct All stages row selections; Save & Return applies them.
+    original_p3_desc = p3.desc
     dlg._action_correct_all_separator_corrections()
-    assert "rcp" in p3.desc
-
-    # Save Issue 2 back to Initial View
+    assert p3.desc == original_p3_desc
     dlg._action_save_issue()
+    assert "rcp" in p3.desc
     assert dlg.stack.currentIndex() == 0
 
     # Verify Issue 2 row turns green RESOLVED in master table
