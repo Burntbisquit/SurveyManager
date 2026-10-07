@@ -14,6 +14,7 @@ from plumbline.core.point_linework_coder import (
     swap_parallel_line_codes,
 )
 from plumbline.core.project import Project
+from plumbline.core.featurecodes import default_codes
 from test_ui import app, auto, pump, win
 
 
@@ -43,6 +44,7 @@ def test_find_free_string_id():
 
 def test_merge_and_reclass_strings():
     pr = Project()
+    pr.codes = default_codes()
     p1 = pr.add_point(0, 0, 0, number="1", desc="EP1 ST")
     p2 = pr.add_point(10, 0, 0, number="2", desc="EP1 END")
 
@@ -614,6 +616,73 @@ def test_separator_ignore_clears_warning_and_discard_restores_it(win, monkeypatc
     dialog._action_discard_issue()
     assert point.id in dialog.error_point_ids
     assert dialog.active_findings[0]["status"] == "active"
+
+
+def test_lookalike_toolbar_can_ignore_only_the_selected_point(win, monkeypatch):
+    from PySide6.QtWidgets import QPushButton
+    from plumbline.fieldwork import bridge as FB
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    pr = win.state.project
+    p1 = pr.add_point(940, 1040, 50, number="8941", desc="EP")
+    p2 = pr.add_point(941, 1041, 50, number="8942", desc="EP")
+    check_finding = {
+        "check": "look-alike numbers",
+        "flag": "SimilarPointNumbers",
+        "level": "warn",
+        "detail": "Two numbers are similar.",
+        "pids": [p1.id, p2.id],
+        "key": "lookalike-point-ignore-regression",
+    }
+
+    def fake_check_project(project, **kwargs):
+        return {"findings": [dict(check_finding)], "ids": list(project.points),
+                "rows": [], "stats": {}, "flags": {}, "line_issues": []}
+
+    monkeypatch.setattr(FB, "check_project", fake_check_project)
+    dialog = FixPointErrorsDialog(win.state, win)
+    finding = next(f for f in dialog.active_findings if f["key"] == check_finding["key"])
+    dialog._open_inline_editor(finding)
+    ignore_button = next(button for button in dialog.findChildren(QPushButton)
+                         if button.text() == "Ignore Point")
+    assert ignore_button.isEnabled()
+
+    dialog.tbl_edit_pts.selectRow(1)
+    dialog._action_ignore_selected_lookalike_point()
+    assert dialog.current_edit_finding["ignored_pids"] == {p2.id}
+    assert dialog.current_edit_finding["pids"] == [p1.id]
+    assert p1.id in dialog.error_point_ids
+    assert p2.id not in dialog.error_point_ids
+
+
+def test_common_conversion_dialog_orders_correct_before_ignore_and_preserves_codes(app, tmp_path):
+    from PySide6.QtWidgets import QPushButton
+    from plumbline.fieldwork.clean import CleanDescriptionDialog
+    from plumbline.fieldwork.io_carlson import write_fwb_file
+
+    book = tmp_path / "conversion.fwb"
+    commands = {"multicode": "PLUS", "description": "NOTE"}
+    assert write_fwb_file(
+        book,
+        ["Code", "Description", "Symbol", "Layer", "Entity Type", "Category"],
+        [["EA", "Asphalt", "CG08", "PAVEMENT", "Point", "Surface"],
+         ["SW", "Sidewalk", "CG08", "SIDEWALK", "Point", "Surface"]],
+        commands=commands, rules=[["EA PLUS SW", "EA"]],
+    )
+    dlg = CleanDescriptionDialog(
+        "9001", "5101", "EA PLUS SW", "CommonConversionError",
+        "Rule would collapse two valid codes.", "(EA)(SW)", "", {"ea", "sw"},
+        fieldbook_path=str(book),
+    )
+    buttons = dlg.findChildren(QPushButton)
+    labels = [button.text() for button in buttons]
+    assert "&3. Correct" in labels and "&Ignore" in labels
+    assert labels.index("&3. Correct") < labels.index("&Ignore")
+
+    dlg.auto_fix_edit.setText("EA PLUS SW")
+    dlg._do_fix()
+    assert dlg.result_action == "fix"
+    assert dlg.result_new_desc == "EA PLUS SW"
 
 
 def test_close_stack_ignore_suppresses_only_the_selected_point(win, monkeypatch):

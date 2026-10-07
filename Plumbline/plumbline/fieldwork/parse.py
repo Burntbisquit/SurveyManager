@@ -154,6 +154,7 @@ def parse_desc_field(raw_desc: str, f2f_set, fieldbook_path=None, command_set=No
     if raw_desc is None:
         raw_desc = ""
     raw = str(raw_desc)
+    common_conversion_warning = None
     # Apply correction rules if provided (or load from fieldbook)
     if rules is None and fieldbook_path:
         try:
@@ -165,11 +166,21 @@ def parse_desc_field(raw_desc: str, f2f_set, fieldbook_path=None, command_set=No
         # Rules: list of [common_error, fix] — exact match case-insensitive, or substring?
         # We do exact match on whole raw stripped, and also token-level
         raw_stripped = raw.strip()
-        for err, fix in rules:
+        for rule in rules:
+            try:
+                err, fix = rule[0], rule[1]
+            except (TypeError, IndexError):
+                continue
+            err, fix = str(err or "").strip(), str(fix or "").strip()
             if not err or not fix:
                 continue
             if raw_stripped.casefold() == err.casefold():
-                raw = fix
+                common_conversion_warning = common_conversion_rule_warning(
+                    err, fix, f2f_set, fieldbook_path=fieldbook_path,
+                    command_set=command_set, commands=commands)
+                # A destructive conversion is a finding, not an automatic rewrite.
+                if common_conversion_warning is None:
+                    raw = fix
                 break
             # Also handle dash/space tolerant: compare normalized tokens
             # If raw contains err as token, replace that token
@@ -245,6 +256,9 @@ def parse_desc_field(raw_desc: str, f2f_set, fieldbook_path=None, command_set=No
         commands=semantic_commands) if free_raw_tokens else []
     flags = []
     details = []
+    if common_conversion_warning:
+        flags.append("CommonConversionError")
+        details.append(common_conversion_warning)
     # Unknown codes in code part
     for item in code_classified:
         if item.get("status") == "unknown":
@@ -323,6 +337,42 @@ def parse_desc_field(raw_desc: str, f2f_set, fieldbook_path=None, command_set=No
         "parsed_code_str": parsed_code_str,
         "misplaced_sets": misplaced_sets,
     }
+
+def common_conversion_rule_warning(common_error: str, fix: str, f2f_set,
+                                   fieldbook_path=None, command_set=None, commands=None) -> str | None:
+    """Describe a correction rule that collapses a valid multi-code error into one code.
+
+    Rules are evaluated against the Field Book's real separators and command meanings, with
+    correction rules disabled to avoid recursively applying the very rule being checked.
+    """
+    if not common_error or not fix or not f2f_set:
+        return None
+    try:
+        source = parse_desc_field(common_error, f2f_set, fieldbook_path=fieldbook_path,
+                                  command_set=command_set, rules=[], commands=commands)
+        target = parse_desc_field(fix, f2f_set, fieldbook_path=fieldbook_path,
+                                  command_set=command_set, rules=[], commands=commands)
+        source_flags = source.get("flags", [])
+        target_flags = target.get("flags", [])
+        if any(flag.startswith("UnknownCode") for flag in source_flags + target_flags):
+            return None
+
+        def code_count(parsed):
+            classified = (parsed.get("code_classified", [])
+                          + parsed.get("free_classified", []))
+            return sum(item.get("type") == "code"
+                       and item.get("status") in ("exact", "line_instance")
+                       for item in classified)
+
+        before, after = code_count(source), code_count(target)
+        if before >= 2 and after == 1:
+            return (f"Correction rule {common_error!r} → {fix!r} would collapse "
+                    f"{before} valid Field Book codes into one. Review the common-conversion rule "
+                    "and preserve any valid codes before accepting this description.")
+    except Exception:
+        return None
+    return None
+
 
 def _validate_line_command_order(working_rows, f2f_set, settings=None, fieldbook_path=None,
                                  command_set=None, rules=None, commands=None):

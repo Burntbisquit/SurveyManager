@@ -262,20 +262,11 @@ def _setup_note_text(paths: JobPaths, template: JobTemplate, crs_label: str, com
 
 
 def _template_fieldbook(paths: JobPaths) -> None:
-    """Field Book carrying semantic command definitions and sample codes for the new job."""
+    """Create an empty Field Book shell; office codes are added only when a book is selected."""
     from ..fieldwork import io_carlson as IC
     from .fieldbook_syntax import DEFAULT_COMMAND_TOKENS
     headers = ["Code", "Description", "Symbol", "Layer", "Entity Type", "Category"]
-    # Default point data rows for the field book
-    # These represent typical entries and display in the field book dialog
-    default_rows = [
-        ["DEFAULT", "default", "CG08", "V-SITE-DEFAULT", "Point", "Default"],
-        ["MISC", "MISC.", "CG08", "V-SITE-MISC", "Point", "Default"],
-        ["DNF", "Did Not Find", "SPT10", "V-PROP-CRNR-NOT FOUND", "Point", "Corners"],
-        ["LNF", "Did Not Find", "SPT10", "V-PROP-CRNR-NOT FOUND", "Point", "Corners"],
-        ["MAGF", "MAG Nail Found", "Iron_Pin_Found", "V-PROP-CRNR", "Point", "Corners"],
-    ]
-    IC.write_fwb_file(paths.fieldbook_file, headers, default_rows,
+    IC.write_fwb_file(paths.fieldbook_file, headers, [],
                       commands=list(DEFAULT_COMMAND_TOKENS), rules=[])
 
 
@@ -468,6 +459,12 @@ def _write_empty_project(paths: JobPaths, crs_label: str, crs_record: dict | Non
     from ..core.crs import ProjectCRS
     project_crs = ProjectCRS.from_dict(crs_record) if crs_record else _crs_from_label(crs_label)
     prj = Project(paths.name, project_crs)
+    # The blank .fwb shell gives the job a predictable place to install its selected book,
+    # but it is not a vocabulary: never seed the project code table with sample/test codes.
+    from .fieldbook_syntax import DEFAULT_COMMAND_TOKENS
+    prj.settings["fieldbook_file"] = str(paths.fieldbook_file)
+    prj.settings["f2f_commands"] = list(DEFAULT_COMMAND_TOKENS)
+    prj.settings["f2f_rules"] = []
     prj.notes = (f"New job created {_dt.datetime.now():%Y-%m-%d}.\n"
                  f"Field data goes in {paths.field_data.name}/ - "
                  f"see {SETUP_NOTE} for the layout.")

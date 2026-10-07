@@ -273,6 +273,8 @@ def test_linework_strings_flags_and_closing():
 
 def test_project_process_linework_and_layers():
     pr = Project("t")
+    # This test exercises the opt-in generic library, not a new project's empty table.
+    pr.codes = default_codes()
     for x, y, z, d in [(0, 0, 1, "EP"), (10, 0, 1, "EP"), (20, 0, 1.5, "EP"), (3, 3, 2, "MH"), (9, 9, 2, "XYZ")]:
         pr.add_point(x, y, z, desc=d)
     res = pr.apply_codes_to_points()
@@ -286,6 +288,16 @@ def test_project_process_linework_and_layers():
 
 
 # ============================================================ project
+def test_new_projects_start_with_an_empty_feature_code_table_but_legacy_files_keep_defaults():
+    pr = Project("empty")
+    assert len(pr.codes) == 0
+
+    legacy = pr.to_dict()
+    legacy.pop("codes")  # Older files without a persisted table retain the legacy starter library.
+    restored = Project.from_dict(legacy)
+    assert len(restored.codes) == len(default_codes())
+
+
 def make_site(n=15):
     pr = Project("site", C.ProjectCRS.from_epsg(2276))
     rng = np.random.default_rng(5)

@@ -1787,7 +1787,8 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
         is_exact_dup = "duplicate" in chk or ("number" in chk and "used" in finding.get("detail", "").lower())
         is_lookalike = "look-alike" in chk
         is_spacing = "SeparatorSpacingError" in flag or "spacing at the separator" in chk
-        is_sep = (is_spacing or "MisplacedAfterSeparator" in flag
+        is_common_conversion = "CommonConversionError" in flag or "common conversion" in chk
+        is_sep = (is_spacing or is_common_conversion or "MisplacedAfterSeparator" in flag
                   or "potential code in descriptor" in chk or "text before" in chk or "separator" in chk)
 
         if is_sep:
@@ -1820,7 +1821,8 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             self.tbl_corrections = DownTabTableWidget(len(pts), 4)
             self.tbl_corrections.setHorizontalHeaderLabels(
                 ["Pt #", "Original Description", "Spacing-Corrected Description", "Action"]
-                if is_spacing else ["Pt #", "Original Code", "Fixed Code", "Action"])
+                if is_spacing else ["Pt #", "Original Description", "Corrected Description", "Action"]
+                if is_common_conversion else ["Pt #", "Original Code", "Fixed Code", "Action"])
             self.tbl_corrections.setSelectionBehavior(QAbstractItemView.SelectRows)
             self.tbl_corrections.verticalHeader().setVisible(False)
             self.tbl_corrections.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed | QAbstractItemView.SelectedClicked)
@@ -1852,14 +1854,18 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                         pass
                     if not sugg:
                         raw_desc = orig_desc
-                        description_token = command_map(commands).get("description", "")
-                        if find_separator(raw_desc, description_token) >= 0:
-                            c_part, f_part = split_at_separator(raw_desc, description_token, maxsplit=1)
-                            c_part, f_part = c_part.strip(), f_part.strip()
-                            joiner = separator_text("description", commands)
-                            sugg = f"{f_part}{joiner}{c_part}" if c_part and joiner else (f"{f_part} {c_part}" if c_part else f_part)
-                        else:
+                        if is_common_conversion:
+                            # Keep every original token for review; never synthesize a one-code replacement.
                             sugg = raw_desc
+                        else:
+                            description_token = command_map(commands).get("description", "")
+                            if find_separator(raw_desc, description_token) >= 0:
+                                c_part, f_part = split_at_separator(raw_desc, description_token, maxsplit=1)
+                                c_part, f_part = c_part.strip(), f_part.strip()
+                                joiner = separator_text("description", commands)
+                                sugg = f"{f_part}{joiner}{c_part}" if c_part and joiner else (f"{f_part} {c_part}" if c_part else f_part)
+                            else:
+                                sugg = raw_desc
                     if not sugg_num:
                         sugg_num = sugg
 
@@ -1920,6 +1926,9 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
 
             if is_spacing:
                 hint_text = "Only separator spacing is changed; feature-code order and note text are preserved."
+            elif is_common_conversion:
+                hint_text = ("The matching correction rule would collapse valid Field Book codes into one. "
+                             "Review or edit the full description; Correct is offered before Ignore.")
             else:
                 hint_text = "Double-click 'Fixed Code' to overwrite and set action to Correct."
             lay_g.addWidget(Hint(hint_text))
@@ -1977,6 +1986,12 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                 btn_ren.setToolTip("Assign next free point number to second point in stack")
                 btn_ren.clicked.connect(self._action_renumber_selected_stack)
                 row_c_btns.addWidget(btn_ren)
+
+            if is_lookalike:
+                btn_ignore_point = QPushButton("Ignore Point")
+                btn_ignore_point.setToolTip("Ignore only the selected point for this look-alike finding; other points remain active.")
+                btn_ignore_point.clicked.connect(self._action_ignore_selected_lookalike_point)
+                row_c_btns.addWidget(btn_ignore_point)
 
             row_c_btns.addStretch(1)
 
@@ -2401,6 +2416,34 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             ignored_points=[p.id for p in ignore_pts],
         )
 
+    def _action_ignore_selected_lookalike_point(self):
+        """Persist an issue-scoped ignore for just the selected look-alike point."""
+        finding = self.current_edit_finding
+        if not finding or "look-alike" not in str(finding.get("check", "")).casefold():
+            return
+        row = self.tbl_edit_pts.currentRow()
+        pid = None
+        if row >= 0:
+            item = self.tbl_edit_pts.item(row, 1)
+            data = item.data(Qt.UserRole) if item else None
+            if isinstance(data, tuple) and len(data) >= 3:
+                pid = data[2]
+            elif isinstance(data, int):
+                pid = data
+        if pid not in self.state.project.points:
+            pids = finding.get("pids", [])
+            pid = pids[row] if 0 <= row < len(pids) else None
+        if pid not in self.state.project.points:
+            return
+        point = self.state.project.points[pid]
+        self._apply_fix(
+            f"Ignored look-alike point #{point.number}",
+            lambda: None,
+            resolved_points=[pid],
+            stay_on_edit_page=True,
+            ignored_points=[pid],
+        )
+
     def _action_resolve_selected_stack(self, is_duplicate: bool = False):
         stk = getattr(self, "current_selected_stack", None)
         if not stk and self.current_edit_finding:
@@ -2629,7 +2672,10 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
         finding_flag = str(finding.get("flag", ""))
         finding_check = str(finding.get("check", "")).lower()
         is_spacing = "SeparatorSpacingError" in finding_flag or "spacing at the separator" in finding_check
-        summary_label = "Corrected separator spacing" if is_spacing else "Corrected potential code in descriptor"
+        is_common_conversion = "CommonConversionError" in finding_flag or "common conversion" in finding_check
+        summary_label = ("Corrected separator spacing" if is_spacing else
+                         "Reviewed common-conversion description" if is_common_conversion else
+                         "Corrected potential code in descriptor")
         if to_ignore:
             ign_str = f"Ignored {len(to_ignore)} point(s)"
             summary = f"{summary_label}: {descs_str}; {ign_str}" if descs_str else f"{summary_label}: {ign_str}"

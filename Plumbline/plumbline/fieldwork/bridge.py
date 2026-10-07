@@ -537,6 +537,7 @@ def apply_rows_to_project(project, rows, crs=None, code_table=None,
 #: The description parser's flag names, said the way somebody would say them out loud.  The raw
 #: name travels beside it (``flag``), because that is what a fix tool will switch on.
 FLAG_TITLES = {
+    "CommonConversionError": "Common conversion error",
     "UnknownCode": "Unknown code",
     "EmptyDescription": "No description",
     "OrphanCommand": "Orphan command",

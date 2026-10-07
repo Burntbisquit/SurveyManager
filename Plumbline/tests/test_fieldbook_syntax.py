@@ -70,6 +70,42 @@ def test_separator_edge_trimming_is_whole_token_and_preserves_interior_text():
     assert trim_separator_edges(" / NOTE / ", ["NOTE", "/"]) == ""
 
 
+def test_common_conversion_rule_flags_and_preserves_a_valid_multi_code_description(tmp_path):
+    from plumbline.fieldwork.bridge import check_project
+    from plumbline.fieldwork.clean import _autocorrect_desc
+    from plumbline.fieldwork.io_carlson import write_fwb_file
+    from plumbline.fieldwork.parse import parse_desc_field
+    from plumbline.core.project import Project
+    from plumbline.io import f2f
+
+    commands = {"multicode": "PLUS", "description": "NOTE"}
+    rules = [["EA PLUS SW", "EA"]]
+    book = tmp_path / "office.fwb"
+    assert write_fwb_file(
+        book,
+        ["Code", "Description", "Symbol", "Layer", "Entity Type", "Category"],
+        [["EA", "Asphalt", "CG08", "PAVEMENT", "Point", "Surface"],
+         ["SW", "Sidewalk", "CG08", "SIDEWALK", "Point", "Surface"]],
+        commands=commands, rules=rules,
+    )
+
+    parsed = parse_desc_field("EA PLUS SW", {"ea", "sw"}, fieldbook_path=book)
+    assert "CommonConversionError" in parsed["flags"]
+    assert [item["base"] for item in parsed["code_classified"]
+            if item.get("status") in ("exact", "line_instance")] == ["ea", "sw"]
+    assert "collapse 2 valid Field Book codes into one" in parsed["flag_detail"]
+    assert _autocorrect_desc("EA PLUS SW", {"ea", "sw"}, fieldbook_path=book) is None
+
+    project = Project("Conversion QA")
+    project.settings["fieldbook_file"] = str(book)
+    project.codes, _stats = f2f.convert(f2f.read(book))
+    project.add_point(100, 200, 5, number="5101", desc="EA PLUS SW")
+    report = check_project(project, f2f={"ea", "sw"}, fieldbook_path=str(book))
+    finding = next(f for f in report["findings"] if f.get("flag") == "CommonConversionError")
+    assert finding["check"] == "Common conversion error"
+    assert finding["level"] == "warn"
+
+
 def test_parser_reads_semantic_separators_from_the_active_fieldbook(tmp_path):
     from plumbline.fieldwork.io_carlson import write_fwb_file
     from plumbline.fieldwork.parse import parse_desc_field

@@ -238,8 +238,10 @@ class CorrectionRulesDialog(QDialog):
     Stored in fieldbook file extra (.fwb single-file, #EXTRA_JSON) so fieldbook carries its own rules.
     2nd column (Fix) searches fieldbook codes via completer and validates — prevents creating errors on autofix.
     """
-    def __init__(self, rules=None, fieldbook_codes=None, parent=None):
+    def __init__(self, rules=None, fieldbook_codes=None, parent=None, fieldbook_path=None, commands=None):
         super().__init__(parent)
+        self.fieldbook_path = fieldbook_path
+        self.commands = commands
         self.setWindowTitle("Correction Rules — Common Errors")
         self.resize(650, 420)
         lay = QVBoxLayout(self)
@@ -249,11 +251,12 @@ class CorrectionRulesDialog(QDialog):
         lay.addWidget(hint)
 
         self.fieldbook_codes = fieldbook_codes or []
-        self._fb_set = {c.casefold() for c in self.fieldbook_codes}
+        self._fb_set = {str(c).casefold() for c in self.fieldbook_codes}
+        self.common_conversion_warnings = {}
 
         self.table = QTableWidget()
         self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["Common Error", "Fix (search Field Book code)"])
+        self.table.setHorizontalHeaderLabels(["Common Error", "Fix"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.setAlternatingRowColors(True)
@@ -332,50 +335,104 @@ class CorrectionRulesDialog(QDialog):
 
     def _validate_rows(self):
         from PySide6.QtGui import QBrush, QColor
+        from .parse import common_conversion_rule_warning
         fb_set = self._fb_set
-        bad = 0
+        bad = []
+        conversion_warnings = {}
         for r in range(self.table.rowCount()):
+            err_item = self.table.item(r, 0)
             item = self.table.item(r, 1)
             if not item:
                 continue
-            fix = item.text().strip() if item.text() else ""
+            err = err_item.text().strip() if err_item else ""
+            fix = item.text().strip()
+            first = fix.split()[0] if fix else ""
             if not fix:
                 item.setBackground(QBrush(QColor("#FFFFFF")))
                 item.setToolTip("")
+                if err_item:
+                    err_item.setBackground(QBrush())
+                    err_item.setToolTip("")
                 continue
-            # Fix may contain commands or separators after the Field Book feature code.
-            first = fix.strip().split()[0] if fix.strip() else ""
-            if fb_set and first.casefold() not in fb_set:
+            valid_fix = bool(fb_set and first.casefold() in fb_set)
+            if not fb_set:
+                bad.append(f"Row {r + 1}: no active Field Book codes are available to verify '{fix}'.")
+                item.setBackground(QBrush(QColor("#FFCCCC")))
+                item.setToolTip("Select a Field Book with codes before saving Fix values.")
+            elif not valid_fix:
+                bad.append(f"Row {r + 1}: '{first}' is not in the active Field Book.")
                 item.setBackground(QBrush(QColor("#FFCCCC")))
                 item.setToolTip(f"'{first}' not in Field Book — autofix would create UnknownCode")
-                bad += 1
             else:
                 item.setBackground(QBrush(QColor("#FFFFFF")))
-                item.setToolTip("Valid Field Book code" if fb_set else "")
+                item.setToolTip("Valid Field Book code")
+
+            warning = common_conversion_rule_warning(
+                err, fix, fb_set, fieldbook_path=self.fieldbook_path, commands=self.commands)
+            if warning:
+                conversion_warnings[r] = warning
+                if err_item:
+                    err_item.setBackground(QBrush(QColor("#FFF1C2")))
+                    err_item.setToolTip(warning)
+                if valid_fix:
+                    item.setBackground(QBrush(QColor("#FFF1C2")))
+                    item.setToolTip(warning)
+            elif err_item:
+                err_item.setBackground(QBrush())
+                err_item.setToolTip("")
+        self.common_conversion_warnings = conversion_warnings
         if bad:
-            self.status_label.setText(f"{bad} fix(es) not in Field Book — will create errors on autofix. Please pick a valid code from the popup search.")
+            message = f"{len(bad)} Fix value(s) cannot be verified against the active Field Book:\n" + "\n".join(bad[:5])
+            if conversion_warnings:
+                message += f"\n{len(conversion_warnings)} common-conversion warning(s) are highlighted amber."
+            self.status_label.setText(message)
             self.status_label.setStyleSheet("color: #a00; font-size: 11px;")
+        elif conversion_warnings:
+            self.status_label.setText(
+                f"{len(conversion_warnings)} common-conversion rule(s) may collapse valid codes — highlighted amber for review.")
+            self.status_label.setStyleSheet("color: #946200; font-size: 11px;")
         else:
             self.status_label.setText("All fixes valid ✓" if self.table.rowCount() else "")
             self.status_label.setStyleSheet("color: #080; font-size: 11px;")
 
     def accept(self):
-        # Block save if any fix invalid unless user confirms
         fb_set = self._fb_set
         bad = []
         for r in range(self.table.rowCount()):
             err_item = self.table.item(r, 0)
             fix_item = self.table.item(r, 1)
-            err = err_item.text().strip() if err_item and err_item.text() else ""
-            fix = fix_item.text().strip() if fix_item and fix_item.text() else ""
-            if err and fix:
-                first = fix.split()[0] if fix else ""
-                if fb_set and first.casefold() not in fb_set:
-                    bad.append(f"Row {r+1}: '{err}' → '{fix}' (code '{first}' not in Field Book)")
+            err = err_item.text().strip() if err_item else ""
+            fix = fix_item.text().strip() if fix_item else ""
+            if not err and not fix:
+                continue
+            if not err:
+                bad.append(f"Row {r + 1}: enter a Common Error.")
+                continue
+            if not fix:
+                bad.append(f"Row {r + 1}: enter a Fix code.")
+                continue
+            first = fix.split()[0]
+            if not fb_set:
+                bad.append(f"Row {r + 1}: '{err}' → '{fix}' cannot be verified because the active Field Book has no codes.")
+            elif first.casefold() not in fb_set:
+                bad.append(f"Row {r + 1}: '{err}' → '{fix}' (code '{first}' not in Field Book)")
         if bad:
-            reply = QMessageBox.warning(self, "Fix Not in Field Book",
-                "Some Fixes are not valid Field Book codes and will create UnknownCode errors on autofix:\n" + "\n".join(bad[:6]) + ("\n…" if len(bad)>6 else "") + "\n\nSave anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            QMessageBox.warning(
+                self, "Fix Not in Field Book",
+                "Fix values must start with a code from the active Field Book:\n" +
+                "\n".join(bad[:6]) + ("\n…" if len(bad) > 6 else ""),
+            )
+            return
+        if self.common_conversion_warnings:
+            examples = [self.table.item(r, 0).text().strip()
+                        for r in sorted(self.common_conversion_warnings)[:5]
+                        if self.table.item(r, 0)]
+            reply = QMessageBox.question(
+                self, "Common Conversion Warning",
+                "Some rules can collapse valid multi-code descriptions into one code "
+                f"({', '.join(examples)}). Review the amber rows. Save these rules anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
             if reply != QMessageBox.StandardButton.Yes:
                 return
         super().accept()
@@ -2389,7 +2446,8 @@ class MainWindow(QMainWindow):
                 # Build fieldbook codes list from rows for CorrectionRulesDialog autocomplete
                 _fb_codes_for_rules = [r[0] for r in rows if r and len(r) > 0 and r[0].strip()]
                 _rules_for_dialog = existing_rules if isinstance(existing_rules, list) else []
-                dlg_rules = CorrectionRulesDialog(_rules_for_dialog, _fb_codes_for_rules, self)
+                dlg_rules = CorrectionRulesDialog(
+                    _rules_for_dialog, _fb_codes_for_rules, self, commands=existing_cmds)
                 dlg_rules.setWindowTitle("Set Correction Rules for New Field Book")
                 if dlg_rules.exec() == QDialog.DialogCode.Accepted:
                     existing_rules = dlg_rules.get_rules()
@@ -2591,10 +2649,10 @@ class MainWindow(QMainWindow):
                 fb_codes = [r[0] for r in rows if r and r[0]]
         except Exception:
             pass
-        dlg = CorrectionRulesDialog(rules, fb_codes, self)
+        dlg = CorrectionRulesDialog(rules, fb_codes, self, fieldbook_path=self.fieldbook_path)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             new_rules = dlg.get_rules()
-            # Validation already done inside dialog (search + pink highlight, confirm on Accept) — no duplicate prompt here
+            # Active-book validation and the common-conversion confirmation are handled in the dialog.
             if write_fwb_extra(Path(self.fieldbook_path), rules=new_rules):
                 self.summary_label.setText(f"Correction rules saved to {Path(self.fieldbook_path).name}: {len(new_rules)} rules")
                 QMessageBox.information(self, "Correction Rules", f"Saved {len(new_rules)} rules to Field Book {Path(self.fieldbook_path).name}")

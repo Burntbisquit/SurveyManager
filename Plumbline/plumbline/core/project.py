@@ -59,7 +59,9 @@ class Project:
         # Named sets of objects that can be switched on and off together (core/groups.py).  A
         # group switched off hides its objects **everywhere** - drawing, exports and surfaces.
         self.groups: GroupSet = GroupSet()
-        self.codes: FeatureCodeTable = default_codes()
+        # A new project has no office vocabulary until a Field Book is selected or converted.
+        # The built-in starter library remains available explicitly through the Feature Codes UI.
+        self.codes: FeatureCodeTable = FeatureCodeTable()
         self.notes: str = ""
         self._next_id = 1
         self.revision = 0
@@ -482,8 +484,12 @@ class Project:
             ck = ImageryCheck.from_dict(c)
             p.checks[ck.id] = ck
         p.groups = GroupSet.from_list(d.get("groups", []))
-        if d.get("codes"):
-            p.codes = FeatureCodeTable.from_list(d["codes"])
+        if "codes" in d:
+            # An explicit empty list is meaningful for a new job with no selected Field Book.
+            p.codes = FeatureCodeTable.from_list(d.get("codes") or [])
+        else:
+            # Preserve the historical fallback for older project files that predate the code table.
+            p.codes = default_codes()
         p._next_id = int(d.get("next_id", 1))
         p.ensure_layer("0", (230, 230, 230))
         p.ensure_layer("POINTS", (255, 255, 255))
