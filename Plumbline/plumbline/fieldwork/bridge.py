@@ -567,7 +567,9 @@ def working_rows_from_project(project) -> tuple[list[list[str]], list[int]]:
             continue
         attrs = p.attrs or {}
         rec = PROV.of(p)
-        desc = str(attrs.get("fieldwork_raw_desc") or p.desc or "")
+        # QA follows the live project description. The preserved import-time raw value is provenance,
+        # not a reason to keep reporting an issue after the point has been corrected in the editor.
+        desc = str(p.desc or "")
         rows.append(working_row(attrs.get("fieldwork_oid") or pid, p.number, p.y, p.x, p.z,
                                 desc, rec["folder"], rec["file"]))
         ids.append(pid)
@@ -825,7 +827,7 @@ def check_project(project, f2f=None, fieldbook_path=None, ne_tol: float | None =
                     rec["sample"] = str(parsed.get("raw", "") or "")
         for name, rec in sorted(by_flag.items(), key=lambda kv: (-len(kv[1]["rows"]), kv[0])):
             title = FLAG_TITLES.get(name, name)
-            lvl = "error" if name == "UnknownCode" else "warn"
+            lvl = "error" if name in {"UnknownCode", "SeparatorSpacingError"} else "warn"
             out["findings"].append({
                 "level": lvl, "check": title, "flag": name, "rows": sorted(rec["rows"]),
                 "message": f"{len(rec['rows'])} description(s) flagged {title.lower()}"

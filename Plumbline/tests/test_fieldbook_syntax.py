@@ -6,6 +6,7 @@ from plumbline.core.fieldbook_syntax import (
     command_map,
     command_token_validation_error,
     find_separator,
+    normalize_fieldbook_separator_spacing,
     normalize_separator_spacing,
     separator_text,
     split_at_separator,
@@ -44,6 +45,22 @@ def test_alphanumeric_separators_match_only_as_whole_tokens():
     assert split_at_separator("SAND EA", "AND", maxsplit=0) == ["SAND EA"]
     assert normalize_separator_spacing("EA PLUS  SW", "PLUS", spaced=False) == "EAPLUSSW"
     assert separator_text("description", {"description": "NOTE"}, spaced=False) == "NOTE"
+
+
+def test_spacing_only_normalizer_preserves_code_order_and_note_text(monkeypatch):
+    from plumbline.core.settings import settings
+
+    monkeypatch.setitem(settings()._data, "space_around_multicode_separator", True)
+    monkeypatch.setitem(settings()._data, "space_around_description_separator", True)
+    assert normalize_fieldbook_separator_spacing("MH/30rcp") == "MH / 30rcp"
+    assert normalize_fieldbook_separator_spacing("EA  -  SW/30rcp") == "EA - SW / 30rcp"
+    assert normalize_fieldbook_separator_spacing(
+        "EA  plus  SW  note  Road", {"multicode": "PLUS", "description": "NOTE"}
+    ) == "EA plus SW note Road"
+
+    monkeypatch.setitem(settings()._data, "space_around_multicode_separator", False)
+    monkeypatch.setitem(settings()._data, "space_around_description_separator", False)
+    assert normalize_fieldbook_separator_spacing("EA  -  SW / 30rcp") == "EA-SW/30rcp"
 
 
 def test_separator_edge_trimming_is_whole_token_and_preserves_interior_text():

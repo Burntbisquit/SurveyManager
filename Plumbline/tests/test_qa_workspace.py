@@ -498,7 +498,75 @@ def test_potential_code_in_descriptor_corrections_ui(win, app, auto):
     dlg._save_and_exit()
 
 
-# ------------------------------------------------------------------ Per-point Ignore / Stale Editor Widget Regressions
+def test_separator_spacing_fix_stays_independent_from_misplaced_code(win, app, monkeypatch):
+    from plumbline.core.settings import settings
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    pr = win.state.project
+    pr.codes.codes["mh"] = "Manhole"
+    pr.codes.codes["rcp"] = "Reinforced Concrete Pipe"
+    pr.settings["f2f_path"] = "test-office-standard.csv"
+    point = pr.add_point(930, 1040, 50, number="9912", desc="MH/30RCP")
+    second_point = pr.add_point(940, 1050, 50, number="9913", desc="MH   /30RCP")
+    # Imported raw descriptions remain provenance; rechecks must follow editable live descriptions.
+    point.attrs["fieldwork_raw_desc"] = point.desc
+    second_point.attrs["fieldwork_raw_desc"] = second_point.desc
+    monkeypatch.setitem(settings()._data, "space_around_multicode_separator", True)
+    monkeypatch.setitem(settings()._data, "space_around_description_separator", True)
+
+    dialog = FixPointErrorsDialog(win.state, win)
+    misplaced = next(f for f in dialog.active_findings if f.get("flag") == "MisplacedAfterSeparator")
+    spacing = next(f for f in dialog.active_findings if f.get("flag") == "SeparatorSpacingError")
+    assert spacing["level"] == "error"
+    spacing_row = next(r for r in range(dialog.tbl_active.rowCount())
+                       if dialog.tbl_active.item(r, 2).text() == spacing["check"])
+    assert dialog.tbl_active.item(spacing_row, 1).text() == "ERROR"
+    assert {point.id, second_point.id}.issubset(set(misplaced["pids"]))
+    assert {point.id, second_point.id}.issubset(set(spacing["pids"]))
+    assert misplaced["key"] != spacing["key"]
+
+    # Fix one point's spacing first. Its overlapping misplaced-code finding must remain active,
+    # while the spacing issue tracks only the second point that was skipped.
+    dialog._open_inline_editor(spacing)
+    assert dialog.tbl_corrections.horizontalHeaderItem(1).text() == "Original Description"
+    assert dialog.tbl_corrections.horizontalHeaderItem(2).text() == "Spacing-Corrected Description"
+    actions = [dialog.sep_corrections[0][3].itemText(i)
+               for i in range(dialog.sep_corrections[0][3].count())]
+    assert actions == ["Skip", "Correct", "Ignore"]
+    first_fix = next(item for item in dialog.sep_corrections if item[0].id == point.id)
+    assert first_fix[2].text() == "MH / 30RCP"
+    first_fix[3].setCurrentText("Correct")
+    dialog._action_apply_separator_corrections()
+
+    assert point.desc == "MH / 30RCP"
+    assert point.attrs["fieldwork_raw_desc"] == "MH/30RCP"
+    assert second_point.desc == "MH   /30RCP"
+    misplaced_after = next(f for f in dialog.active_findings
+                           if f.get("flag") == "MisplacedAfterSeparator" and f.get("status") != "resolved")
+    spacing_after_first = next(f for f in dialog.active_findings
+                               if f.get("flag") == "SeparatorSpacingError" and f.get("status") != "resolved")
+    assert {point.id, second_point.id}.issubset(set(misplaced_after["pids"]))
+    assert spacing_after_first["pids"] == [second_point.id]
+
+    # Ignoring the misplaced-code finding must not suppress the remaining spacing correction.
+    dialog._action_ignore(misplaced_after["key"])
+    spacing = next(f for f in dialog.active_findings
+                   if f.get("flag") == "SeparatorSpacingError" and f.get("status") != "resolved")
+    assert misplaced_after["key"] in dialog.ignored_keys
+    assert spacing["key"] not in dialog.ignored_keys
+    assert spacing["pids"] == [second_point.id]
+
+    dialog._open_inline_editor(spacing)
+    assert len(dialog.sep_corrections) == 1
+    assert dialog.sep_corrections[0][2].text() == "MH / 30RCP"
+    dialog.sep_corrections[0][3].setCurrentText("Correct")
+    dialog._action_apply_separator_corrections()
+    assert second_point.desc == "MH / 30RCP"
+    spacing_after = next(f for f in dialog.active_findings if f.get("flag") == "SeparatorSpacingError")
+    assert spacing_after["status"] == "resolved"
+    assert not spacing_after["pids"]
+
+
 def test_separator_ignore_clears_warning_and_discard_restores_it(win, monkeypatch):
     from plumbline.fieldwork import bridge as FB
     from plumbline.ui.qa_workspace import FixPointErrorsDialog

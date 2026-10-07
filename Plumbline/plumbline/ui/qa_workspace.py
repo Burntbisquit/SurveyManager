@@ -37,6 +37,7 @@ from ..core.fieldbook_syntax import (
     command_joiner,
     command_map,
     find_separator,
+    normalize_fieldbook_separator_spacing,
     separator_text,
     split_at_separator,
 )
@@ -1785,7 +1786,9 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
         is_close = "close" in chk or "top of each other" in chk
         is_exact_dup = "duplicate" in chk or ("number" in chk and "used" in finding.get("detail", "").lower())
         is_lookalike = "look-alike" in chk
-        is_sep = "MisplacedAfterSeparator" in flag or "potential code in descriptor" in chk or "text before" in chk or "separator" in chk
+        is_spacing = "SeparatorSpacingError" in flag or "spacing at the separator" in chk
+        is_sep = (is_spacing or "MisplacedAfterSeparator" in flag
+                  or "potential code in descriptor" in chk or "text before" in chk or "separator" in chk)
 
         if is_sep:
             self.w_close_tol_bar.hide()
@@ -1807,9 +1810,17 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                 fb_path = voc.get("path")
             except Exception:
                 pass
+            try:
+                from ..fieldwork.config import get_command_map
+                commands = (get_command_map(fb_path) if fb_path
+                            else get_command_map(commands=commands))
+            except Exception:
+                commands = command_map(commands)
 
             self.tbl_corrections = DownTabTableWidget(len(pts), 4)
-            self.tbl_corrections.setHorizontalHeaderLabels(["Pt #", "Original Code", "Fixed Code", "Action"])
+            self.tbl_corrections.setHorizontalHeaderLabels(
+                ["Pt #", "Original Description", "Spacing-Corrected Description", "Action"]
+                if is_spacing else ["Pt #", "Original Code", "Fixed Code", "Action"])
             self.tbl_corrections.setSelectionBehavior(QAbstractItemView.SelectRows)
             self.tbl_corrections.verticalHeader().setVisible(False)
             self.tbl_corrections.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed | QAbstractItemView.SelectedClicked)
@@ -1827,24 +1838,30 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                 orig_desc = str(p.desc or "")
                 sugg = ""
                 sugg_num = ""
-                try:
-                    from ..fieldwork.clean import _autocorrect_desc, _autocorrect_desc_leave_number
-                    sugg = _autocorrect_desc(orig_desc, f2f_set, fieldbook_path=fb_path) or ""
-                    sugg_num = _autocorrect_desc_leave_number(orig_desc, f2f_set, fieldbook_path=fb_path) or ""
-                except Exception:
-                    pass
-                if not sugg:
-                    raw_desc = orig_desc
-                    description_token = command_map(commands).get("description", "")
-                    if find_separator(raw_desc, description_token) >= 0:
-                        c_part, f_part = split_at_separator(raw_desc, description_token, maxsplit=1)
-                        c_part, f_part = c_part.strip(), f_part.strip()
-                        joiner = separator_text("description", commands)
-                        sugg = f"{f_part}{joiner}{c_part}" if c_part and joiner else (f"{f_part} {c_part}" if c_part else f_part)
-                    else:
-                        sugg = raw_desc
-                if not sugg_num:
+                if is_spacing:
+                    # A spacing finding owns a spacing-only proposal. In particular, do not
+                    # reuse the potential-code autocorrect, which may move code out of notes.
+                    sugg = normalize_fieldbook_separator_spacing(orig_desc, commands)
                     sugg_num = sugg
+                else:
+                    try:
+                        from ..fieldwork.clean import _autocorrect_desc, _autocorrect_desc_leave_number
+                        sugg = _autocorrect_desc(orig_desc, f2f_set, fieldbook_path=fb_path) or ""
+                        sugg_num = _autocorrect_desc_leave_number(orig_desc, f2f_set, fieldbook_path=fb_path) or ""
+                    except Exception:
+                        pass
+                    if not sugg:
+                        raw_desc = orig_desc
+                        description_token = command_map(commands).get("description", "")
+                        if find_separator(raw_desc, description_token) >= 0:
+                            c_part, f_part = split_at_separator(raw_desc, description_token, maxsplit=1)
+                            c_part, f_part = c_part.strip(), f_part.strip()
+                            joiner = separator_text("description", commands)
+                            sugg = f"{f_part}{joiner}{c_part}" if c_part and joiner else (f"{f_part} {c_part}" if c_part else f_part)
+                        else:
+                            sugg = raw_desc
+                    if not sugg_num:
+                        sugg_num = sugg
 
                 it_pt = QTableWidgetItem(str(p.number))
                 it_pt.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
@@ -1855,11 +1872,16 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                 self.tbl_corrections.setItem(r, 1, it_orig)
 
                 it_fixed = QTableWidgetItem(sugg)
-                it_fixed.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable)
+                fixed_flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
+                if not is_spacing:
+                    fixed_flags |= Qt.ItemIsEditable
+                it_fixed.setFlags(fixed_flags)
                 self.tbl_corrections.setItem(r, 2, it_fixed)
 
                 cb_action = _DownTabComboBox(self.tbl_corrections, r, 3)
-                cb_action.addItems(["Skip", "Correct", "Correct (Leave # in Descriptor)", "Ignore"])
+                actions = ["Skip", "Correct", "Ignore"] if is_spacing else [
+                    "Skip", "Correct", "Correct (Leave # in Descriptor)", "Ignore"]
+                cb_action.addItems(actions)
                 cb_action.setCurrentIndex(0)  # default all dropdowns to skip
 
                 # Connect dropdown change to update the Fixed Code column preview in real time
@@ -1896,7 +1918,11 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
 
             self.tbl_corrections.cellChanged.connect(_on_corr_cell_changed)
 
-            lay_g.addWidget(Hint("Double-click 'Fixed Code' to overwrite and set action to Correct."))
+            if is_spacing:
+                hint_text = "Only separator spacing is changed; feature-code order and note text are preserved."
+            else:
+                hint_text = "Double-click 'Fixed Code' to overwrite and set action to Correct."
+            lay_g.addWidget(Hint(hint_text))
             lay_g.addWidget(self.tbl_corrections)
 
             # Bottom buttons: Apply and Correct All
@@ -1909,8 +1935,10 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             btn_apply.clicked.connect(self._action_apply_separator_corrections)
             row_btns.addWidget(btn_apply)
 
-            btn_correct_all = QPushButton("Correct All")
-            btn_correct_all.setToolTip("Set all points to Correct and apply fixed codes immediately")
+            btn_correct_all = QPushButton("Fix All Spacing" if is_spacing else "Correct All")
+            btn_correct_all.setToolTip(
+                "Normalize configured separator spacing for all listed descriptions"
+                if is_spacing else "Set all points to Correct and apply fixed codes immediately")
             btn_correct_all.clicked.connect(self._action_correct_all_separator_corrections)
             row_btns.addWidget(btn_correct_all)
 
@@ -2597,11 +2625,16 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                 p.desc = txt
 
         descs_str = ", ".join(f"Pt #{p.number} -> '{txt}'" for p, txt in to_correct)
+        finding = self.current_edit_finding or {}
+        finding_flag = str(finding.get("flag", ""))
+        finding_check = str(finding.get("check", "")).lower()
+        is_spacing = "SeparatorSpacingError" in finding_flag or "spacing at the separator" in finding_check
+        summary_label = "Corrected separator spacing" if is_spacing else "Corrected potential code in descriptor"
         if to_ignore:
             ign_str = f"Ignored {len(to_ignore)} point(s)"
-            summary = f"Corrected potential code in descriptor: {descs_str}; {ign_str}" if descs_str else f"Potential code in descriptor: {ign_str}"
+            summary = f"{summary_label}: {descs_str}; {ign_str}" if descs_str else f"{summary_label}: {ign_str}"
         else:
-            summary = f"Corrected potential code in descriptor: {descs_str}"
+            summary = f"{summary_label}: {descs_str}"
 
         self._apply_fix(
             summary,

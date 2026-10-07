@@ -199,9 +199,47 @@ def normalize_separator_spacing(value: str, token: str, *, spaced: bool) -> str:
 
     if not token:
         return value
-    replacement = f" {token} " if spaced else token
-    return re.sub(rf"\s*{separator_pattern(token)}\s*", lambda _: replacement,
+    padding = " " if spaced else ""
+    return re.sub(rf"\s*({separator_pattern(token)})\s*",
+                  lambda match: f"{padding}{match.group(1)}{padding}",
                   value, flags=re.IGNORECASE)
+
+
+def normalize_fieldbook_separator_spacing(value: str, commands=None) -> str:
+    """Normalize configured separators only, preserving code groups and description text.
+
+    Multi-code spacing is handled only before the first description separator. The description
+    separator itself is normalized at its first occurrence so matching text inside a note is not
+    mistaken for another delimiter.
+    """
+    text = str(value or "")
+    meanings = command_map(commands)
+    multi_token = meanings.get("multicode", "")
+    description_token = meanings.get("description", "")
+    description_index = find_separator(text, description_token)
+
+    if description_index >= 0:
+        description_token_text = text[description_index:description_index + len(description_token)]
+        code_region = text[:description_index]
+        note_region = text[description_index + len(description_token):]
+    else:
+        description_token_text = ""
+        code_region = text
+        note_region = ""
+
+    if multi_token:
+        code_region = normalize_separator_spacing(
+            code_region, multi_token,
+            spaced=spacing_preference("space_around_multicode_separator"),
+        )
+
+    if description_index < 0:
+        return code_region
+
+    left = code_region.rstrip()
+    right = note_region.lstrip()
+    padding = " " if spacing_preference("space_around_description_separator") else ""
+    return f"{left}{padding}{description_token_text}{padding}{right}"
 
 
 def trim_separator_edges(value: str, tokens) -> str:
