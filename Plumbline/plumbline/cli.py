@@ -285,6 +285,8 @@ def _fieldwork_report(a) -> int:
         # 1,314 perfectly good numbered codes unknown.
         import re as _re
         from .core.featurecodes import parse_description
+        from .fieldwork.config import get_command_map
+        commands = get_command_map(a.f2f)
         unknown = {}
         for r in rows:
             if not FB.row_is_usable(r):
@@ -294,7 +296,7 @@ def _fieldwork_report(a) -> int:
                 continue
             lead = _re.match(r"^[A-Za-z][A-Za-z0-9_\-]*", desc)
             word = lead.group(0) if lead else ""
-            base = parse_description(desc).code
+            base = parse_description(desc, commands=commands, known_codes=f2f).code
             if word.casefold() in f2f or (base and base.casefold() in f2f):
                 continue
             key = word or base or desc[:12]

@@ -420,7 +420,7 @@ def write_fieldbook_from_f2f(f2f_csv_path, dest_fwb, name: str = "", commands=No
     dest_fwb = Path(dest_fwb)
     dest_fwb.parent.mkdir(parents=True, exist_ok=True)
     ok = IC.write_fwb_file(dest_fwb, headers, rows,
-                           commands=commands or ["ST", "PC", "PT", "END", "X", "-", "/"], rules=[])
+                           commands=commands or list(F.LINE_COMMAND_DEFAULTS), rules=[])
     if not ok:
         raise IOError(f"could not write {dest_fwb}")
     return dest_fwb
@@ -446,8 +446,8 @@ def batch_from_rows(rows, crs=None, layer_override: str | None = None,
     """Turn working rows into a Plumbline ImportBatch of points.
 
     Descriptions are carried through **exactly as the crew wrote them**, because
-    Plumbline parses linework flags (B / E / CLS / string numbers) out of the raw
-    description at draw time.  A second column keeps the raw text for the check
+    Plumbline interprets the active Field Book's line-control commands and string
+    identifiers from the raw description at draw time. A second column keeps the raw text for the check
     report.  Elevations that are blank become NaN, not 0.0 - a point with no
     elevation must not drag a surface to sea level.
 
@@ -567,7 +567,9 @@ def working_rows_from_project(project) -> tuple[list[list[str]], list[int]]:
             continue
         attrs = p.attrs or {}
         rec = PROV.of(p)
-        desc = str(attrs.get("fieldwork_raw_desc") or p.desc or "")
+        # QA follows the live project description. The preserved import-time raw value is provenance,
+        # not a reason to keep reporting an issue after the point has been corrected in the editor.
+        desc = str(p.desc or "")
         rows.append(working_row(attrs.get("fieldwork_oid") or pid, p.number, p.y, p.x, p.z,
                                 desc, rec["folder"], rec["file"]))
         ids.append(pid)
@@ -825,7 +827,7 @@ def check_project(project, f2f=None, fieldbook_path=None, ne_tol: float | None =
                     rec["sample"] = str(parsed.get("raw", "") or "")
         for name, rec in sorted(by_flag.items(), key=lambda kv: (-len(kv[1]["rows"]), kv[0])):
             title = FLAG_TITLES.get(name, name)
-            lvl = "error" if name == "UnknownCode" else "warn"
+            lvl = "error" if name in {"UnknownCode", "SeparatorSpacingError"} else "warn"
             out["findings"].append({
                 "level": lvl, "check": title, "flag": name, "rows": sorted(rec["rows"]),
                 "message": f"{len(rec['rows'])} description(s) flagged {title.lower()}"

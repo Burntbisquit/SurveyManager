@@ -1,337 +1,392 @@
-"""Point recoding engine for field-to-finish linework.
+"""Semantic point-description edits for field-to-finish linework.
 
-In survey field-to-finish workflows (Carlson, Civil 3D, Leica Infinity, Trimble Business Center),
-linework is driven entirely by point descriptions and coding conventions:
-    EP1 ST        -> Starts edge of pavement string 1
-    EP1           -> Intermediate vertex on string 1
-    EP1 PC        -> Point of curvature on string 1
-    EP1 PT        -> Point of tangency on string 1
-    EP1 END       -> Terminates string 1
-    EP1 CLS       -> Closes string 1 back to its start point
-    EP1 / TOC1 ST -> Multicode on single point
-
-When linework is edited, edited on canvas, or repaired in QA, this engine modifies the underlying
-`SurveyPoint.desc` on the points themselves so that:
-1. Re-running `project.process_linework()` produces the identical linework.
-2. Exporting points (PNEZD CSV, LandXML, DXF) to outside software preserves the linework structure.
+The command strings and separators come from the active Field Book.  A surveyor can
+therefore change the office's spelling without changing how joining, reversing,
+closing, or repairing linework behaves.
 """
 from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, Sequence
 
-from .featurecodes import (BEGIN_FLAGS, CLOSE_FLAGS, END_FLAGS, parse_description)
+from .featurecodes import BEGIN_FLAGS, CLOSE_FLAGS, END_FLAGS, parse_description
+from .fieldbook_syntax import (
+    COMMAND_MEANINGS,
+    command_joiner,
+    command_map,
+    command_meanings,
+    find_separator,
+    separator_text,
+    split_at_separator,
+)
 
 if TYPE_CHECKING:
     from .model import SurveyPoint
     from .project import Project
 
 
-def update_point_token(desc: str, old_code_prefix: str, new_token: str) -> str:
-    """Replace an existing code prefix in a description, respecting multicodes separated by '/'.
+_LINE_MEANINGS = frozenset(COMMAND_MEANINGS[:5])
+_BOUNDARY_MEANINGS = frozenset(("start_line", "end_line", "close"))
 
-    If old_code_prefix is not found, prepends or appends new_token.
-    """
+
+def _split_multicode(desc: str, commands=None) -> list[str]:
+    token = command_map(commands).get("multicode", "")
+    parts = split_at_separator(desc or "", token, maxsplit=0) if token else [desc or ""]
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _join_multicode(parts, commands=None) -> str:
+    joiner = separator_text("multicode", commands) or " "
+    return joiner.join(str(part).strip() for part in parts if str(part).strip())
+
+
+def _meaning(token: str, commands=None) -> str:
+    meaning = command_meanings(commands).get(str(token).strip().casefold(), "")
+    if meaning:
+        return meaning
+    # Keep the familiar Carlson aliases readable in old point files.  Active command
+    # meanings take precedence, so a Field Book can freely rename its function tokens.
+    upper = str(token).strip().upper()
+    if upper in BEGIN_FLAGS:
+        return "start_line"
+    if upper in END_FLAGS:
+        return "end_line"
+    if upper in CLOSE_FLAGS:
+        return "close"
+    return ""
+
+
+def _description_parts(part: str, commands=None) -> tuple[str, str, bool]:
+    token = command_map(commands).get("description", "")
+    index = find_separator(part, token)
+    if index < 0:
+        return part.strip(), "", False
+    return part[:index].strip(), part[index + len(token):].strip(), True
+
+
+def _format_part(main: str, note: str = "", had_description_separator: bool = False,
+                 commands=None) -> str:
+    main = re.sub(r"\s+", " ", str(main or "")).strip()
+    note = re.sub(r"\s+", " ", str(note or "")).strip()
+    if note:
+        joiner = separator_text("description", commands)
+        return f"{main}{joiner}{note}" if main and joiner else (f"{main} {note}" if main else note)
+    if had_description_separator and main:
+        joiner = separator_text("description", commands)
+        return f"{main}{joiner.rstrip()}" if joiner else main
+    return main
+
+
+def _format_tokens(tokens: Sequence[str], commands=None) -> str:
+    if not tokens:
+        return ""
+    output = str(tokens[0])
+    only_commands_so_far = True
+    for token in tokens[1:]:
+        if _meaning(token, commands) in _LINE_MEANINGS and only_commands_so_far:
+            output += command_joiner() + str(token)
+        else:
+            output += " " + str(token)
+            only_commands_so_far = False
+    return re.sub(r"\s+", " ", output).strip()
+
+
+def _code_matches(token: str, prefix: str) -> bool:
+    """Match a whole code/string prefix without letting EP1 also select EP10."""
+    target = str(prefix or "").strip().casefold()
+    value = str(token or "").strip().casefold()
+    if not target or not value.startswith(target):
+        return False
+    suffix = value[len(target):]
+    return not (target[-1].isdigit() and suffix and suffix[0].isdigit())
+
+
+def _rewrite_code_part(desc: str, old_code_prefix: str = "", new_code: str | None = None,
+                       boundary: str | None = None, *, commands=None,
+                       clear_boundaries: bool = True) -> tuple[str, bool]:
+    """Rewrite one code group's name/boundary flags and preserve any note attached to it."""
+    semantic_tokens = command_map(commands)
+    parts = _split_multicode(desc, semantic_tokens)
+    if not parts:
+        parts = [""]
+    chosen = next((i for i, part in enumerate(parts)
+                   if _code_matches(_description_parts(part, semantic_tokens)[0].split()[0]
+                                    if _description_parts(part, semantic_tokens)[0].split() else "",
+                                    old_code_prefix)), None)
+    if chosen is None:
+        chosen = 0 if not old_code_prefix and (new_code is not None or boundary is not None) else None
+    if chosen is None:
+        return desc or "", False
+
+    main, note, had_separator = _description_parts(parts[chosen], semantic_tokens)
+    tokens = main.split()
+    if not tokens:
+        tokens = [str(new_code or old_code_prefix).strip()]
+    head = tokens[0]
+    rewritten_head = str(new_code).strip() if new_code is not None else head
+    rest = tokens[1:]
+    if clear_boundaries:
+        rest = [token for token in rest if _meaning(token, semantic_tokens) not in _BOUNDARY_MEANINGS]
+    if boundary:
+        command = semantic_tokens.get(boundary, "")
+        if command:
+            rest = [token for token in rest if _meaning(token, semantic_tokens) != boundary]
+            rest.append(command)
+    parts[chosen] = _format_part(
+        _format_tokens([rewritten_head, *rest], semantic_tokens), note, had_separator, semantic_tokens)
+    return _join_multicode(parts, semantic_tokens), True
+
+
+def _contains_meaning(desc: str, meaning: str, code_prefix: str = "", commands=None) -> bool:
+    for part in _split_multicode(desc, commands):
+        main, _note, _had_separator = _description_parts(part, commands)
+        tokens = main.split()
+        if not tokens or (code_prefix and not _code_matches(tokens[0], code_prefix)):
+            continue
+        if any(_meaning(token, commands) == meaning for token in tokens[1:]):
+            return True
+    return False
+
+
+def update_point_token(desc: str, old_code_prefix: str, new_token: str, commands=None) -> str:
+    """Replace a code group, or add it using the Field Book's multi-code separator."""
     if not desc:
         return new_token
-    # Split multicodes if separated by '/'
-    parts = [p.strip() for p in desc.split("/") if p.strip()]
-    if not parts:
-        return new_token
-
-    replaced = False
-    new_parts = []
-    old_upper = old_code_prefix.upper()
-    for part in parts:
-        tokens = part.split()
-        if tokens and (tokens[0].upper() == old_upper or tokens[0].upper().startswith(old_upper)):
-            # Replace code in this multicode part
-            new_parts.append(new_token)
-            replaced = True
-        else:
-            new_parts.append(part)
-
-    if not replaced:
-        new_parts.append(new_token)
-
-    return " / ".join(new_parts)
+    updated, replaced = _rewrite_code_part(
+        desc, old_code_prefix, new_code=None, commands=commands, clear_boundaries=False)
+    if replaced:
+        # _rewrite_code_part above preserves the old head; replace the full matching segment
+        # with the caller's complete token while retaining any trailing free-text note.
+        semantic_tokens = command_map(commands)
+        parts = _split_multicode(desc, semantic_tokens)
+        for index, part in enumerate(parts):
+            main, note, had_separator = _description_parts(part, semantic_tokens)
+            tokens = main.split()
+            if tokens and _code_matches(tokens[0], old_code_prefix):
+                parts[index] = _format_part(new_token, note, had_separator, semantic_tokens)
+                break
+        return _join_multicode(parts, semantic_tokens)
+    parts = _split_multicode(desc, commands)
+    parts.append(new_token)
+    return _join_multicode(parts, commands)
 
 
-def remove_point_token(desc: str, code_prefix: str) -> str:
-    """Remove a line code token from a point description."""
+def remove_point_token(desc: str, code_prefix: str, commands=None) -> str:
+    """Remove one coded group without treating the description-note separator as a code split."""
     if not desc:
         return ""
-    parts = [p.strip() for p in desc.split("/") if p.strip()]
-    old_upper = code_prefix.upper()
+    semantic_tokens = command_map(commands)
     remaining = []
-    for part in parts:
-        tokens = part.split()
-        if tokens and (tokens[0].upper() == old_upper or tokens[0].upper().startswith(old_upper)):
+    for part in _split_multicode(desc, semantic_tokens):
+        main, note, had_separator = _description_parts(part, semantic_tokens)
+        tokens = main.split()
+        if tokens and _code_matches(tokens[0], code_prefix):
+            if note:
+                remaining.append(_format_part("", note, had_separator, semantic_tokens))
             continue
         remaining.append(part)
-    return " / ".join(remaining)
+    return _join_multicode(remaining, semantic_tokens)
 
 
 def join_points_to_string(points: Sequence[SurveyPoint], code: str,
                           string_id: str = "", closed: bool = False,
-                          start_flag: str = "ST", end_flag: str = "END") -> list[SurveyPoint]:
-    """Recode a sequence of points to form a linework string.
-
-    Point 0 gets '{code}{string_id} {start_flag}'
-    Intermediate points get '{code}{string_id}'
-    Last point gets '{code}{string_id} CLS' (if closed) or '{code}{string_id} {end_flag}'
-    """
+                          start_flag: str | None = None, end_flag: str | None = None,
+                          commands=None) -> list[SurveyPoint]:
+    """Recode points as one line, using the Field Book's Start, End, and Close tokens."""
     if not points:
         return []
-
-    code_clean = (code or "EP").strip().upper()
-    str_clean = str(string_id).strip()
-    prefix = f"{code_clean}{str_clean}".strip()
-
-    n = len(points)
+    semantic_tokens = command_map(commands)
+    start_flag = start_flag if start_flag is not None else semantic_tokens.get("start_line", "")
+    end_flag = end_flag if end_flag is not None else semantic_tokens.get("end_line", "")
+    closing_flag = semantic_tokens.get("close", "") if closed else end_flag
+    prefix = f"{(code or 'EP').strip().upper()}{str(string_id).strip()}".strip()
     modified = []
 
-    for i, p in enumerate(points):
-        if n == 1:
+    for index, point in enumerate(points):
+        if len(points) == 1:
             token = prefix
-        elif i == 0:
-            token = f"{prefix} {start_flag}".strip()
-        elif i == n - 1:
-            closing_flag = "CLS" if closed else end_flag
-            token = f"{prefix} {closing_flag}".strip()
+        elif index == 0:
+            token = _format_tokens([prefix, start_flag], semantic_tokens) if start_flag else prefix
+        elif index == len(points) - 1:
+            token = _format_tokens([prefix, closing_flag], semantic_tokens) if closing_flag else prefix
         else:
             token = prefix
 
-        # Update point description
-        orig_desc = p.desc or ""
-        tokens = orig_desc.split()
-        old_prefix = tokens[0] if tokens else ""
-
-        # Check if point already has matching code prefix
-        if old_prefix and old_prefix.upper().startswith(code_clean):
-            p.desc = update_point_token(orig_desc, old_prefix, token)
-        elif not orig_desc:
-            p.desc = token
+        original = point.desc or ""
+        old_prefix = ""
+        first_part = _split_multicode(original, semantic_tokens)
+        if first_part:
+            first_main, _note, _had = _description_parts(first_part[0], semantic_tokens)
+            first_tokens = first_main.split()
+            old_prefix = first_tokens[0] if first_tokens else ""
+        if old_prefix and old_prefix.upper().startswith(prefix.rstrip("0123456789").upper()):
+            point.desc = update_point_token(original, old_prefix, token, semantic_tokens)
+        elif not original:
+            point.desc = token
         else:
-            p.desc = f"{token} / {orig_desc}" if "/" not in orig_desc else update_point_token(orig_desc, "", token)
-
-        modified.append(p)
-
+            point.desc = _join_multicode([token, original], semantic_tokens)
+        modified.append(point)
     return modified
 
 
-def reverse_string_coding(points: Sequence[SurveyPoint], code_prefix: str = "") -> list[SurveyPoint]:
-    """Reverse the linework direction of a sequence of points.
-
-    Swaps the Start and End flags between first and last points, and reverses point order.
-    """
+def reverse_string_coding(points: Sequence[SurveyPoint], code_prefix: str = "", commands=None) -> list[SurveyPoint]:
+    """Reverse line direction, exchanging endpoint meanings and curve start/end meanings."""
     if len(points) < 2:
         return list(points)
-
-    pts = list(points)
-    p_first = pts[0]
-    p_last = pts[-1]
-
-    # Extract existing code prefix
+    semantic_tokens = command_map(commands)
+    points = list(points)
+    first, last = points[0], points[-1]
     if not code_prefix:
-        tokens = (p_first.desc or "").split()
-        code_prefix = tokens[0] if tokens else "EP"
+        segments = _split_multicode(first.desc or "", semantic_tokens)
+        main = _description_parts(segments[0], semantic_tokens)[0] if segments else ""
+        code_prefix = main.split()[0] if main.split() else "EP"
 
-    # Clean old flags from first and last
-    desc_first_clean = re.sub(r"\b(ST|START|B|BEG|BEGIN)\b", "", p_first.desc or "", flags=re.IGNORECASE).strip()
-    desc_last_clean = re.sub(r"\b(END|E|ED|CLS|CLOSE|C)\b", "", p_last.desc or "", flags=re.IGNORECASE).strip()
+    was_closed = _contains_meaning(last.desc or "", "close", code_prefix, semantic_tokens)
+    first.desc, _ = _rewrite_code_part(
+        first.desc or "", code_prefix, boundary="close" if was_closed else "end_line",
+        commands=semantic_tokens, clear_boundaries=True)
+    last.desc, _ = _rewrite_code_part(last.desc or "", code_prefix, boundary="start_line",
+                                      commands=semantic_tokens, clear_boundaries=True)
 
-    # Determine if previously closed
-    was_closed = any(f in (p_last.desc or "").upper().split() for f in CLOSE_FLAGS)
-
-    # First point becomes last point with END or CLS
-    p_first.desc = f"{desc_first_clean} {'CLS' if was_closed else 'END'}".strip()
-
-    # Last point becomes first point with ST
-    p_last.desc = f"{desc_last_clean} ST".strip()
-
-    # Normalize double spaces
-    p_first.desc = re.sub(r"\s+", " ", p_first.desc)
-    p_last.desc = re.sub(r"\s+", " ", p_last.desc)
-
-    # For intermediate points, swap curve start/end (PC <-> PT)
-    for p in pts[1:-1]:
-        d = p.desc or ""
-        tokens = d.split()
-        new_tokens = []
-        for t in tokens:
-            tu = t.upper()
-            if tu == "PC":
-                new_tokens.append("PT")
-            elif tu == "PT":
-                new_tokens.append("PC")
-            else:
-                new_tokens.append(t)
-        p.desc = " ".join(new_tokens)
-
-    return pts[::-1]
+    for point in points[1:-1]:
+        new_parts = []
+        for part in _split_multicode(point.desc or "", semantic_tokens):
+            main, note, had_separator = _description_parts(part, semantic_tokens)
+            tokens = main.split()
+            if tokens and _code_matches(tokens[0], code_prefix):
+                swapped = []
+                for token in tokens[1:]:
+                    meaning = _meaning(token, semantic_tokens)
+                    if meaning == "start_curve":
+                        swapped.append(semantic_tokens.get("end_curve", token))
+                    elif meaning == "end_curve":
+                        swapped.append(semantic_tokens.get("start_curve", token))
+                    else:
+                        swapped.append(token)
+                main = _format_tokens([tokens[0], *swapped], semantic_tokens)
+            new_parts.append(_format_part(main, note, had_separator, semantic_tokens))
+        point.desc = _join_multicode(new_parts, semantic_tokens)
+    return points[::-1]
 
 
-def close_string_coding(last_point: SurveyPoint, code_prefix: str = "") -> SurveyPoint:
-    """Update the end of a linework string to close back to start point (adds CLS)."""
-    orig = last_point.desc or ""
-    tokens = orig.split()
-    new_tokens = []
-    replaced = False
-    for t in tokens:
-        if t.upper() in END_FLAGS or t.upper() in CLOSE_FLAGS:
-            new_tokens.append("CLS")
-            replaced = True
-        else:
-            new_tokens.append(t)
-    if not replaced:
-        new_tokens.append("CLS")
-    last_point.desc = " ".join(new_tokens)
+def start_string_coding(first_point: SurveyPoint, code_prefix: str = "", commands=None) -> SurveyPoint:
+    """Apply the Field Book's Start Line meaning to the selected line's first point."""
+    first_point.desc, _ = _rewrite_code_part(
+        first_point.desc or "", code_prefix, boundary="start_line", commands=commands,
+        clear_boundaries=True)
+    return first_point
+
+
+def close_string_coding(last_point: SurveyPoint, code_prefix: str = "", commands=None) -> SurveyPoint:
+    """Apply the Field Book's Close meaning to the selected line's endpoint."""
+    last_point.desc, _ = _rewrite_code_part(
+        last_point.desc or "", code_prefix, boundary="close", commands=commands, clear_boundaries=True)
     return last_point
 
 
-def open_string_coding(last_point: SurveyPoint, code_prefix: str = "") -> SurveyPoint:
-    """Update a closed linework string to open/unclosed (changes CLS to END)."""
-    orig = last_point.desc or ""
-    tokens = orig.split()
-    new_tokens = []
-    replaced = False
-    for t in tokens:
-        if t.upper() in CLOSE_FLAGS or t.upper() in END_FLAGS:
-            new_tokens.append("END")
-            replaced = True
-        else:
-            new_tokens.append(t)
-    if not replaced:
-        new_tokens.append("END")
-    last_point.desc = " ".join(new_tokens)
+def open_string_coding(last_point: SurveyPoint, code_prefix: str = "", commands=None) -> SurveyPoint:
+    """Apply the Field Book's End Line meaning to open the selected endpoint."""
+    last_point.desc, _ = _rewrite_code_part(
+        last_point.desc or "", code_prefix, boundary="end_line", commands=commands, clear_boundaries=True)
     return last_point
 
 
-def split_string_coding(points_before: Sequence[SurveyPoint],
-                        points_after: Sequence[SurveyPoint],
-                        new_string_id: str = "2") -> tuple[list[SurveyPoint], list[SurveyPoint]]:
-    """Split a string at a point: ends segment 1 on points_before[-1] and starts segment 2 on points_after[0]."""
+def split_string_coding(points_before: Sequence[SurveyPoint], points_after: Sequence[SurveyPoint],
+                        new_string_id: str = "2", commands=None) -> tuple[list[SurveyPoint], list[SurveyPoint]]:
+    """End the first sequence and start a newly numbered sequence at the split."""
     if not points_before or not points_after:
         return list(points_before), list(points_after)
+    semantic_tokens = command_map(commands)
+    end_point, start_point = points_before[-1], points_after[0]
+    end_point.desc, _ = _rewrite_code_part(
+        end_point.desc or "", boundary="end_line", commands=semantic_tokens, clear_boundaries=True)
 
-    p_end1 = points_before[-1]
-    p_start2 = points_after[0]
-
-    # End first segment: clean any existing start/end/close flags and append END
-    desc_clean1 = re.sub(r"\b(CLS|CLOSE|ST|START|BEGIN|END|E|ED)\b", "", p_end1.desc or "", flags=re.IGNORECASE).strip()
-    p_end1.desc = re.sub(r"\s+", " ", f"{desc_clean1} END").strip()
-
-    # Determine base code for second segment
-    tokens = (p_start2.desc or "").split()
-    raw_code = tokens[0] if tokens else "EP"
-    m = re.match(r"^([A-Za-z_-]+)(\d+)?$", raw_code)
-    base_code = m.group(1) if m else raw_code
+    parts = _split_multicode(start_point.desc or "", semantic_tokens)
+    main = _description_parts(parts[0], semantic_tokens)[0] if parts else ""
+    raw_code = main.split()[0] if main.split() else "EP"
+    parsed = parse_description(raw_code, commands=semantic_tokens)
+    base_code = parsed.code or raw_code
     new_prefix = f"{base_code}{new_string_id}"
 
-    # Recode points in second segment with new string prefix
-    modified_after = []
-    for i, p in enumerate(points_after):
-        token = f"{new_prefix} ST" if i == 0 else (f"{new_prefix} END" if i == len(points_after) - 1 else new_prefix)
-        p.desc = update_point_token(p.desc or "", raw_code, token)
-        modified_after.append(p)
+    for index, point in enumerate(points_after):
+        boundary = "start_line" if index == 0 else (
+            "end_line" if index == len(points_after) - 1 else None)
+        point.desc, _ = _rewrite_code_part(
+            point.desc or "", base_code, new_code=new_prefix, boundary=boundary,
+            commands=semantic_tokens, clear_boundaries=True)
+    return list(points_before), list(points_after)
 
-    return list(points_before), modified_after
 
-
-def change_string_code(points: Sequence[SurveyPoint], old_code_prefix: str, new_code_prefix: str) -> list[SurveyPoint]:
-    """Change the code/prefix of an entire string while preserving commands (ST, PC, PT, END, CLS, etc.)."""
+def change_string_code(points: Sequence[SurveyPoint], old_code_prefix: str, new_code_prefix: str,
+                       commands=None) -> list[SurveyPoint]:
+    """Change a code in one or more multi-code groups, preserving commands and notes."""
+    semantic_tokens = command_map(commands)
+    old_prefix = old_code_prefix.strip().upper()
+    new_prefix = new_code_prefix.strip().upper()
     modified = []
-    old_pfx = old_code_prefix.strip().upper()
-    new_pfx = new_code_prefix.strip().upper()
-
-    for p in points:
-        sub_tokens = [t.strip() for t in (p.desc or "").split("/") if t.strip()]
-        new_sub = []
-        replaced = False
-        for tok in sub_tokens:
-            tok_parts = tok.split()
-            if tok_parts and tok_parts[0].upper() == old_pfx:
-                tok_parts[0] = new_pfx
-                new_sub.append(" ".join(tok_parts))
-                replaced = True
+    for point in points:
+        changed = False
+        parts = []
+        for part in _split_multicode(point.desc or "", semantic_tokens):
+            main, note, had_separator = _description_parts(part, semantic_tokens)
+            tokens = main.split()
+            if tokens and not changed and _code_matches(tokens[0], old_prefix):
+                tokens[0] = new_prefix
+                changed = True
+                main = _format_tokens(tokens, semantic_tokens)
+                parts.append(_format_part(main, note, had_separator, semantic_tokens))
             else:
-                new_sub.append(tok)
-        if not replaced and sub_tokens:
-            # Check if any token starts with old_pfx
-            new_sub_2 = []
-            for tok in new_sub:
-                tok_parts = tok.split()
-                if tok_parts and tok_parts[0].upper().startswith(old_pfx):
-                    tok_parts[0] = new_pfx
-                    new_sub_2.append(" ".join(tok_parts))
-                    replaced = True
-                else:
-                    new_sub_2.append(tok)
-            new_sub = new_sub_2
-        if not replaced and not sub_tokens:
-            new_sub = [new_pfx]
-        p.desc = " / ".join(new_sub)
-        modified.append(p)
+                parts.append(part)
+        if not changed and not parts:
+            parts = [new_prefix]
+        point.desc = _join_multicode(parts, semantic_tokens)
+        modified.append(point)
     return modified
 
 
 def find_free_string_id(project: Project, base_code: str) -> str:
-    """Find the next available unused numeric string ID for a given base code (e.g. EC -> 3 if EC1 and EC2 exist)."""
+    """Find the next available string number for a code in any multi-code group."""
     used_ids = set()
-    base_upper = base_code.strip().upper()
-    pattern = re.compile(rf"\b{re.escape(base_upper)}(\d+)\b", re.IGNORECASE)
-
-    for p in project.points.values():
-        if not p.desc:
-            continue
-        for m in pattern.finditer(p.desc):
-            used_ids.add(int(m.group(1)))
-
-    # Find first positive integer not in used_ids
+    target = str(base_code or "").strip().casefold()
+    settings = getattr(project, "settings", {}) or {}
+    semantic_tokens = command_map(settings.get("f2f_commands"))
+    known_codes = getattr(getattr(project, "codes", None), "codes", {})
+    for point in project.points.values():
+        for part in _split_multicode(point.desc or "", semantic_tokens):
+            main, _note, _had_separator = _description_parts(part, semantic_tokens)
+            parsed = parse_description(main, commands=semantic_tokens, known_codes=known_codes)
+            if parsed.code.casefold() == target and parsed.string.isdigit():
+                used_ids.add(int(parsed.string))
     candidate = 1
     while candidate in used_ids:
         candidate += 1
     return str(candidate)
 
 
-def reorder_string_points(points: Sequence[SurveyPoint], new_order: Sequence[int], closed: bool = False) -> list[SurveyPoint]:
-    """Reorder the points in a linework figure and re-assign start/end flags accordingly."""
+def reorder_string_points(points: Sequence[SurveyPoint], new_order: Sequence[int], closed: bool = False,
+                          commands=None) -> list[SurveyPoint]:
+    """Reorder a figure and rewrite only its line-boundary meanings."""
     if not points or not new_order or len(points) != len(new_order):
         return list(points)
-
-    reordered = [points[idx] for idx in new_order]
-    tokens_first = (reordered[0].desc or "").split()
-    base_prefix = tokens_first[0] if tokens_first else "EP"
-    # Clean string ID / flags from base prefix
-    m = re.match(r"^([A-Za-z_-]+)(\d+)?$", base_prefix)
-    prefix = m.group(0) if m else base_prefix
-
-    n = len(reordered)
-    for i, p in enumerate(reordered):
-        desc = p.desc or ""
-        desc_clean = re.sub(r"\b(ST|START|BEGIN|END|CLS|CLOSE)\b", "", desc, flags=re.IGNORECASE).strip()
-        desc_clean = re.sub(r"\s+", " ", desc_clean).strip()
-        tokens = desc_clean.split()
-        cur_code = tokens[0] if tokens else prefix
-
-        if i == 0:
-            token = f"{cur_code} ST"
-        elif i == n - 1:
-            token = f"{cur_code} {'CLS' if closed else 'END'}"
-        else:
-            token = cur_code
-
-        p.desc = update_point_token(desc_clean, cur_code, token)
-
+    semantic_tokens = command_map(commands)
+    reordered = [points[index] for index in new_order]
+    parts = _split_multicode(reordered[0].desc or "", semantic_tokens)
+    main = _description_parts(parts[0], semantic_tokens)[0] if parts else ""
+    code_prefix = main.split()[0] if main.split() else "EP"
+    for index, point in enumerate(reordered):
+        boundary = "start_line" if index == 0 else (
+            ("close" if closed else "end_line") if index == len(reordered) - 1 else None)
+        point.desc, _ = _rewrite_code_part(
+            point.desc or "", code_prefix, boundary=boundary, commands=semantic_tokens,
+            clear_boundaries=True)
     return reordered
 
 
 def merge_and_reclass_strings(project: Project, string1_points: Sequence[SurveyPoint],
-                              string2_points: Sequence[SurveyPoint],
-                              target_code: str = "", new_string_id: str | None = None,
-                              closed: bool = False) -> list[SurveyPoint]:
-    """Merge two line strings (e.g. EC1 and EC2) into a single continuous string with a clean string ID."""
+                              string2_points: Sequence[SurveyPoint], target_code: str = "",
+                              new_string_id: str | None = None, closed: bool = False,
+                              commands=None) -> list[SurveyPoint]:
+    """Merge two line strings under one code/string ID, preserving non-boundary commands."""
     if not string1_points and not string2_points:
         return []
     if not string1_points:
@@ -339,117 +394,93 @@ def merge_and_reclass_strings(project: Project, string1_points: Sequence[SurveyP
     if not string2_points:
         return list(string1_points)
 
-    pts1 = list(string1_points)
-    pts2 = list(string2_points)
-
-    # Determine base code
+    semantic_tokens = command_map(commands if commands is not None else
+                                  (getattr(project, "settings", {}) or {}).get("f2f_commands"))
+    points = list(string1_points) + list(string2_points)
     if not target_code:
-        tokens = (pts1[0].desc or "").split()
-        raw = tokens[0] if tokens else "EP"
-        m = re.match(r"^([A-Za-z_-]+)", raw)
-        target_code = m.group(1).upper() if m else raw.upper()
-
-    # Determine new string ID
+        parts = _split_multicode(points[0].desc or "", semantic_tokens)
+        main = _description_parts(parts[0], semantic_tokens)[0] if parts else ""
+        raw_code = main.split()[0] if main.split() else "EP"
+        target_code = parse_description(raw_code, commands=semantic_tokens).code or raw_code
     if new_string_id is None:
         new_string_id = find_free_string_id(project, target_code)
-
     new_prefix = f"{target_code}{new_string_id}"
-    merged_pts = pts1 + pts2
-    n = len(merged_pts)
 
-    for i, p in enumerate(merged_pts):
-        desc = p.desc or ""
-        # Clean existing start/end/close flags
-        desc_clean = re.sub(r"\b(ST|START|BEGIN|END|CLS|CLOSE)\b", "", desc, flags=re.IGNORECASE).strip()
-        desc_clean = re.sub(r"\s+", " ", desc_clean).strip()
-        tokens = desc_clean.split()
-        old_token = tokens[0] if tokens else target_code
-
-        if i == 0:
-            token = f"{new_prefix} ST"
-        elif i == n - 1:
-            token = f"{new_prefix} {'CLS' if closed else 'END'}"
-        else:
-            token = new_prefix
-
-        p.desc = update_point_token(desc_clean, old_token, token)
-
-    return merged_pts
+    for index, point in enumerate(points):
+        boundary = "start_line" if index == 0 else (
+            ("close" if closed else "end_line") if index == len(points) - 1 else None)
+        parts = _split_multicode(point.desc or "", semantic_tokens)
+        main = _description_parts(parts[0], semantic_tokens)[0] if parts else ""
+        old_code = main.split()[0] if main.split() else target_code
+        point.desc, _ = _rewrite_code_part(
+            point.desc or "", old_code, new_code=new_prefix, boundary=boundary,
+            commands=semantic_tokens, clear_boundaries=True)
+    return points
 
 
-def swap_parallel_line_codes(points: Sequence[SurveyPoint], code_prefix1: str, code_prefix2: str) -> list[SurveyPoint]:
-    """Swap feature code prefixes between two parallel line strings across specified points (fixes bowtie rod swaps)."""
-    c1 = code_prefix1.strip().upper()
-    c2 = code_prefix2.strip().upper()
+def swap_parallel_line_codes(points: Sequence[SurveyPoint], code_prefix1: str, code_prefix2: str,
+                             commands=None) -> list[SurveyPoint]:
+    """Swap the two requested code groups while retaining Field Book separators and commands."""
+    first = code_prefix1.strip().upper()
+    second = code_prefix2.strip().upper()
+    semantic_tokens = command_map(commands)
     modified = []
-
-    for p in points:
-        desc = p.desc or ""
-        if not desc:
-            continue
-        parts = [part.strip() for part in desc.split("/") if part.strip()]
-        new_parts = []
+    for point in points:
         changed = False
-
-        for part in parts:
-            tokens = part.split()
-            if not tokens:
-                new_parts.append(part)
-                continue
-            head = tokens[0].upper()
-            if head == c1 or head.startswith(c1):
-                # Replace prefix with c2
-                rest_tok = tokens[1:]
-                new_parts.append(" ".join([c2] + rest_tok))
+        new_parts = []
+        for part in _split_multicode(point.desc or "", semantic_tokens):
+            main, note, had_separator = _description_parts(part, semantic_tokens)
+            tokens = main.split()
+            if tokens and _code_matches(tokens[0], first):
+                tokens[0] = second
                 changed = True
-            elif head == c2 or head.startswith(c2):
-                # Replace prefix with c1
-                rest_tok = tokens[1:]
-                new_parts.append(" ".join([c1] + rest_tok))
+                new_parts.append(_format_part(_format_tokens(tokens, semantic_tokens), note,
+                                              had_separator, semantic_tokens))
+            elif tokens and _code_matches(tokens[0], second):
+                tokens[0] = first
                 changed = True
+                new_parts.append(_format_part(_format_tokens(tokens, semantic_tokens), note,
+                                              had_separator, semantic_tokens))
             else:
                 new_parts.append(part)
-
         if changed:
-            p.desc = " / ".join(new_parts)
-            modified.append(p)
-
+            point.desc = _join_multicode(new_parts, semantic_tokens)
+            modified.append(point)
     return modified
 
 
-def fix_line_command_order(desc: str) -> str:
-    """Standardize linework command order in a description (ST before curve commands, END/CLS at the end)."""
+def fix_line_command_order(desc: str, commands=None) -> str:
+    """Order line-control meanings consistently without hard-coding their Field Book tokens."""
     if not desc:
         return ""
-    parts = [part.strip() for part in desc.split("/") if part.strip()]
-    fixed_parts = []
-
-    for part in parts:
+    semantic_tokens = command_map(commands)
+    rank = {"start_line": 0, "start_curve": 1, "end_curve": 2, "end_line": 3, "close": 3}
+    description_token = semantic_tokens.get("description", "")
+    description_index = find_separator(desc, description_token)
+    if description_index >= 0:
+        code_text = desc[:description_index].strip()
+        note = desc[description_index + len(description_token):].strip()
+    else:
+        code_text, note = desc.strip(), ""
+    fixed_groups = []
+    for part in _split_multicode(code_text, semantic_tokens):
         tokens = part.split()
         if len(tokens) <= 1:
-            fixed_parts.append(part)
+            fixed_groups.append(part)
             continue
-
-        code_tok = tokens[0]
-        sub_tokens = tokens[1:]
-
-        st_flags = []
-        curve_flags = []
-        end_flags = []
-        other_tokens = []
-
-        for t in sub_tokens:
-            tu = t.upper()
-            if tu in BEGIN_FLAGS or tu in ("ST", "START", "B", "BEGIN"):
-                st_flags.append(tu)
-            elif tu in ("PC", "PT", "ARC", "TAN"):
-                curve_flags.append(tu)
-            elif tu in END_FLAGS or tu in CLOSE_FLAGS or tu in ("END", "CLS", "CLOSE"):
-                end_flags.append(tu)
+        code = tokens[0]
+        commands_seen = []
+        other = []
+        for token in tokens[1:]:
+            meaning = _meaning(token, semantic_tokens)
+            if meaning in rank:
+                commands_seen.append((rank[meaning], len(commands_seen), token))
             else:
-                other_tokens.append(t)
-
-        ordered = [code_tok] + st_flags + curve_flags + end_flags + other_tokens
-        fixed_parts.append(" ".join(ordered))
-
-    return " / ".join(fixed_parts)
+                other.append(token)
+        commands_seen.sort(key=lambda item: item[0])
+        ordered = [code, *[item[2] for item in commands_seen], *other]
+        fixed_groups.append(_format_tokens(ordered, semantic_tokens))
+    fixed = _join_multicode(fixed_groups, semantic_tokens)
+    if note:
+        return _format_part(fixed, note, True, semantic_tokens)
+    return fixed

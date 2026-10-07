@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QFileDialo
                                QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
 
 from ..core.featurecodes import FeatureCode, FeatureCodeTable, kind_for_entity
+from ..core.fieldbook_syntax import COMMAND_MEANINGS, command_map
 from ..core.fieldbook import archive_old_fieldbooks, generate_fieldbook_report_text, place_fieldbook_in_project
 from ..io import f2f
 from .f2f_dialog import ConvertFieldToFinishDialog, CodeCommandsDialog, CorrectionRulesDialog
@@ -130,7 +131,7 @@ class FieldBookDialog(QDialog):
         opt_lay.addWidget(self.btn_report)
         main_lay.addWidget(opt_box)
 
-        # Tabbed details: Codes, Code Commands, Correction Rules
+        # Tabbed details: Codes, command meanings, Correction Rules
         self.tabs = QTabWidget()
 
         # Tab 1: Codes Table
@@ -162,7 +163,7 @@ class FieldBookDialog(QDialog):
         # Tab 2: Code Commands
         tab_cmds = QWidget()
         tab_cmds_lay = QVBoxLayout(tab_cmds)
-        tab_cmds_lay.addWidget(Hint("Code commands configure line and curve control tokens (e.g. ST, PC, PT, END, X, -, /) that follow point codes."))
+        tab_cmds_lay.addWidget(Hint("Field Book commands map editable tokens to fixed meanings for line starts, curves, line ends, closes, multi-code groups, and free-text descriptions. Spacing preferences are configured in Settings."))
         self.table_cmds = QTableWidget()
         self.table_cmds.setColumnCount(2)
         self.table_cmds.setHorizontalHeaderLabels(["Meaning", "Command Token"])
@@ -173,13 +174,13 @@ class FieldBookDialog(QDialog):
         tab_cmds_lay.addWidget(self.table_cmds)
 
         btn_cmd_row = QHBoxLayout()
-        b_edit_cmds = QPushButton("Edit Code Commands...")
+        b_edit_cmds = QPushButton("Edit Field Book Commands...")
         b_edit_cmds.clicked.connect(self._edit_commands)
         btn_cmd_row.addWidget(b_edit_cmds)
         btn_cmd_row.addStretch(1)
         tab_cmds_lay.addLayout(btn_cmd_row)
 
-        self.tabs.addTab(tab_cmds, "Code Commands")
+        self.tabs.addTab(tab_cmds, "Commands & Meanings")
 
         # Tab 3: Correction Rules
         tab_rules = QWidget()
@@ -264,11 +265,11 @@ class FieldBookDialog(QDialog):
         self._fill_codes()
 
     def _fill_commands(self):
-        cmds = self.project.settings.get("f2f_commands") or list(f2f.DEFAULT_COMMANDS)
+        cmds = command_map(self.project.settings.get("f2f_commands"))
         labels = f2f.DEFAULT_COMMAND_LABELS
         self.table_cmds.setRowCount(len(labels))
         for r, meaning in enumerate(labels):
-            cmd = str(cmds[r]) if r < len(cmds) else ""
+            cmd = str(cmds[COMMAND_MEANINGS[r]])
             self.table_cmds.setItem(r, 0, QTableWidgetItem(meaning))
             self.table_cmds.setItem(r, 1, QTableWidgetItem(cmd))
         self.table_cmds.resizeColumnsToContents()
@@ -341,7 +342,7 @@ class FieldBookDialog(QDialog):
         }
         with open(path, "w", encoding="utf-8", newline="") as fh:
             fh.writelines(lines)
-            if not lines[-1].endswith("\n"):
+            if lines and not lines[-1].endswith("\n"):
                 fh.write("\n")
             fh.write(f"#EXTRA_JSON {json.dumps(extras, ensure_ascii=False)}\n")
 

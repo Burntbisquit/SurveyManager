@@ -86,7 +86,7 @@ def write_fwb_file(dest_path: Path, headers, rows, rules=None, commands=None):
     """Write a headered .fwb CSV (never sorted, UTF-8). Returns True/False.
     If rules/commands provided, they are appended as JSON comment block so they stay with the fieldbook file (single-file, commands first/r_rules last).
     rules: list of [common_error, fix] pairs
-    commands: list/str like ["ST","PC","PT","END","X"] or dict
+    commands: ordered Field Book tokens or a semantic meaning-to-token mapping
     """
     import json
     try:

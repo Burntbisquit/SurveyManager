@@ -798,7 +798,9 @@ def gather_surface_inputs(project, params: dict):
         elif p.layer in excl:
             mask[k] = False
         elif ground_only:
-            fc = project.codes.get(parse_description(p.desc).code)
+            fc = project.codes.get(parse_description(
+                p.desc, commands=project.settings.get("f2f_commands"),
+                known_codes=project.codes.codes).code)
             if fc is not None and not fc.ground:
                 mask[k] = False
     pts = xyz[mask]

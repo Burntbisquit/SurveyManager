@@ -44,7 +44,7 @@ def run_blocking(parent, text: str, fn, *args, cancellable: bool = False, **kw):
     dlg.setCancelButton(None)
     t = threading.Thread(target=target, daemon=True)
     t.start()
-    QApplication.setOverrideCursor(Qt.BusyCursor)
+    QApplication.setOverrideCursor(Qt.WaitCursor)
     try:
         loop.exec()
     finally:

@@ -98,10 +98,16 @@ class SurveyPoint:
     def is_modified(self) -> bool:
         if not self.attrs or "orig_x" not in self.attrs:
             return False
-        dx = abs(self.x - self.orig_x)
-        dy = abs(self.y - self.orig_y)
-        dz = 0.0 if (math.isnan(self.z) and math.isnan(self.orig_z)) else abs(self.z - self.orig_z)
-        return (dx > 1e-6 or dy > 1e-6 or dz > 1e-6 or
+
+        def changed(current: float, original: float) -> bool:
+            if math.isnan(current):
+                return not math.isnan(original)
+            if math.isnan(original):
+                return True
+            return abs(current - original) > 1e-6
+
+        return (changed(self.x, self.orig_x) or changed(self.y, self.orig_y) or
+                changed(self.z, self.orig_z) or
                 self.desc != self.orig_desc or
                 self.number != self.orig_number or
                 self.layer != self.orig_layer)

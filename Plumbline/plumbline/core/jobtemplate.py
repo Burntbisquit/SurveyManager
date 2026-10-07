@@ -262,9 +262,9 @@ def _setup_note_text(paths: JobPaths, template: JobTemplate, crs_label: str, com
 
 
 def _template_fieldbook(paths: JobPaths) -> None:
-    """Field book carrying the default code commands and sample points, so the job has one
-    place to record ST/PC/PT/END/X and any correction rules the crew agrees on."""
+    """Field Book carrying semantic command definitions and sample codes for the new job."""
     from ..fieldwork import io_carlson as IC
+    from .fieldbook_syntax import DEFAULT_COMMAND_TOKENS
     headers = ["Code", "Description", "Symbol", "Layer", "Entity Type", "Category"]
     # Default point data rows for the field book
     # These represent typical entries and display in the field book dialog
@@ -276,7 +276,7 @@ def _template_fieldbook(paths: JobPaths) -> None:
         ["MAGF", "MAG Nail Found", "Iron_Pin_Found", "V-PROP-CRNR", "Point", "Corners"],
     ]
     IC.write_fwb_file(paths.fieldbook_file, headers, default_rows,
-                      commands=["ST", "PC", "PT", "END", "X", "-", "/"], rules=[])
+                      commands=list(DEFAULT_COMMAND_TOKENS), rules=[])
 
 
 def _control_csv(paths: JobPaths) -> None:

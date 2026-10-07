@@ -11,8 +11,10 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..core import point_linework_coder as PLC
+from ..core.featurecodes import CLOSE_FLAGS, parse_description
 from ..core.model import Polyline, SurveyPoint
 from ..core.settings import settings
+from ..core.fieldbook_syntax import command_joiner, command_map
 from .widgets import Hint, hline
 
 
@@ -28,6 +30,7 @@ class JoinPointsDialog(QDialog):
         lay = QVBoxLayout(self)
 
         pr = state.project
+        self.commands = (pr.settings or {}).get("f2f_commands")
         self.points = [pr.points[pid] for pid in self.point_ids if pid in pr.points]
 
         lay.addWidget(QLabel(f"<b>Recode {len(self.points)} point(s) into a linework figure:</b>"))
@@ -88,6 +91,9 @@ class JoinPointsDialog(QDialog):
         str_id = self.le_string.text().strip()
         closed = self.chk_closed.isChecked()
         prefix = f"{code}{str_id}"
+        command_tokens = command_map(self.commands)
+        start_token = command_tokens.get("start_line", "")
+        end_token = command_tokens.get("close" if closed else "end_line", "")
         n = len(self.points)
 
         for r, p in enumerate(self.points):
@@ -95,17 +101,18 @@ class JoinPointsDialog(QDialog):
             self.tbl.setItem(r, 1, QTableWidgetItem(str(p.desc)))
 
             if r == 0:
-                role = "Start (ST)"
-                token = f"{prefix} ST"
+                role = f"Start Line ({start_token})" if start_token else "Start Line"
+                token = prefix + (command_joiner() + start_token if start_token else "")
             elif r == n - 1:
-                role = "Close (CLS)" if closed else "End (END)"
-                token = f"{prefix} CLS" if closed else f"{prefix} END"
+                label = "Close" if closed else "End Line"
+                role = f"{label} ({end_token})" if end_token else label
+                token = prefix + (command_joiner() + end_token if end_token else "")
             else:
                 role = "Vertex"
                 token = prefix
 
             self.tbl.setItem(r, 2, QTableWidgetItem(role))
-            new_desc = PLC.update_point_token(p.desc or "", code, token)
+            new_desc = PLC.update_point_token(p.desc or "", code, token, self.commands)
             self.tbl.setItem(r, 3, QTableWidgetItem(new_desc))
 
     def _apply(self):
@@ -115,7 +122,8 @@ class JoinPointsDialog(QDialog):
         pr = self.state.project
 
         with self.state.edit("Create Linework from Points", kinds=("points", "entities")):
-            PLC.join_points_to_string(self.points, code, str_id, closed=closed)
+            PLC.join_points_to_string(self.points, code, str_id, closed=closed,
+                                      commands=self.commands)
             pr.touch()
             if hasattr(pr, "process_linework"):
                 res = pr.process_linework()
@@ -130,6 +138,7 @@ class EditLineworkCodingDialog(QDialog):
         super().__init__(parent)
         self.state = state
         self.entity = polyline_entity
+        self.commands = (state.project.settings or {}).get("f2f_commands")
         self.setWindowTitle(f"Edit Linework String (Polyline {polyline_entity.id})")
         self.resize(760, 520)
         lay = QVBoxLayout(self)
@@ -180,7 +189,7 @@ class EditLineworkCodingDialog(QDialog):
         b_rev.clicked.connect(self._reverse)
 
         b_close = QPushButton("Toggle Close/Open")
-        b_close.setToolTip("Switch between closed figure (CLS) and open string (END)")
+        b_close.setToolTip("Switch between the Field Book's Close and End Line meanings")
         b_close.clicked.connect(self._toggle_close)
 
         b_recode = QPushButton("Change Code Prefix...")
@@ -207,7 +216,7 @@ class EditLineworkCodingDialog(QDialog):
         lay.addLayout(btn_row)
 
     def _reverse(self):
-        PLC.reverse_string_coding(self.points)
+        PLC.reverse_string_coding(self.points, commands=self.commands)
         self.points = self.points[::-1]
         self._refresh_table()
 
@@ -215,10 +224,15 @@ class EditLineworkCodingDialog(QDialog):
         if not self.points:
             return
         last = self.points[-1]
-        if "CLS" in (last.desc or "").upper().split():
-            PLC.open_string_coding(last)
+        parsed = parse_description(last.desc or "", commands=self.commands,
+                                    known_codes=self.state.project.codes.codes)
+        close_token = command_map(self.commands).get("close", "")
+        is_closed = bool(parsed.flags & CLOSE_FLAGS) or bool(
+            close_token and any(flag.casefold() == close_token.casefold() for flag in parsed.flags))
+        if is_closed:
+            PLC.open_string_coding(last, commands=self.commands)
         else:
-            PLC.close_string_coding(last)
+            PLC.close_string_coding(last, commands=self.commands)
         self._refresh_table()
 
     def _change_code(self):
@@ -228,9 +242,13 @@ class EditLineworkCodingDialog(QDialog):
             new_code, ok = QInputDialog.getText(self, "Change Code", "New Feature Code Prefix (e.g. EP2, TOC1):")
             if not ok or not new_code:
                 return
-        tokens = (self.points[0].desc or "").split()
-        old_prefix = tokens[0] if tokens else ""
-        PLC.change_string_code(self.points, old_prefix, new_code.strip().upper())
+        segments = PLC._split_multicode(self.points[0].desc or "", self.commands)
+        main = PLC._description_parts(segments[0], self.commands)[0] if segments else ""
+        parsed = parse_description(main, commands=self.commands,
+                                   known_codes=self.state.project.codes.codes)
+        old_prefix = parsed.code + parsed.string if parsed.code else ""
+        PLC.change_string_code(self.points, old_prefix, new_code.strip().upper(),
+                               commands=self.commands)
         self._refresh_table()
 
     def _refresh_table(self):

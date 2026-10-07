@@ -8,8 +8,8 @@ Key rulings (locked):
 - Units: US Survey Feet definitive, CONUS, pseudo-Euclidean N=X, E=Y, dist sqrt(dN²+dE²)
 - Tolerances: NE 0.1, Elev 0.1 (definitive in code, not UI)
 - Detectors: ExactDuplicate (casefold trimmed), SimilarNumber (core digits, distinct variants), CloseNE (horizontal ≤0.1 + elev ≤0.1, ≥2 distinct numbers)
-- Description parsing: tolerant dash/space, no leading strip, trailing digits only on exact miss, orphan-command one-per-code, separator-split MisplacedAfterSeparator flag-only, 12cirf exact handling; autocorrect pulls codes and rebuilds with " - "; rules from Field Book override
-- Code commands: ST/PC/PT/END/X + - (Multicode) / (Description) by default — ST→PC→PT→END/X valid flows; flag ST PT without PC, PC without ST, PT without PC, PC after END/X, etc. Commands are per-Field-Book setting (Settings > Code Commands — fillable Command then locked Meaning) stored in .fwb extra; Settings tab exposes protects
+- Description parsing: tolerant spacing, separator-split potential-code checks, Field Book correction rules, and semantic line-command order
+- Field Book command meanings: Start Line, Start Curve, End Curve, End Line, Close, Multi-code separator, and Description separator; editable tokens are stored with the .fwb and interpreted by meaning
 - Startup: 5 tabs visible [Fieldwork, Notes, Edit Fieldwork, Field Book, Check Settings]; error tabs hidden until Run Checks; New Project → Project Paths dialog; Correction Rules (2-col Common Error → Fix) stored in .fwb
 - Unified .fwc (.chk legacy) (OID-minimal, DisplayTab column): Duplicate + flagged Description only; live-pull PtNum/N/E/Z/Desc/Parent/Source from Edit via OID; Desc tab flagged only
 - Program is modular: program/run.py + program/fieldwork_manager/*; ship is FieldworkManager_v1.0001.zip (program/ zipped)
@@ -30,43 +30,74 @@ XY_TOLERANCE = 0.1
 NE_TOLERANCE = XY_TOLERANCE
 ELEV_TOLERANCE = 0.1
 
-# Default code commands — per-fieldbook via extra metadata (stored in .fwb)
-# Order matters: Start Line, Start Curve, End Curve, End Line, Close, then separators
-# Separators: "-" = Multicodes, "/" = Description — stored as commands to avoid hard-coding
-LINE_COMMAND_DEFAULTS = ["ST", "PC", "PT", "END", "X", "-", "/"]
-LINE_COMMAND_LABELS = ["Start Line", "Start Curve", "End Curve", "End Line", "Close", "Multicode", "Description"]
-# Backward compat aliases — old names still work
+# Semantic command definitions are shared with the converter and the project's linework engine.
+# Stored tokens remain editable in each field book; parser and correction code asks for meaning.
+from ..core.fieldbook_syntax import (
+    COMMAND_LABELS as LINE_COMMAND_LABELS,
+    DEFAULT_COMMAND_TOKENS as _DEFAULT_COMMAND_TOKENS,
+    command_map as normalize_command_map,
+    separator_text,
+    separator_token,
+    spacing_preference,
+)
+
+LINE_COMMAND_DEFAULTS = list(_DEFAULT_COMMAND_TOKENS)
+LINE_COMMAND_LABELS = list(LINE_COMMAND_LABELS)
 CODE_COMMAND_DEFAULTS = LINE_COMMAND_DEFAULTS
 CODE_COMMAND_LABELS = LINE_COMMAND_LABELS
-# Kept for backward compat: field commands = code commands
-DEFAULT_COMMAND_SET = {"st", "pc", "pt", "end", "x", "-", "/"}
-COMMAND_SET = {c.casefold() for c in DEFAULT_COMMAND_SET}
+DEFAULT_COMMAND_SET = {str(c).casefold() for c in LINE_COMMAND_DEFAULTS if c}
+COMMAND_SET = set(DEFAULT_COMMAND_SET)
 _TOKEN_RE = re.compile(r'[A-Za-z0-9]+')
-_SLASH_RE = re.compile(r'\s*/\s*')
-# Separators as Code Commands (not hard-coded) — multicodes " - ", description " / "
-MULTICODE_SEP = " - "
-DESCRIPTION_SEP = " / "
 
-def get_command_set(fieldbook_path=None):
-    """Return command set for given fieldbook — loads from .fwb extra if present, else default.
-    Stored in fieldbook file as extra commands (list of strings).
-    """
-    if fieldbook_path:
+# Backward-compatible display constants; runtime code uses the active Field Book definitions.
+MULTICODE_SEP = separator_text("multicode", spaced=True)
+DESCRIPTION_SEP = separator_text("description", spaced=True)
+
+
+def get_command_map(fieldbook_path=None, commands=None):
+    """Return semantic command meanings for an explicit command list or the active .fwb file."""
+    if commands is None and fieldbook_path:
         try:
-            from pathlib import Path
             from .io_carlson import read_fwb_extra
-            extra = read_fwb_extra(Path(fieldbook_path))
-            cmds = extra.get("commands")
-            if cmds:
-                # cmds can be list like ["ST","PC","PT","END","X"] or dict
-                if isinstance(cmds, list):
-                    return {str(c).strip().casefold() for c in cmds if str(c).strip()}
-                elif isinstance(cmds, dict):
-                    # dict of command -> enabled? take keys
-                    return {str(k).casefold() for k in cmds.keys()}
+            commands = read_fwb_extra(Path(fieldbook_path)).get("commands")
         except Exception:
-            pass
-    return set(COMMAND_SET)
+            commands = None
+    return normalize_command_map(commands)
+
+
+def get_separator_texts(fieldbook_path=None, commands=None):
+    """Formatted multi-code and description separators for one book and the user's preferences."""
+    meanings = get_command_map(fieldbook_path, commands)
+    return (separator_text("multicode", meanings), separator_text("description", meanings))
+
+
+def get_separator_tokens(fieldbook_path=None, commands=None):
+    """Raw separator tokens, keyed by meaning, as stored by the field book."""
+    meanings = get_command_map(fieldbook_path, commands)
+    return {"multicode": separator_token("multicode", meanings),
+            "description": separator_token("description", meanings)}
+
+
+def get_command_set(fieldbook_path=None, commands=None):
+    """Return enabled command tokens from the active field book (including its separators)."""
+    if commands is None and not fieldbook_path:
+        return set(COMMAND_SET)
+    if commands is None and fieldbook_path:
+        try:
+            from .io_carlson import read_fwb_extra
+            commands = read_fwb_extra(Path(fieldbook_path)).get("commands")
+        except Exception:
+            commands = None
+    if isinstance(commands, dict):
+        semantic_names = {"start_line", "startline", "start_curve", "startcurve", "end_curve",
+                          "endcurve", "end_line", "endline", "close", "multicode",
+                          "multicode_separator", "multi_code_separator", "description", "description_separator"}
+        if not any(str(k).strip().casefold().replace(" ", "_").replace("-", "_") in semantic_names
+                   for k in commands):
+            return {str(k).strip().casefold() for k, enabled in commands.items()
+                    if enabled and str(k).strip()}
+    return {str(token).strip().casefold() for token in normalize_command_map(commands).values()
+            if str(token).strip()}
 
 def get_correction_rules(fieldbook_path=None):
     """Return rules list [[common_error, fix], ...] for given fieldbook, or [].

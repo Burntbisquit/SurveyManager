@@ -62,10 +62,37 @@ def test_a_code_that_is_never_a_line_is_left_to_the_description_check():
     assert LC.detect_line_errors(rows("GS", "GS", "TOC ST", "TOC END"), f2f_set=F2F) == []
 
 
+def test_custom_fieldbook_meanings_and_alphanumeric_separators_are_used():
+    commands = {
+        "start_line": "BEGINLN",
+        "start_curve": "BC",
+        "end_curve": "EC",
+        "end_line": "FINISH",
+        "close": "CLOSEFIG",
+        "multicode": "PLUS",
+        "description": "NOTE",
+    }
+    assert LC.detect_line_errors(
+        rows("EA BEGINLN", "EA", "EA FINISH"), f2f_set={"ea"}, commands=commands) == []
+    issues = LC.detect_line_errors(
+        rows("EA BEGINLN", "EA"), f2f_set={"ea"}, commands=commands)
+    assert "Missing END" in kinds(issues)
+
+    from plumbline.fieldwork.parse import parse_desc_field
+    parsed = parse_desc_field("EA BEGINLN PLUS SW NOTE roadway", {"ea", "sw"}, commands=commands)
+    assert parsed["code_part"] == "EA BEGINLN PLUS SW"
+    assert parsed["free_desc"] == "roadway"
+    assert parsed["has_multicode_separator"]
+    assert parsed["has_description_separator"]
+    # Alphanumeric separators are whole tokens: NOTE inside a note is not a delimiter.
+    parsed = parse_desc_field("EA NOTE noteworthy", {"ea"}, commands=commands)
+    assert parsed["free_desc"] == "noteworthy"
+
+
 def test_a_second_segment_starting_before_the_first_one_ends_is_a_missing_end():
     issues = LC.detect_line_errors(rows("TOC ST", "TOC ST", "TOC END"), f2f_set=F2F)
     assert "Missing END" in kinds(issues)
-    assert "before new ST" in " ".join(e["detail"] for e in issues)
+    assert "before a new Start Line" in " ".join(e["detail"] for e in issues)
     assert any(e["oid"] == "1" for e in issues), "the fix belongs on the point that should have ended"
 
 

@@ -5,7 +5,7 @@ import math
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from plumbline.core.model import SurveyPoint
+from plumbline.core.model import ImportBatch, SurveyPoint
 from plumbline.core.project import Project
 from plumbline.core import provenance as PROV
 from plumbline.ui.app_state import AppState
@@ -60,6 +60,57 @@ def test_project_add_point_initializes_original_state():
     assert p.orig_desc == "EOP"
     assert p.orig_number == "1"
     assert not p.is_modified
+
+
+def test_apply_batch_initializes_original_state_and_keeps_source_number():
+    pr = Project("Batch")
+    pr.add_point(0.0, 0.0, 1.0, number="10", desc="CONTROL")
+    imported = SurveyPoint(id=0, number="10", x=12.0, y=34.0, z=56.0,
+                           desc="EP ST", layer="FIELD")
+
+    result = pr.apply_batch(ImportBatch(points=[imported]), dup_policy="renumber",
+                            layer_override="IMPORTED", code_layers=False)
+    point = pr.points[result["point_ids"][0]]
+
+    assert point.number == "11"
+    assert point.orig_number == "10"
+    assert point.orig_x == 12.0
+    assert point.orig_y == 34.0
+    assert point.orig_z == 56.0
+    assert point.orig_desc == "EP ST"
+    assert point.orig_layer == "IMPORTED"
+    assert point.is_modified  # the project renumbering remains visible as a modification
+
+
+def test_apply_batch_overwrite_tracks_changes_to_legacy_points():
+    pr = Project("Overwrite")
+    point = pr.add_point(1.0, 2.0, 3.0, number="20", desc="OLD")
+    point.attrs.clear()  # simulate an older project without a saved baseline
+    incoming = SurveyPoint(id=0, number="20", x=4.0, y=5.0, z=6.0, desc="NEW")
+
+    pr.apply_batch(ImportBatch(points=[incoming]), dup_policy="overwrite", code_layers=False)
+
+    assert point.orig_x == 1.0
+    assert point.orig_y == 2.0
+    assert point.orig_z == 3.0
+    assert point.orig_desc == "OLD"
+    assert point.is_modified
+
+
+def test_is_modified_detects_nan_elevation_transitions():
+    finite = SurveyPoint(id=1, number="1", x=0.0, y=0.0, z=12.0)
+    finite.set_original_state()
+    finite.z = math.nan
+    assert finite.is_modified
+    finite.z = 12.0
+    assert not finite.is_modified
+
+    missing = SurveyPoint(id=2, number="2", x=0.0, y=0.0, z=math.nan)
+    missing.set_original_state()
+    missing.z = 8.0
+    assert missing.is_modified
+    missing.z = math.nan
+    assert not missing.is_modified
 
 
 def test_provenance_value_tracking():

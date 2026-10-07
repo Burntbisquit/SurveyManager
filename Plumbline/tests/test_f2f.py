@@ -416,6 +416,28 @@ def test_archive_old_fieldbooks_and_place_in_project(tmp_path):
         assert "OldProject_v2.fwb" in names
 
 
+def test_invalid_fieldbook_is_rejected_before_archiving_active_book(tmp_path):
+    from types import SimpleNamespace
+    from plumbline.core import fieldbook as FBD
+
+    proj_dir = tmp_path / "Job"
+    fb_dir = proj_dir / "Field Book"
+    fb_dir.mkdir(parents=True)
+    active = fb_dir / "Active.fwb"
+    active.write_text("Code,Description\nACTIVE,Current standard\n", encoding="utf-8")
+    project = SimpleNamespace(path=str(proj_dir / "Job.plb"), name="Job", codes={}, settings={})
+
+    external = tmp_path / "Unreadable.fwb"
+    external.write_text("", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="empty"):
+        FBD.place_fieldbook_in_project(external, project)
+
+    assert active.exists()
+    assert "ACTIVE" in active.read_text("utf-8")
+    assert not (fb_dir / "Archive").exists()
+
+
 def test_feature_code_table_dict_interface_and_report_with_project(tmp_path):
     """FeatureCodeTable provides items(), keys(), values(), in operator, and works with fieldbook reporting."""
     from plumbline.core.featurecodes import FeatureCode, FeatureCodeTable

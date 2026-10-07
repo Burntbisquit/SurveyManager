@@ -1,15 +1,14 @@
 """Field codes ("descriptions") -> layers, symbols and linework.
 
-A point description is parsed as:   CODE[string] [flags...] [free notes]
+A point description is parsed using the active Field Book's code and command meanings:
 
-    EP        edge-of-pavement point (string "")
-    EP1       string 1            EP 1   (same)
-    EP B      begin a new EP string here
-    EP E      this point ends the string
-    EP CLS    this point closes the string back to its first point
-    TREE 18 OAK     point code with notes "18 OAK"
+    EA <Start Line>                 begin an edge-of-asphalt string
+    EA <End Line>                   finish that string
+    FNC <Close>                     close a fence figure
+    T14 <Description separator> OAK point code plus a free-text note
 
-Points with the same code and string number are joined in point order.
+Points with the same resolved code and string identifier are joined in point order. Historical
+Carlson boundary aliases remain readable when no active token overrides their meaning.
 """
 from __future__ import annotations
 
@@ -20,8 +19,17 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .fieldbook_syntax import (
+    COMMAND_MEANINGS,
+    command_map,
+    command_meanings,
+    find_separator,
+    split_at_separator,
+)
+
 BEGIN_FLAGS = {"B", "BEG", "BEGIN", "START"}
 END_FLAGS = {"E", "END"}
+# Historical Carlson aliases remain accepted; the active Field Book supplies its own Close token.
 CLOSE_FLAGS = {"C", "CLS", "CLOSE"}
 
 _TOKEN = re.compile(r"^([A-Za-z][A-Za-z_\-]*?)(\d+)?$")
@@ -102,52 +110,15 @@ class FeatureCodeTable:
     def get(self, code: str) -> FeatureCode | None:
         return self.codes.get((code or "").upper())
 
-    def resolve(self, desc: str) -> FeatureCode | None:
-        """Feature code for a raw description, honouring both field conventions.
+    def resolve(self, desc: str, commands=None) -> FeatureCode | None:
+        """Resolve a code using the office table and active Field Book command syntax."""
+        parsed = parse_description(desc, commands=commands, known_codes=self.codes)
+        return self.codes.get(parsed.code) if parsed.code else None
 
-        There are two ways a crew writes a numbered code and they collide:
-
-        * Carlson / office F2F treat the digits as part of the code - ``THACK22``
-          and ``T05`` are codes in their own right (1,314 of the 1,717 codes in a
-          real Texas office standard end in a digit).
-        * Plumbline treats them as a *string number* - ``EP1`` is edge of pavement,
-          string 1, so the tenth shot on that string is ``EP10``.
-
-        Resolving the whole leading word first satisfies the first convention, and
-        falling back to base+string satisfies the second.  A code that is literally
-        in the table always wins, which is what "the office standard says so" means.
-        """
-        text = (desc or "").strip()
-        if not text:
-            return None
-        lead = _LEAD_WORD.match(text)
-        if lead:
-            exact = self.codes.get(lead.group(0).upper())
-            if exact is not None:
-                return exact
-        pd = parse_description(text)
-        return self.codes.get(pd.code) if pd.code else None
-
-    def resolve_parts(self, desc: str) -> tuple[FeatureCode | None, str]:
-        """(feature code, string number) - the pair linework groups points by.
-
-        When the code matched as a whole word the string number comes from a *separate*
-        bare-number token if there is one: ``THACK22`` has no string (it is its own
-        office code), but a hypothetical ``THACK22 3`` would be string 3.  This keeps
-        ``THACK06`` and ``THACK10`` from being chained into one line just because both
-        end in digits, while still honouring ``EP 1``-style strings.
-        """
-        text = (desc or "").strip()
-        lead = _LEAD_WORD.match(text)
-        if lead:
-            exact = self.codes.get(lead.group(0).upper())
-            if exact is not None:
-                rest = text[lead.end():].strip().split()
-                if rest and rest[0].isdigit():
-                    return exact, rest[0]
-                return exact, ""
-        pd = parse_description(text)
-        return (self.codes.get(pd.code) if pd.code else None), pd.string
+    def resolve_parts(self, desc: str, commands=None) -> tuple[FeatureCode | None, str]:
+        """Return the feature code and string identifier that own a point's linework."""
+        parsed = parse_description(desc, commands=commands, known_codes=self.codes)
+        return (self.codes.get(parsed.code) if parsed.code else None), parsed.string
 
     def add(self, fc: FeatureCode):
         self.codes[fc.code.upper()] = fc
@@ -193,28 +164,90 @@ class ParsedDesc:
 
 
 @functools.lru_cache(maxsize=65536)
-def parse_description(desc: str) -> ParsedDesc:
-    tokens = (desc or "").strip().split()
+def _parse_description_cached(desc: str, command_tokens: tuple[str, ...], known_codes: tuple[str, ...]) -> ParsedDesc:
+    commands = dict(zip(COMMAND_MEANINGS, command_tokens))
+    token_meanings = command_meanings(commands)
+    known = set(known_codes)
+
+    description_part = desc
+    description_separator = commands.get("description", "")
+    description_index = find_separator(description_part, description_separator)
+    if description_index >= 0:
+        description_part = description_part[:description_index]
+    multicode_separator = commands.get("multicode", "")
+    if multicode_separator:
+        description_part = split_at_separator(description_part, multicode_separator, maxsplit=1)[0]
+
+    tokens = description_part.strip().split()
     if not tokens:
         return ParsedDesc()
-    m = _TOKEN.match(tokens[0])
-    if not m:
-        return ParsedDesc(code=tokens[0].upper(), note=" ".join(tokens[1:]))
-    code = m.group(1).rstrip("-_").upper()
-    string = m.group(2) or ""
-    flags, notes = set(), []
+
+    line_meanings = set(COMMAND_MEANINGS[:5])
+    line_commands = sorted(
+        (token for token, meaning in token_meanings.items() if meaning in line_meanings),
+        key=len, reverse=True)
+
+    def is_code_prefix(value: str) -> bool:
+        low = value.casefold()
+        if low in known:
+            return True
+        match = _TOKEN.match(value)
+        return bool(match and match.group(1).rstrip("-_").casefold() in known)
+
+    def split_compact(value: str, depth=0) -> list[str]:
+        low = value.casefold()
+        if low in known or depth >= 8:
+            return [value]
+        for command in line_commands:
+            if low.endswith(command) and len(value) > len(command):
+                prefix = value[:-len(command)]
+                prefix_tokens = split_compact(prefix, depth + 1)
+                if prefix_tokens and is_code_prefix(prefix_tokens[0]):
+                    return [*prefix_tokens, value[-len(command):]]
+        return [value]
+
+    # A spacing preference may join a line command directly to its code. Split only when
+    # the leading portion is a code in this table; an exact office code always wins.
+    if known:
+        tokens = [*split_compact(tokens[0]), *tokens[1:]]
+
+    head = tokens[0]
+    exact_code = head.casefold() in known
+    if exact_code:
+        code, string = head.upper(), ""
+    else:
+        match = _TOKEN.match(head)
+        if not match:
+            code, string = head.upper(), ""
+        else:
+            code = match.group(1).rstrip("-_").upper()
+            string = match.group(2) or ""
+
     rest = tokens[1:]
     if not string and rest and rest[0].isdigit():
-        string = rest[0]
-        rest = rest[1:]
-    for t in rest:
-        u = t.upper()
-        if u in BEGIN_FLAGS or u in END_FLAGS or u in CLOSE_FLAGS:
-            flags.add(u)
+        string = rest.pop(0)
+    flags, notes = set(), []
+    for token in rest:
+        upper = token.upper()
+        meaning = token_meanings.get(token.casefold(), "")
+        if meaning in line_meanings or upper in BEGIN_FLAGS or upper in END_FLAGS or upper in CLOSE_FLAGS:
+            flags.add(upper)
         else:
-            notes.append(t)
+            notes.append(token)
     return ParsedDesc(code, string, frozenset(flags), " ".join(notes))
 
+
+def parse_description(desc: str, commands=None, known_codes=None) -> ParsedDesc:
+    """Parse a field description using the selected Field Book's command meanings.
+
+    ``known_codes`` resolves the Carlson ambiguity between digits that are part of an office code
+    and digits used as a line-string number. It also permits the no-space setting to emit a compact
+    code followed by its active Start Line token.
+    """
+    semantic_tokens = command_map(commands)
+    command_values = tuple(semantic_tokens[meaning] for meaning in COMMAND_MEANINGS)
+    normalized_codes = tuple(sorted({str(code).casefold() for code in (known_codes or ()) if str(code)}))
+    return _parse_description_cached(str(desc or ""), command_values, normalized_codes)
 
 def _fc(code, name, kind, layer, symbol="cross", color=(255, 255, 255), linetype="CONTINUOUS",
         breakline=False, ground=True):
@@ -286,52 +319,65 @@ class LineString:
     closed: bool = False
 
 
-def build_linework(points, table: FeatureCodeTable, order: str = "file") -> list[LineString]:
-    """Group coded points into strings. order: "file" (import order) | "number"."""
+def build_linework(points, table: FeatureCodeTable, order: str = "file", commands=None) -> list[LineString]:
+    """Group coded points into strings using the active Field Book's line-command meanings."""
     pts = list(points)
     if order == "number":
-        def nk(p):
+        def nk(point):
             try:
-                return (0, float(p.number), p.id)
+                return (0, float(point.number), point.id)
             except ValueError:
-                return (1, 0.0, p.id)
+                return (1, 0.0, point.id)
         pts.sort(key=nk)
     else:
-        pts.sort(key=lambda p: p.id)
+        pts.sort(key=lambda point: point.id)
+    semantic_tokens = command_map(commands)
     open_: dict[tuple, LineString] = {}
     out: list[LineString] = []
 
     def flush(key, closed=False):
-        ls = open_.pop(key, None)
-        if ls and len(ls.ids) >= 2:
-            ls.closed = ls.closed or closed
-            out.append(ls)
+        line = open_.pop(key, None)
+        if line and len(line.ids) >= 2:
+            line.closed = line.closed or closed
+            out.append(line)
 
-    for p in pts:
-        pd = parse_description(p.desc)
-        fc, string = table.resolve_parts(p.desc)
-        if fc is None or fc.kind == "point":
+    def has_meaning(parsed: ParsedDesc, meaning: str) -> bool:
+        token = semantic_tokens.get(meaning, "")
+        if token and any(flag.casefold() == token.casefold() for flag in parsed.flags):
+            return True
+        if meaning == "start_line":
+            return bool(parsed.flags & BEGIN_FLAGS)
+        if meaning == "end_line":
+            return bool(parsed.flags & END_FLAGS)
+        if meaning == "close":
+            return bool(parsed.flags & CLOSE_FLAGS)
+        return False
+
+    for point in pts:
+        parsed = parse_description(point.desc, commands=semantic_tokens, known_codes=table.codes)
+        feature_code, string_id = table.resolve_parts(point.desc, commands=semantic_tokens)
+        if feature_code is None or feature_code.kind == "point":
             continue
-        key = (fc.code, string)
-        if pd.flags & BEGIN_FLAGS:
+        key = (feature_code.code, string_id)
+        if has_meaning(parsed, "start_line"):
             flush(key)
-        ls = open_.get(key)
-        if ls is None:
-            ls = open_[key] = LineString(fc.code, string)
-            ls.closed = fc.kind == "polygon"
-        ls.ids.append(p.id)
-        if pd.flags & CLOSE_FLAGS:
+        line = open_.get(key)
+        if line is None:
+            line = open_[key] = LineString(feature_code.code, string_id)
+            line.closed = feature_code.kind == "polygon"
+        line.ids.append(point.id)
+        if has_meaning(parsed, "close"):
             flush(key, closed=True)
-        elif pd.flags & END_FLAGS:
+        elif has_meaning(parsed, "end_line"):
             flush(key)
     for key in list(open_):
         flush(key)
     return out
 
 
-def point_style(desc: str, table: FeatureCodeTable):
-    """(layer, symbol, color) for a point description, or None when the code is unknown."""
-    fc = table.resolve(desc)
+def point_style(desc: str, table: FeatureCodeTable, commands=None):
+    """(layer, symbol, color) for a point using its active Field Book, or None if unknown."""
+    fc = table.resolve(desc, commands=commands)
     if fc is None:
         return None
     return fc.layer or "POINTS", fc.symbol, fc.color

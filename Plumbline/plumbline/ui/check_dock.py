@@ -29,9 +29,9 @@ did:
 * **neither** - the three number checks run and the description and line checks do not, and the
   dock says so and offers both ways out.
 
-**The fifth check is the linework.**  A line is not a point: ``TOC PC`` on one OID is a fine
-description whose *meaning* is wrong, and it only shows when the line is read as a whole - a
-segment that runs and stops without an ``END``, a curve that starts and never ends.  Those issues
+**The fifth check is the linework.** A point can have a valid description while its command meanings
+are out of sequence; that only shows when the line is read as a whole - a segment without an End Line
+or Close, or a curve that starts and never ends. Those issues
 are read by :mod:`plumbline.fieldwork.linecheck` - the same reader the field window's Line Repair
 tab uses - and they come back here as findings that select the offending points in the drawing,
 including the ones whose *other* end is a different point.  Fixing them is the field window's
@@ -55,6 +55,9 @@ from PySide6.QtWidgets import (QAbstractItemView, QDialog, QFileDialog, QGroupBo
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..core import provenance as PROV
+from ..core import point_linework_coder as PLC
+from ..core.featurecodes import parse_description
+from ..core.fieldbook_syntax import command_map
 from ..core.settings import settings
 from .widgets import Banner, Hint
 
@@ -328,7 +331,7 @@ class DescriptionFixDialog(QDialog):
 class LineRepairDialog(QDialog):
     """Interactive resolution dialog for repairing linework sequences."""
 
-    def __init__(self, state, point_ids: list[int], parent=None):
+    def __init__(self, state, point_ids: list[int], parent=None, commands=None):
         super().__init__(parent)
         self.state = state
         self.point_ids = point_ids
@@ -338,6 +341,10 @@ class LineRepairDialog(QDialog):
 
         pr = state.project
         self.points = [pr.points[pid] for pid in point_ids if pid in pr.points]
+        self.commands = (commands if commands is not None
+                         else (pr.settings or {}).get("f2f_commands"))
+        semantic_tokens = command_map(self.commands)
+        known_codes = getattr(pr.codes, "codes", {})
 
         lay.addWidget(QLabel(f"<b>Linework Sequence with {len(self.points)} Point(s):</b>"))
 
@@ -348,18 +355,31 @@ class LineRepairDialog(QDialog):
 
         self.edits = []
         n_pts = len(self.points)
+        from copy import copy
+
+        def has_meaning(parsed, meaning):
+            token = semantic_tokens.get(meaning, "")
+            return bool(token and any(flag.casefold() == token.casefold() for flag in parsed.flags))
+
         for r, p in enumerate(self.points):
             self.tbl.setItem(r, 0, QTableWidgetItem(str(p.number)))
             self.tbl.setItem(r, 1, QTableWidgetItem(str(p.desc)))
 
-            tokens = (p.desc or "").upper().split()
-            fixed_desc = p.desc
-            if r == 0 and "ST" not in tokens:
-                action_text = "Start line (add ST)"
-                fixed_desc = f"{p.desc} ST".strip()
-            elif r == n_pts - 1 and "CLS" not in tokens and "END" not in tokens:
-                action_text = "End line (add END)"
-                fixed_desc = f"{p.desc} END".strip()
+            fixed_desc = p.desc or ""
+            parsed = parse_description(fixed_desc, commands=self.commands, known_codes=known_codes)
+            if parsed.code not in known_codes:
+                action_text = "Pass through (no Field Book code resolved)"
+            elif r == 0 and not has_meaning(parsed, "start_line") and semantic_tokens.get("start_line"):
+                suggestion = copy(p)
+                PLC.start_string_coding(suggestion, parsed.code, self.commands)
+                fixed_desc = suggestion.desc
+                action_text = "Start line (add Start Line command)"
+            elif (r == n_pts - 1 and not has_meaning(parsed, "end_line")
+                  and not has_meaning(parsed, "close") and semantic_tokens.get("end_line")):
+                suggestion = copy(p)
+                PLC.open_string_coding(suggestion, parsed.code, self.commands)
+                fixed_desc = suggestion.desc
+                action_text = "End line (add End Line command)"
             else:
                 action_text = "Pass through"
 
@@ -843,7 +863,17 @@ class CheckFieldworkDock(QWidget):
             self.run(alert=False)
 
     def _open_line_repair(self, point_ids: list[int]):
-        dlg = LineRepairDialog(self.state, point_ids, self)
+        commands = (self.state.project.settings or {}).get("f2f_commands")
+        try:
+            book = self.fieldbook()
+            if book:
+                from ..fieldwork.io_carlson import read_fwb_extra
+                book_commands = read_fwb_extra(book).get("commands")
+                if book_commands is not None:
+                    commands = book_commands
+        except Exception:
+            pass
+        dlg = LineRepairDialog(self.state, point_ids, self, commands=commands)
         if dlg.exec():
             self.run(alert=False)
 

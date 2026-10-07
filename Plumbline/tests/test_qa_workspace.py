@@ -1,6 +1,8 @@
 """Tests for the holistic QA & Point Resolution Workspace and advanced linework cleanup tools."""
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from plumbline.core.model import Polyline, SurveyPoint
@@ -77,7 +79,7 @@ def test_reorder_string_points():
     assert reordered[2].id == p2.id
     assert reordered[2].desc == "BLDG"
     assert reordered[3].id == p4.id
-    assert reordered[3].desc == "BLDG CLS"
+    assert reordered[3].desc == "BLDG X"
 
 
 # ------------------------------------------------------------------ Command Order Engine
@@ -104,6 +106,39 @@ def test_merge_point_descriptions():
     # Multiple code prefixes
     d3 = merge_point_descriptions(["EP1 ST", "TC1 ST"])
     assert d3 == "EP1 ST - TC1 ST"
+
+
+def test_keep_and_ignore_stack_choices_do_not_submit_a_merge_description(win, app):
+    from plumbline.ui.qa_workspace import ClosePointsResolveDialog
+
+    pr = win.state.project
+    p1 = pr.add_point(1.0, 1.0, 10.0, number="1", desc="EP ST")
+    p2 = pr.add_point(1.01, 1.01, 11.0, number="2", desc="EP END")
+    dialog = ClosePointsResolveDialog(win.state, [p1, p2])
+
+    dialog.combos[0].setCurrentText("Keep Point")
+    dialog.combos[1].setCurrentText("Ignore")
+    result = dialog.get_result()
+
+    assert result["merge_points"] == []
+    assert result["keep_points"] == [p1]
+    assert result["ignore_points"] == [p2]
+    assert result["merged_desc"] == ""
+    assert not result["average_coords"]
+
+
+def test_merge_close_keeps_known_elevation_when_other_is_missing(win):
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    pr = win.state.project
+    missing = pr.add_point(10.0, 20.0, math.nan, number="701", desc="EP ST")
+    known = pr.add_point(10.01, 20.01, 42.5, number="702", desc="EP END")
+    dialog = FixPointErrorsDialog(win.state, win)
+
+    dialog._action_merge_close([missing, known], average=True)
+
+    assert missing.z == pytest.approx(42.5)
+    assert known.id not in pr.points
 
 
 # ------------------------------------------------------------------ Close Points Popup and Resolution
@@ -281,6 +316,7 @@ def test_fix_point_errors_dialog_opens_and_resolves(win, app, auto):
 
 # ------------------------------------------------------------------ Fix Linework Dialog UI
 def test_fix_linework_dialog_opens_and_resolves(win, app, auto):
+    from plumbline.core.featurecodes import FeatureCode
     from plumbline.ui.qa_workspace import (
         BowtieRepairDialog,
         FixLineworkDialog,
@@ -288,6 +324,8 @@ def test_fix_linework_dialog_opens_and_resolves(win, app, auto):
     )
 
     pr = win.state.project
+    pr.codes.add(FeatureCode(code="TOC", kind="line", layer="TOPO"))
+    pr.settings["f2f_path"] = "test-office-standard.csv"
     # Plant a linework error (missing END)
     p_l1 = pr.add_point(300, 400, 50, number="8001", desc="TOC ST")
     p_l2 = pr.add_point(310, 410, 50, number="8002", desc="TOC")
@@ -375,6 +413,7 @@ def test_potential_code_in_descriptor_corrections_ui(win, app, auto):
     pr = win.state.project
     pr.codes.codes["rcp"] = "Reinforced Concrete Pipe"
     pr.codes.codes["mh"] = "Manhole"
+    pr.settings["f2f_path"] = "test-office-standard.csv"
     p_sep1 = pr.add_point(700, 800, 50, number="7701", desc="MH / 30rcp")
     p_sep2 = pr.add_point(710, 810, 50, number="7702", desc="NOTES / 30rcp")
 
@@ -459,6 +498,225 @@ def test_potential_code_in_descriptor_corrections_ui(win, app, auto):
     dlg._save_and_exit()
 
 
+def test_separator_spacing_fix_stays_independent_from_misplaced_code(win, app, monkeypatch):
+    from plumbline.core.settings import settings
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    pr = win.state.project
+    pr.codes.codes["mh"] = "Manhole"
+    pr.codes.codes["rcp"] = "Reinforced Concrete Pipe"
+    pr.settings["f2f_path"] = "test-office-standard.csv"
+    point = pr.add_point(930, 1040, 50, number="9912", desc="MH/30RCP")
+    second_point = pr.add_point(940, 1050, 50, number="9913", desc="MH   /30RCP")
+    # Imported raw descriptions remain provenance; rechecks must follow editable live descriptions.
+    point.attrs["fieldwork_raw_desc"] = point.desc
+    second_point.attrs["fieldwork_raw_desc"] = second_point.desc
+    monkeypatch.setitem(settings()._data, "space_around_multicode_separator", True)
+    monkeypatch.setitem(settings()._data, "space_around_description_separator", True)
+
+    dialog = FixPointErrorsDialog(win.state, win)
+    misplaced = next(f for f in dialog.active_findings if f.get("flag") == "MisplacedAfterSeparator")
+    spacing = next(f for f in dialog.active_findings if f.get("flag") == "SeparatorSpacingError")
+    assert spacing["level"] == "error"
+    spacing_row = next(r for r in range(dialog.tbl_active.rowCount())
+                       if dialog.tbl_active.item(r, 2).text() == spacing["check"])
+    assert dialog.tbl_active.item(spacing_row, 1).text() == "ERROR"
+    assert {point.id, second_point.id}.issubset(set(misplaced["pids"]))
+    assert {point.id, second_point.id}.issubset(set(spacing["pids"]))
+    assert misplaced["key"] != spacing["key"]
+
+    # Fix one point's spacing first. Its overlapping misplaced-code finding must remain active,
+    # while the spacing issue tracks only the second point that was skipped.
+    dialog._open_inline_editor(spacing)
+    assert dialog.tbl_corrections.horizontalHeaderItem(1).text() == "Original Description"
+    assert dialog.tbl_corrections.horizontalHeaderItem(2).text() == "Spacing-Corrected Description"
+    actions = [dialog.sep_corrections[0][3].itemText(i)
+               for i in range(dialog.sep_corrections[0][3].count())]
+    assert actions == ["Skip", "Correct", "Ignore"]
+    first_fix = next(item for item in dialog.sep_corrections if item[0].id == point.id)
+    assert first_fix[2].text() == "MH / 30RCP"
+    first_fix[3].setCurrentText("Correct")
+    dialog._action_apply_separator_corrections()
+
+    assert point.desc == "MH / 30RCP"
+    assert point.attrs["fieldwork_raw_desc"] == "MH/30RCP"
+    assert second_point.desc == "MH   /30RCP"
+    misplaced_after = next(f for f in dialog.active_findings
+                           if f.get("flag") == "MisplacedAfterSeparator" and f.get("status") != "resolved")
+    spacing_after_first = next(f for f in dialog.active_findings
+                               if f.get("flag") == "SeparatorSpacingError" and f.get("status") != "resolved")
+    assert {point.id, second_point.id}.issubset(set(misplaced_after["pids"]))
+    assert spacing_after_first["pids"] == [second_point.id]
+
+    # Ignoring the misplaced-code finding must not suppress the remaining spacing correction.
+    dialog._action_ignore(misplaced_after["key"])
+    spacing = next(f for f in dialog.active_findings
+                   if f.get("flag") == "SeparatorSpacingError" and f.get("status") != "resolved")
+    assert misplaced_after["key"] in dialog.ignored_keys
+    assert spacing["key"] not in dialog.ignored_keys
+    assert spacing["pids"] == [second_point.id]
+
+    dialog._open_inline_editor(spacing)
+    assert len(dialog.sep_corrections) == 1
+    assert dialog.sep_corrections[0][2].text() == "MH / 30RCP"
+    dialog.sep_corrections[0][3].setCurrentText("Correct")
+    dialog._action_apply_separator_corrections()
+    assert second_point.desc == "MH / 30RCP"
+    spacing_after = next(f for f in dialog.active_findings if f.get("flag") == "SeparatorSpacingError")
+    assert spacing_after["status"] == "resolved"
+    assert not spacing_after["pids"]
+
+
+def test_separator_ignore_clears_warning_and_discard_restores_it(win, monkeypatch):
+    from plumbline.fieldwork import bridge as FB
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    pr = win.state.project
+    point = pr.add_point(900, 1000, 50, number="8901", desc="NOTES / 30RCP")
+    check_finding = {
+        "check": "Potential code in descriptor",
+        "flag": "MisplacedAfterSeparator",
+        "level": "warn",
+        "detail": "Potential code appears after a descriptor separator.",
+        "pids": [point.id],
+        "key": "separator-ignore-regression",
+    }
+
+    def fake_check_project(project, **kwargs):
+        return {
+            "findings": [dict(check_finding)],
+            "ids": list(project.points),
+            "rows": [],
+            "stats": {},
+            "flags": {},
+            "line_issues": [],
+        }
+
+    monkeypatch.setattr(FB, "check_project", fake_check_project)
+    dialog = FixPointErrorsDialog(win.state, win)
+    finding = next(f for f in dialog.active_findings if f["key"] == check_finding["key"])
+    dialog._open_inline_editor(finding)
+
+    dialog.sep_corrections[0][3].setCurrentText("Ignore")
+    dialog._action_apply_separator_corrections()
+
+    assert point.id not in dialog.error_point_ids
+    assert dialog.current_edit_finding["status"] == "resolved"
+    assert dialog.tbl_active.item(0, 1).text() == "RESOLVED"
+
+    # The issue-scoped undo/redo stack restores and reapplies the ignore choice.
+    dialog._undo_issue()
+    assert point.id in dialog.error_point_ids
+    dialog._redo_issue()
+    assert point.id not in dialog.error_point_ids
+
+    # Ignore is session-scoped: Discarding this issue restores the warning.
+    dialog._action_discard_issue()
+    assert point.id in dialog.error_point_ids
+    assert dialog.active_findings[0]["status"] == "active"
+
+
+def test_close_stack_ignore_suppresses_only_the_selected_point(win, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+    from plumbline.fieldwork import bridge as FB
+    from plumbline.ui.qa_workspace import ClosePointsResolveDialog, FixPointErrorsDialog
+
+    pr = win.state.project
+    p1 = pr.add_point(920, 1020, 50, number="8921", desc="EP ST")
+    p2 = pr.add_point(920.01, 1020.01, 50, number="8922", desc="EP END")
+    check_finding = {
+        "check": "Close Points",
+        "flag": "ClosePointCollision",
+        "level": "warn",
+        "detail": "Two points are within the closeness tolerance.",
+        "pids": [p1.id, p2.id],
+        "key": "close-ignore-regression",
+    }
+
+    def fake_check_project(project, **kwargs):
+        return {
+            "findings": [dict(check_finding)],
+            "ids": list(project.points),
+            "rows": [],
+            "stats": {},
+            "flags": {},
+            "line_issues": [],
+        }
+
+    def accept_with_second_ignored(popup):
+        popup.combos[1].setCurrentText("Ignore")
+        return QDialog.Accepted
+
+    monkeypatch.setattr(FB, "check_project", fake_check_project)
+    monkeypatch.setattr(ClosePointsResolveDialog, "exec", accept_with_second_ignored)
+    dialog = FixPointErrorsDialog(win.state, win)
+    finding = next(f for f in dialog.active_findings if f["key"] == check_finding["key"])
+    dialog._open_inline_editor(finding)
+    dialog._action_resolve_stack_dialog([p1.id, p2.id])
+
+    assert dialog.current_edit_finding["ignored_pids"] == {p2.id}
+    assert dialog.current_edit_finding["pids"] == [p1.id]
+    assert p1.id in dialog.error_point_ids
+    assert p2.id not in dialog.error_point_ids
+    assert dialog.tbl_active.item(0, 1).text() == "PARTIAL"
+
+    dialog._action_ignore(dialog.current_edit_finding["key"])
+    assert dialog.active_findings == []
+    assert dialog.error_point_ids == set()
+
+
+def test_issue_page_hides_exit_controls_and_deleted_separator_widgets_are_safe(win, app):
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    pr = win.state.project
+    point = pr.add_point(910, 1010, 50, number="8911", desc="BADCODE1 ST")
+    dialog = FixPointErrorsDialog(win.state, win)
+
+    exit_controls = (dialog.btn_save_exit, dialog.btn_discard_exit, dialog.btn_cancel)
+    assert all(not button.isHidden() for button in exit_controls)
+
+    sep_finding = {
+        "check": "Potential code in descriptor",
+        "flag": "MisplacedAfterSeparator",
+        "level": "warn",
+        "detail": "Synthetic separator issue for widget lifecycle coverage.",
+        "pids": [point.id],
+        "key": "synthetic-separator",
+    }
+    unknown_finding = {
+        "check": "Unknown Code",
+        "flag": "UnknownCode",
+        "level": "error",
+        "detail": "Unknown code in description.",
+        "pids": [point.id],
+        "key": "synthetic-unknown-code",
+    }
+
+    dialog._open_inline_editor(sep_finding)
+    stale_combo = dialog.sep_corrections[0][3]
+    assert all(button.isHidden() for button in exit_controls)
+
+    # Rebuilding into a non-separator issue deletes the table and its combo boxes.
+    dialog._open_inline_editor(unknown_finding)
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    app.processEvents()
+    assert dialog.sep_corrections == []
+    with pytest.raises(RuntimeError, match="already deleted"):
+        stale_combo.currentText()
+
+    # Even an accidentally retained stale reference must not crash Back/Save checks.
+    dialog.sep_corrections = [(point, "", None, stale_combo)]
+    assert not dialog._has_unapplied_issue_edits()
+    dialog.sep_corrections = []
+    assert not dialog._has_unapplied_issue_edits()
+
+    dialog.issue_dirty = True
+    dialog._action_save_issue()
+    assert dialog.stack.currentIndex() == 0
+    assert all(not button.isHidden() for button in exit_controls)
+
+
 # ------------------------------------------------------------------ Fix Unknown Code & Fieldbook Lookup
 def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
@@ -468,6 +726,7 @@ def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkey
     pr.codes.codes["RCP"] = "Reinforced Concrete Pipe"
     pr.codes.codes["MH"] = "Manhole"
     pr.codes.codes["EC"] = "Edge of Concrete"
+    pr.settings["f2f_path"] = "test-office-standard.csv"
 
     p_unk = pr.add_point(850, 950, 50, number="8801", desc="BADCODE1 ST")
 
@@ -483,6 +742,15 @@ def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkey
     # 2. Open inline editor for Unknown Code
     dlg._open_inline_editor(unk_finding)
     assert dlg.stack.currentIndex() == 1
+    assert not dlg.btn_autofix_descriptions.isEnabled()
+    assert "temporarily disabled" in dlg.btn_autofix_descriptions.toolTip().lower()
+
+    # Fixed-description input uses a dark foreground on its pale validation background.
+    fixed_edit = next(item[1] for item in dlg.desc_edits if item[0].id == p_unk.id)
+    assert "color: #1f2933" in fixed_edit.styleSheet()
+    old_fixed_text = fixed_edit.text()
+    dlg._action_autofix_descriptions()
+    assert fixed_edit.text() == old_fixed_text
 
     # 3. Verify original description highlights error token in red/underline
     highlighted = dlg._highlight_unknown_tokens(p_unk.desc)
@@ -543,6 +811,77 @@ def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkey
     dlg._save_and_exit()
 
 
+def test_qa_workbench_uses_selected_vocabulary_and_fieldbook_path(win, monkeypatch):
+    from plumbline.fieldwork import bridge as FB
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    pr = win.state.project
+    pr.add_point(80.0, 90.0, 10.0, number="88001", desc="OFFICE_CODE")
+    selected_path = "/standards/selected-job.fwb"
+    monkeypatch.setattr(FB, "vocabulary_for", lambda _project: {
+        "source": "none", "label": "", "codes": set(), "path": selected_path,
+        "why": "selected file has no valid code vocabulary",
+    })
+    checked = []
+
+    def fake_check_project(project, f2f=None, fieldbook_path=None, ne_tol=None, elev_tol=None):
+        checked.append({"f2f": f2f, "fieldbook_path": fieldbook_path})
+        return {"rows": [], "ids": [], "findings": [], "stats": {}, "flags": {}, "line_issues": []}
+
+    monkeypatch.setattr(FB, "check_project", fake_check_project)
+    dialog = FixPointErrorsDialog(win.state, win)
+
+    assert dialog.code_set == set()  # built-in project defaults are not a substitute vocabulary
+    assert checked
+    assert checked[-1] == {"f2f": set(), "fieldbook_path": selected_path}
+
+
+def test_qa_fixes_and_rollbacks_rebuild_derived_linework(win):
+    from plumbline.core.featurecodes import FeatureCode
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    pr = win.state.project
+    pr.codes.add(FeatureCode(code="QA", kind="line", layer="QA", breakline=True))
+    start = pr.add_point(0.0, 0.0, 10.0, number="99101", desc="QA ST")
+    end = pr.add_point(10.0, 0.0, 20.0, number="99102", desc="QA END")
+    duplicate = pr.add_point(100.0, 100.0, 30.0, number="99101", desc="OTHER")
+    pr.process_linework()
+
+    def line_start():
+        line = next(e for e in pr.entities.values()
+                    if getattr(e, "derived", "") == "linework" and e.attrs.get("code") == "QA")
+        return tuple(float(v) for v in line.verts[0])
+
+    initial_line_start = line_start()
+    win.state.set_dirty(False)
+    dialog = FixPointErrorsDialog(win.state, win)
+    finding = next(f for f in dialog.active_findings
+                   if "duplicate" in f.get("check", "").lower()
+                   and {start.id, duplicate.id}.issubset(set(f.get("pids", []))))
+    dialog._open_inline_editor(finding)
+
+    dialog._apply_fix("Move QA line vertex", lambda: setattr(start, "x", 2.0),
+                      resolved_points=[start.id])
+    assert start.x == pytest.approx(2.0)
+    assert line_start()[0] == pytest.approx(2.0)
+
+    dialog._undo_issue()
+    assert start.x == pytest.approx(0.0)
+    assert line_start() == pytest.approx(initial_line_start)
+
+    dialog._redo_issue()
+    assert start.x == pytest.approx(2.0)
+    assert line_start()[0] == pytest.approx(2.0)
+
+    dialog._action_discard_issue()
+    assert start.x == pytest.approx(0.0)
+    assert line_start() == pytest.approx(initial_line_start)
+    assert dialog.resolved_findings == []
+    assert dialog.history_undo == []
+    assert not dialog.dirty
+    assert not win.state.dirty
+
+
 # ------------------------------------------------------------------ Initial View Staging & Issue-Scoped Undo/Redo
 def test_initial_view_staging_and_issue_scoped_undo_redo(win, app, auto):
     from PySide6.QtGui import QColor
@@ -552,6 +891,7 @@ def test_initial_view_staging_and_issue_scoped_undo_redo(win, app, auto):
     pr.codes.codes["RCP"] = "Reinforced Concrete Pipe"
     pr.codes.codes["MH"] = "Manhole"
     pr.codes.codes["EC"] = "Edge of Concrete"
+    pr.settings["f2f_path"] = "test-office-standard.csv"
 
     # Setup 3 distinct issues:
     # 1. Close Points (p1, p2)

@@ -217,6 +217,7 @@ class Project:
 
         st = dict(points=0, duplicates=0, renumbered=0, skipped=0, overwritten=0, polylines=0, texts=0,
                   surfaces=0, point_ids=[])
+        original_numbers: dict[int, str] = {}
         for name, lay in batch.layers.items():
             if name not in self.layers:
                 self.layers[name] = lay
@@ -234,6 +235,7 @@ class Project:
             except ValueError:
                 pass
         for p in batch.points:
+            original_number = str(p.number)
             if layer_override:
                 p.layer = layer_override
             if p.number in num_index and dup_policy != "keep":
@@ -243,11 +245,14 @@ class Project:
                     continue
                 if dup_policy == "overwrite":
                     old = self.points[num_index[p.number]]
+                    old.set_original_state()
                     old.x, old.y, old.z, old.desc = p.x, p.y, p.z, p.desc
                     st["overwritten"] += 1
                     st["point_ids"].append(old.id)          # the batch landed on this point
                     continue
                 mx += 1
+                if p.attrs is None:
+                    p.attrs = {}
                 p.attrs["orig_number"] = p.number
                 p.number = str(mx)
                 st["renumbered"] += 1
@@ -259,6 +264,7 @@ class Project:
             p.id = self.new_id()
             self.ensure_layer(p.layer)
             self.points[p.id] = p
+            original_numbers[p.id] = original_number
             num_index[p.number] = p.id
             st["points"] += 1
             st["point_ids"].append(p.id)
@@ -286,6 +292,10 @@ class Project:
             st["surfaces"] += 1
         if code_layers and batch.points and not layer_override:
             self.apply_codes_to_points([p for p in batch.points if p.id in self.points])
+        for pid, original_number in original_numbers.items():
+            point = self.points.get(pid)
+            if point is not None:
+                point.set_original_state(number=original_number)
         self.touch()
         return st
 
@@ -294,8 +304,9 @@ class Project:
         """Move points onto the layer of their feature code.  Returns matched/unknown counts."""
         pts = list(self.points.values()) if pts is None else list(pts)
         matched, unknown = 0, {}
+        commands = self.settings.get("f2f_commands")
         for p in pts:
-            pd = parse_description(p.desc)
+            pd = parse_description(p.desc, commands=commands, known_codes=self.codes.codes)
             fc = self.codes.get(pd.code) if pd.code else None
             if fc is not None:
                 if fc.layer:
@@ -310,7 +321,8 @@ class Project:
     def process_linework(self, order: str = "file") -> dict:
         """(Re)build linework from coded points.  Replaces previously generated linework."""
         removed = self.remove_derived("linework")
-        strings = build_linework(self.points.values(), self.codes, order)
+        strings = build_linework(self.points.values(), self.codes, order,
+                                 commands=self.settings.get("f2f_commands"))
         made = 0
         for ls in strings:
             fc = self.codes.get(ls.code)
