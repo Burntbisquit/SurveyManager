@@ -40,6 +40,15 @@ python -m plumbline doctor                                # checks every library
 python -m plumbline                                       # opens the welcome window
 ```
 
+**To run the tests**, install the development extra in that environment and run pytest headlessly (the suite includes Qt UI tests):
+
+```bash
+python -m pip install -e ".[dev]"
+QT_QPA_PLATFORM=offscreen python -m pytest -q
+```
+
+GitHub Actions runs the suite on both supported Python versions, 3.13 and 3.14.
+
 * **Python 3.13 or newer, 64-bit** (`requires-python` is `>=3.13`). **Python 3.14 is the version this release is built and tested against**, and the one `install_windows.bat` picks when it is available; the full test suite passes on 3.14 (on Linux). It also passes unchanged on **3.13** (verified on Linux), so 3.13 is supported too - you just get an advisory note from `doctor`. Anything newer than 3.14 is untested: PySide6 may not have a build for it yet. On Windows every library has a ready-made 64-bit wheel for 3.14 (checked with pip's resolver); everything installs from wheels (PySide6, pyproj, shapely, pyogrio, ezdxf, rasterio ...).
 * `rasterio` is optional (GeoTIFF orthophotos); without it PNG/JPG + world file images still work.
 * Linux needs the usual Qt system libraries (`libxkbcommon0`, `libegl1`, `libxcb-*` ...) - if Qt complains on start, install them.
