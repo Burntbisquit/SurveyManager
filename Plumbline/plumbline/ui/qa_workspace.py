@@ -22,7 +22,7 @@ import math
 import re
 from typing import Sequence
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                                QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
@@ -356,11 +356,20 @@ class BaseQAWorkbenchDialog(QDialog):
         self.setWindowTitle(self.workbench_title)
         minimum_size = (900, 600) if self.start_maximized else (1100, 720)
         self.setMinimumSize(*minimum_size)
-        self.resize(1350, 850)
+        self._initial_maximize_pending = self.start_maximized
         if self.start_maximized:
             self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
-            self.setWindowFlag(Qt.WindowMinimizeButtonHint, True)
             self.setSizeGripEnabled(True)
+            screen = self.screen() or QApplication.primaryScreen()
+            available = screen.availableGeometry() if screen else None
+            if available is not None:
+                restore_width = min(1350, max(minimum_size[0], available.width() - 80))
+                restore_height = min(850, max(minimum_size[1], available.height() - 80))
+                self.resize(restore_width, restore_height)
+            else:
+                self.resize(1350, 850)
+        else:
+            self.resize(1350, 850)
 
         # Baseline snapshot for Discard on Exit
         self.baseline_app_dirty = self.state.dirty
@@ -386,8 +395,17 @@ class BaseQAWorkbenchDialog(QDialog):
         self.fieldbook_path = ""
 
         self._build_ui()
-        if self.start_maximized:
-            self.setWindowState(self.windowState() | Qt.WindowMaximized)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._initial_maximize_pending:
+            self._initial_maximize_pending = False
+            QTimer.singleShot(0, self._maximize_on_first_show)
+
+    def _maximize_on_first_show(self):
+        """Maximize after the native window is shown, once, to avoid WM resize loops."""
+        if self.isVisible() and not self.isMaximized():
+            self.showMaximized()
 
     def _build_ui(self):
         root_lay = QVBoxLayout(self)

@@ -259,8 +259,10 @@ def test_fix_point_errors_dialog_opens_and_resolves(win, app, auto):
     dlg.showNormal()
     app.processEvents()
     assert not dlg.isMaximized()
-    dlg.showMaximized()
+    dlg.hide()
+    dlg.show()
     app.processEvents()
+    assert not dlg.isMaximized()  # Restoring/showing again must not trigger another maximize request.
 
     # There is one issue-scoped pair, hidden on the summary page.
     assert sum(button.text() == "Undo" for button in dlg.findChildren(QPushButton)) == 1
