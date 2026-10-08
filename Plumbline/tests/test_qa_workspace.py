@@ -117,6 +117,11 @@ def test_keep_and_ignore_stack_choices_do_not_submit_a_merge_description(win, ap
     p1 = pr.add_point(1.0, 1.0, 10.0, number="1", desc="EP ST")
     p2 = pr.add_point(1.01, 1.01, 11.0, number="2", desc="EP END")
     dialog = ClosePointsResolveDialog(win.state, [p1, p2])
+    available = dialog.screen().availableGeometry()
+    if available.width() > 1000:
+        assert dialog.width() > 780  # The stack editor scales with the monitor instead of opening cramped.
+    assert dialog.width() <= available.width()
+    assert dialog.height() <= available.height()
 
     dialog.combos[0].setCurrentText("Keep Point")
     dialog.combos[1].setCurrentText("Ignore")
@@ -185,9 +190,11 @@ def test_close_points_resolve_popup_and_merge(win, app, auto):
     assert not dlg.w_close_tol_bar.isHidden()  # Visible when editing close points!
     assert "2 close point groups detected" in dlg.lbl_edit_detail.text()  # Number of groups, no point numbers spam!
 
-    # Verify table has 5 stacked rows with Edit in Col 0
+    # Each point remains in its stack group; the single Edit Stack control is below the table.
     assert dlg.tbl_edit_pts.rowCount() == 5
     assert dlg.tbl_edit_pts.columnCount() == 6
+    assert dlg.tbl_edit_pts.horizontalHeaderItem(0).text() == "Stack"
+    assert dlg.tbl_edit_pts.item(0, 0).text() == "Stack 1"
 
     # Verify clicking point 0 selects whole stack 1
     dlg.tbl_edit_pts.selectRow(0)
@@ -253,16 +260,18 @@ def test_fix_point_errors_dialog_opens_and_resolves(win, app, auto):
     assert dlg.stack.count() == 2
     dlg.show()
     app.processEvents()
-    assert dlg.isMaximized()
+    assert dlg.isFullScreen()
     assert dlg.windowFlags() & Qt.WindowMaximizeButtonHint
-    assert dlg.isSizeGripEnabled()
+    screen_geometry = dlg.screen().geometry()
+    assert dlg.geometry().width() >= screen_geometry.width() - 2
+    assert dlg.geometry().height() >= screen_geometry.height() - 2
     dlg.showNormal()
     app.processEvents()
-    assert not dlg.isMaximized()
+    assert not dlg.isFullScreen()
     dlg.hide()
     dlg.show()
     app.processEvents()
-    assert not dlg.isMaximized()  # Restoring/showing again must not trigger another maximize request.
+    assert not dlg.isFullScreen()  # Restoring/showing again must not trigger another full-screen request.
 
     # There is one issue-scoped pair, hidden on the summary page.
     assert sum(button.text() == "Undo" for button in dlg.findChildren(QPushButton)) == 1
@@ -334,6 +343,67 @@ def test_fix_point_errors_dialog_opens_and_resolves(win, app, auto):
 
     # Test Save & Exit
     dlg._save_and_exit()
+
+
+def test_flag_review_navigation_waits_for_corrections_and_ignore_advances(win, monkeypatch):
+    from plumbline.fieldwork import bridge as FB
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    pr = win.state.project
+    points = [
+        pr.add_point(1110 + idx, 1210 + idx, 50, number=f"R{idx + 1}", desc="BADCODE")
+        for idx in range(3)
+    ]
+    checks = [
+        ("Flag A", "review-flag-a", points[0]),
+        ("Flag B", "review-flag-b", points[1]),
+        ("Flag C", "review-flag-c", points[2]),
+    ]
+
+    def fake_check_project(project, **kwargs):
+        ids = list(project.points)
+        row_by_id = {pid: row for row, pid in enumerate(ids)}
+        findings = [{
+            "check": check,
+            "flag": key,
+            "level": "warn",
+            "detail": f"Review {check}",
+            "rows": [row_by_id[point.id]],
+            "key": key,
+        } for check, key, point in checks if point.desc == "BADCODE"]
+        return {"findings": findings, "ids": ids,
+                "rows": [], "stats": {}, "flags": {}, "line_issues": []}
+
+    monkeypatch.setattr(FB, "check_project", fake_check_project)
+    dialog = FixPointErrorsDialog(win.state, win)
+
+    # The summary's Next starts with the first finding; staged edits prevent losing input.
+    dialog.btn_next_flag.click()
+    assert dialog.current_edit_finding["key"] == "review-flag-a"
+    dialog.desc_edits[0][1].setText("EP")
+    dialog.btn_next_flag.click()
+    assert dialog.current_edit_finding["key"] == "review-flag-a"
+    assert "Apply or discard" in dialog.lbl_status.text()
+
+    dialog._action_discard_issue()
+    dialog.btn_next_flag.click()
+    assert dialog.current_edit_finding["key"] == "review-flag-b"
+
+    # Ignore & Next dismisses only the current flag and immediately opens the next one.
+    dialog.btn_ignore_flag.click()
+    assert "review-flag-b" in dialog.ignored_keys
+    assert dialog.current_edit_finding["key"] == "review-flag-c"
+
+    dialog.btn_previous_flag.click()
+    assert dialog.current_edit_finding["key"] == "review-flag-a"
+
+    # Apply & Next resolves the edited flag and opens the next unresolved one.
+    dialog._validate_desc_text = lambda text, f2f_set=None: (True, "Valid code")
+    dialog.desc_edits[0][1].setText("EP")
+    dialog.btn_issue_apply.click()
+    assert points[0].desc == "EP"
+    assert dialog.current_edit_finding["key"] == "review-flag-c"
+    dialog._discard_and_exit()
 
 
 # ------------------------------------------------------------------ Fix Linework Dialog UI
@@ -727,25 +797,26 @@ def test_lookalike_ignore_and_skip_only_affect_the_selected_stack(win, monkeypat
     dialog = FixPointErrorsDialog(win.state, win)
     finding = next(f for f in dialog.active_findings if f["key"] == check_finding["key"])
     dialog._open_inline_editor(finding)
-    ignore_button = next(button for button in dialog.findChildren(QPushButton)
-                         if button.text() == "Ignore Point")
-    assert ignore_button.isEnabled()
-    assert any(button.text() == "Skip Stack" for button in dialog.findChildren(QPushButton))
+    assert dialog.cb_stack_action is not None
+    assert dialog.cb_stack_action.findData("ignore") >= 0
+    assert not any(button.text() in {"Merge Stack", "Delete Others", "Renumber Second", "Ignore Point"}
+                   for button in dialog.findChildren(QPushButton))
 
-    # Selecting a point inside stack one applies to both points in that stack only.
+    # Choosing an action is staged until Apply & Next, and affects only the selected stack.
     dialog.tbl_edit_pts.selectRow(1)
-    ignore_button.click()
+    dialog.cb_stack_action.setCurrentText("Ignore this stack")
+    assert p1.id in dialog.error_point_ids and p2.id in dialog.error_point_ids
+    dialog.btn_issue_apply.click()
     assert dialog.current_edit_finding["ignored_pids"] == {p1.id, p2.id}
     assert dialog.current_edit_finding["pids"] == [p3.id, p4.id, p5.id, p6.id]
     assert p3.id in dialog.error_point_ids and p4.id in dialog.error_point_ids
     assert p5.id in dialog.error_point_ids and p6.id in dialog.error_point_ids
     assert p1.id not in dialog.error_point_ids and p2.id not in dialog.error_point_ids
 
-    # Skip uses the same stack scope but leaves the third stack active.
+    # The same dropdown can ignore another selected stack without suppressing the flag.
     dialog.tbl_edit_pts.selectRow(2)
-    skip_button = next(button for button in dialog.findChildren(QPushButton)
-                       if button.text() == "Skip Stack")
-    skip_button.click()
+    dialog.cb_stack_action.setCurrentText("Ignore this stack")
+    dialog.btn_issue_apply.click()
     assert dialog.current_edit_finding["ignored_pids"] == {p1.id, p2.id, p5.id, p6.id}
     assert dialog.current_edit_finding["pids"] == [p3.id, p4.id]
     assert dialog.error_point_ids == {p3.id, p4.id}

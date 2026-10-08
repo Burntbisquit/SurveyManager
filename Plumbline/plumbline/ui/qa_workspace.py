@@ -198,15 +198,29 @@ class ClosePointsResolveDialog(QDialog):
         self.fieldbook_path = project_settings.get("fieldbook_file")
         self.commands = project_settings.get("f2f_commands")
         self.is_duplicate = is_duplicate
-        self.setWindowTitle("Resolve Point Stack")
-        self.resize(780, 480)
+        self.setWindowTitle("Edit Point Stack")
+        self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
+        self.setSizeGripEnabled(True)
+        screen = (parent.screen() if parent is not None else None) or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        if available is not None:
+            width = max(1, min(available.width() - 32, round(available.width() * 0.90)))
+            height = max(1, min(available.height() - 32, round(available.height() * 0.88)))
+            x = available.x() + (available.width() - width) // 2
+            y = available.y() + (available.height() - height) // 2
+            self.setGeometry(x, y, width, height)
+            self.setMinimumSize(min(720, width), min(500, height))
+        else:
+            self.resize(1000, 700)
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
 
         lay.addWidget(QLabel("<b>Point Stack Resolution:</b>"))
         lay.addWidget(Hint(
-            "Choose an action for each point in this stack. "
-            + ("Points have distinct numbers — no renumbering needed." if not is_duplicate else "Duplicate numbers can be renumbered, merged, or deleted.")
+            "Choose an action for each point. Set one point to Merge (Target) to choose the head/target; "
+            "mark other points Merge (Into Target), Keep, Delete, Renumber, or Ignore. "
+            + ("Points have distinct numbers." if not is_duplicate else "Duplicate point numbers can be renumbered.")
         ))
 
         # Table of points in group with per-point Action dropdown
@@ -224,7 +238,13 @@ class ClosePointsResolveDialog(QDialog):
         self.tbl.setColumnWidth(3, 90)
         self.tbl.setColumnWidth(4, 220)
         self.tbl.setColumnWidth(5, 170)
-        hh.setStretchLastSection(True)
+        hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(4, QHeaderView.Stretch)
+        hh.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        hh.setStretchLastSection(False)
 
         self.combos: list[QComboBox] = []
         for r, p in enumerate(self.points):
@@ -349,15 +369,17 @@ class BaseQAWorkbenchDialog(QDialog):
 
     workbench_title = "QA Workbench"
     start_maximized = False
+    start_full_screen = False
+    enable_flag_navigation = False
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
         self.state = state
         self.setWindowTitle(self.workbench_title)
-        minimum_size = (900, 600) if self.start_maximized else (1100, 720)
+        minimum_size = (900, 600) if (self.start_full_screen or self.start_maximized) else (1100, 720)
         self.setMinimumSize(*minimum_size)
-        self._initial_maximize_pending = self.start_maximized
-        if self.start_maximized:
+        self._initial_window_state_pending = self.start_full_screen or self.start_maximized
+        if self.start_full_screen or self.start_maximized:
             self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
             self.setSizeGripEnabled(True)
             screen = self.screen() or QApplication.primaryScreen()
@@ -393,24 +415,43 @@ class BaseQAWorkbenchDialog(QDialog):
         self.issue_metadata_snapshot: dict | None = None
         self.issue_dirty = False
         self.fieldbook_path = ""
+        self.review_anchor_key: str | None = None
 
         self._build_ui()
 
     def showEvent(self, event):
         super().showEvent(event)
-        if self._initial_maximize_pending:
-            self._initial_maximize_pending = False
-            QTimer.singleShot(0, self._maximize_on_first_show)
+        if self._initial_window_state_pending:
+            self._initial_window_state_pending = False
+            QTimer.singleShot(0, self._apply_initial_window_state)
 
-    def _maximize_on_first_show(self):
-        """Maximize after the native window is shown, once, to avoid WM resize loops."""
-        if self.isVisible() and not self.isMaximized():
+    def _apply_initial_window_state(self):
+        """Apply the requested initial window state after the native window is shown."""
+        if not self.isVisible():
+            return
+        if self.start_full_screen:
+            self.showFullScreen()
+        elif self.start_maximized and not self.isMaximized():
             self.showMaximized()
+        if self.enable_flag_navigation:
+            QTimer.singleShot(0, self._update_review_navigation)
+
+    def _toggle_full_screen(self):
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
+        if self.enable_flag_navigation:
+            self.btn_full_screen.setText("Windowed" if self.isFullScreen() else "Full Screen")
 
     def _build_ui(self):
         root_lay = QVBoxLayout(self)
-        root_lay.setContentsMargins(6, 6, 6, 6)
-        root_lay.setSpacing(4)
+        if self.start_full_screen:
+            root_lay.setContentsMargins(0, 0, 0, 0)
+            root_lay.setSpacing(2)
+        else:
+            root_lay.setContentsMargins(6, 6, 6, 6)
+            root_lay.setSpacing(4)
 
         # Top Banner
         self.banner = Banner()
@@ -534,6 +575,31 @@ class BaseQAWorkbenchDialog(QDialog):
         self.lay_top_actions = QHBoxLayout(self.w_top_actions)
         self.lay_top_actions.setContentsMargins(0, 0, 0, 0)
         self.lay_top_actions.setSpacing(6)
+
+        if self.enable_flag_navigation:
+            self.lbl_review_position = QLabel("Choose a flag to review")
+            self.lbl_review_position.setProperty("hint", "true")
+            self.lay_top_actions.addWidget(self.lbl_review_position)
+
+            self.btn_previous_flag = QPushButton("Previous Flag")
+            self.btn_previous_flag.clicked.connect(lambda: self._navigate_review(-1))
+            self.lay_top_actions.addWidget(self.btn_previous_flag)
+
+            self.btn_next_flag = QPushButton("Next Flag")
+            self.btn_next_flag.setProperty("accent", True)
+            self.btn_next_flag.clicked.connect(lambda: self._navigate_review(1))
+            self.lay_top_actions.addWidget(self.btn_next_flag)
+
+            self.btn_ignore_flag = QPushButton("Ignore Flag & Next")
+            self.btn_ignore_flag.setToolTip("Ignore the current or selected flag without changing project data")
+            self.btn_ignore_flag.clicked.connect(self._ignore_current_flag_and_advance)
+            self.lay_top_actions.addWidget(self.btn_ignore_flag)
+
+            self.btn_full_screen = QPushButton("Windowed")
+            self.btn_full_screen.setToolTip("Toggle between full-screen and a resizable window")
+            self.btn_full_screen.clicked.connect(self._toggle_full_screen)
+            self.lay_top_actions.addWidget(self.btn_full_screen)
+
         self.lay_top_actions.addStretch(1)
 
         self.btn_export = QPushButton("Export Check Report...")
@@ -553,8 +619,8 @@ class BaseQAWorkbenchDialog(QDialog):
         lay_sum.setContentsMargins(0, 0, 0, 0)
         lay_sum.setSpacing(4)
 
-        lay_sum.addWidget(QLabel("<b>Active Issues Requiring Attention (Staging & Final Review):</b>"))
-        lbl_sum_hint = QLabel("Select an issue and click 'Edit' to resolve. Staged changes appear in green for final review before saving.")
+        lay_sum.addWidget(QLabel("<b>Flags Requiring Review</b>"))
+        lbl_sum_hint = QLabel("Use Previous/Next Flag to work through findings, or open any row directly. Apply & Next commits a correction; Ignore Flag & Next skips that finding.")
         lbl_sum_hint.setProperty("hint", "true")
         lay_sum.addWidget(lbl_sum_hint)
 
@@ -667,7 +733,7 @@ class BaseQAWorkbenchDialog(QDialog):
         hh_e.setStretchLastSection(True)
         self.tbl_edit_pts.itemSelectionChanged.connect(self._on_edit_point_selected)
         self.tbl_edit_pts.cellDoubleClicked.connect(self._on_edit_pts_double_clicked)
-        self.lay_edit.addWidget(self.tbl_edit_pts, 1)
+        self.lay_edit.addWidget(self.tbl_edit_pts, 3)
 
         # Container for specific inline tool controls
         self.w_edit_tools = QWidget()
@@ -675,8 +741,9 @@ class BaseQAWorkbenchDialog(QDialog):
         self.lay_edit_tools.setContentsMargins(0, 0, 0, 0)
         self.lay_edit.addWidget(self.w_edit_tools)
 
-        # Staged Resolutions for this Finding
-        self.lbl_edit_resolved_title = QLabel("<b>Staged Resolutions for this Issue:</b>")
+        # Recent resolutions are compact and hidden when there is no history, so an empty
+        # panel does not consume half of the point editor's vertical space.
+        self.lbl_edit_resolved_title = QLabel("<b>Recent Changes to this Flag:</b>")
         self.lay_edit.addWidget(self.lbl_edit_resolved_title)
 
         self.tbl_edit_resolved = DownTabTableWidget(0, 3)
@@ -691,7 +758,10 @@ class BaseQAWorkbenchDialog(QDialog):
         self.tbl_edit_resolved.setColumnWidth(1, 380)
         self.tbl_edit_resolved.setColumnWidth(2, 90)
         hh_er.setStretchLastSection(True)
-        self.lay_edit.addWidget(self.tbl_edit_resolved, 1)
+        self.tbl_edit_resolved.setMaximumHeight(150)
+        self.lay_edit.addWidget(self.tbl_edit_resolved)
+        self.lbl_edit_resolved_title.hide()
+        self.tbl_edit_resolved.hide()
 
         # Fixed action bar for the active issue page (kept outside its scroll area)
         self.w_issue_bottom = QWidget()
@@ -699,14 +769,21 @@ class BaseQAWorkbenchDialog(QDialog):
         lay_ib.setContentsMargins(0, 4, 0, 0)
         lay_ib.setSpacing(8)
 
-        self.btn_issue_save = QPushButton("Save & Return")
-        self.btn_issue_save.setProperty("accent", True)
-        self.btn_issue_save.setToolTip("Save staged fixes for this issue and return to All Issues")
+        self.btn_issue_apply = QPushButton("Apply & Next")
+        self.btn_issue_apply.setProperty("accent", True)
+        self.btn_issue_apply.setToolTip(
+            "Apply the selected stack action or staged corrections; continue to the next flag when this one is resolved")
+        self.btn_issue_apply.clicked.connect(
+            lambda: self._action_apply_current_issue_changes(advance_to_next=True))
+        lay_ib.addWidget(self.btn_issue_apply)
+
+        self.btn_issue_save = QPushButton("Apply & Return")
+        self.btn_issue_save.setToolTip("Apply any staged changes for this flag and return to All Issues")
         self.btn_issue_save.clicked.connect(self._action_save_issue)
         lay_ib.addWidget(self.btn_issue_save)
 
         self.btn_issue_discard = QPushButton("Discard & Return")
-        self.btn_issue_discard.setToolTip("Revert any changes made on this issue in this session and return")
+        self.btn_issue_discard.setToolTip("Revert changes made on this flag in this session and return to All Issues")
         self.btn_issue_discard.clicked.connect(self._action_discard_issue)
         lay_ib.addWidget(self.btn_issue_discard)
 
@@ -768,6 +845,89 @@ class BaseQAWorkbenchDialog(QDialog):
         if index == 1 and self.current_edit_finding:
             page_name = str(self.current_edit_finding.get("check") or "Issue").strip()
         self.setWindowTitle(f"{self.workbench_title} — {page_name}")
+        self._update_review_navigation()
+
+    def _review_anchor_finding(self) -> dict | None:
+        if self.current_edit_finding is not None:
+            return self.current_edit_finding
+        if self.review_anchor_key:
+            finding = next((item for item in self.active_findings
+                            if item.get("key") == self.review_anchor_key), None)
+            if finding is not None:
+                return finding
+        if not hasattr(self, "tbl_active") or not self.tbl_active.selectionModel().hasSelection():
+            return None
+        row = self.tbl_active.currentRow()
+        if 0 <= row < len(self.active_findings):
+            return self.active_findings[row]
+        return None
+
+    def _review_neighbor(self, direction: int, anchor: dict | None = None) -> dict | None:
+        """Return the next unresolved finding without wrapping past the ends of the queue."""
+        pending = [finding for finding in self.active_findings
+                   if finding.get("status") != "resolved"]
+        if not pending:
+            return None
+
+        anchor = anchor or self._review_anchor_finding()
+        anchor_key = anchor.get("key") if anchor else self.review_anchor_key
+        if not anchor_key:
+            return pending[0] if direction > 0 else pending[-1]
+
+        rows = self.active_findings
+        anchor_index = next((idx for idx, finding in enumerate(rows)
+                             if finding.get("key") == anchor_key), None)
+        if anchor_index is None:
+            return pending[0] if direction > 0 else pending[-1]
+
+        row_indices = (range(anchor_index + 1, len(rows)) if direction > 0
+                       else range(anchor_index - 1, -1, -1))
+        for idx in row_indices:
+            candidate = rows[idx]
+            if candidate.get("status") != "resolved":
+                return candidate
+        return None
+
+    def _update_review_navigation(self):
+        if not self.enable_flag_navigation or not hasattr(self, "btn_next_flag"):
+            return
+        pending = [finding for finding in self.active_findings
+                   if finding.get("status") != "resolved"]
+        anchor = self._review_anchor_finding()
+        if anchor is None:
+            self.lbl_review_position.setText(
+                f"{len(pending)} flag{'s' if len(pending) != 1 else ''} to review")
+        elif anchor.get("status") == "resolved":
+            self.lbl_review_position.setText(f"Resolved: {anchor.get('check', 'Flag')}")
+        else:
+            position = next((idx + 1 for idx, finding in enumerate(pending)
+                             if finding.get("key") == anchor.get("key")), None)
+            prefix = f"Flag {position} of {len(pending)}" if position is not None else "Reviewing flag"
+            self.lbl_review_position.setText(f"{prefix}: {anchor.get('check', 'Flag')}")
+
+        self.btn_previous_flag.setEnabled(self._review_neighbor(-1) is not None)
+        self.btn_next_flag.setEnabled(self._review_neighbor(1) is not None or (anchor is None and bool(pending)))
+        self.btn_ignore_flag.setEnabled(bool(anchor and anchor.get("status") != "resolved"))
+        if hasattr(self, "btn_full_screen"):
+            self.btn_full_screen.setText("Windowed" if self.isFullScreen() else "Full Screen")
+
+    def _navigate_review(self, direction: int):
+        if (self.stack.currentIndex() == 1
+                and self._has_unapplied_issue_edits()):
+            self.lbl_status.setText("Apply or discard the current flag's staged changes before moving on.")
+            return
+        target = self._review_neighbor(direction)
+        if target is None:
+            if self.stack.currentIndex() == 1 and self.current_edit_finding:
+                self.lbl_status.setText("No more unresolved flags in that direction.")
+            return
+        self.review_anchor_key = target.get("key")
+        self._open_inline_editor(target)
+
+    def _ignore_current_flag_and_advance(self):
+        finding = self._review_anchor_finding()
+        if finding is not None and finding.get("status") != "resolved":
+            self._action_ignore(finding.get("key", ""), advance_to_next=True)
 
     # ------------------------------------------------------------------ Subclass Extension Hooks
     def _filter_finding(self, finding: dict) -> bool:
@@ -1044,8 +1204,9 @@ class BaseQAWorkbenchDialog(QDialog):
         resolved_count = sum(1 for f in visible_tracked if f.get("status") == "resolved")
         active_count = len(visible_tracked) - resolved_count
         self.lbl_status.setText(
-            f"Active Issues: {active_count} | Resolved (Staged): {resolved_count} of {len(visible_tracked)} | Flagged Points: {len(err_pids)}"
+            f"Flags to review: {active_count} | Resolved this session: {resolved_count} | Flagged Points: {len(err_pids)}"
         )
+        self._update_review_navigation()
 
     # ------------------------------------------------------------------ Inline Detail View (Page 1)
     def _finding_point_scope(self, finding: dict) -> set[int] | None:
@@ -1093,12 +1254,16 @@ class BaseQAWorkbenchDialog(QDialog):
         self.sep_corrections = []
         self.current_focused_ed = None
         self.btn_autofix_descriptions = None
+        self.cb_stack_action = None
+        self.btn_stack_edit = None
 
         if start_session is None:
             start_session = (self.stack.currentIndex() != 1 or self.current_edit_finding is not finding)
         if start_session:
             self._capture_issue_session(finding)
         self.current_edit_finding = finding
+        self.review_anchor_key = finding.get("key")
+        self.current_selected_stack = []
         chk = finding.get("check", "Issue")
         self.lbl_edit_title.setText(f"<b>Fix {chk}</b>")
 
@@ -1188,7 +1353,7 @@ class BaseQAWorkbenchDialog(QDialog):
         else:
             self.tbl_edit_pts.setRowCount(0)
             self.tbl_edit_pts.setColumnCount(6)
-            self.tbl_edit_pts.setHorizontalHeaderLabels(["Edit", "Pt #", "Northing", "Easting", "Elevation", "Description"])
+            self.tbl_edit_pts.setHorizontalHeaderLabels(["Stack", "Pt #", "Northing", "Easting", "Elevation", "Description"])
             hh_e = self.tbl_edit_pts.horizontalHeader()
             hh_e.setSectionResizeMode(0, QHeaderView.ResizeToContents)
             hh_e.setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -1210,13 +1375,10 @@ class BaseQAWorkbenchDialog(QDialog):
                     r = self.tbl_edit_pts.rowCount()
                     self.tbl_edit_pts.insertRow(r)
 
-                    # Col 0: Edit Button
-                    btn_edit = QPushButton("Edit")
-                    btn_edit.setProperty("accent", True)
-                    btn_edit.setToolTip(f"Resolve Stack {s_idx + 1}")
-                    btn_edit.clicked.connect(lambda _, stk=stack: self._action_resolve_stack_dialog(stk, is_duplicate=is_dup)
-                                             if hasattr(self, "_action_resolve_stack_dialog") else None)
-                    self.tbl_edit_pts.setCellWidget(r, 0, btn_edit)
+                    it_stack = QTableWidgetItem(f"Stack {s_idx + 1}" if p_idx == 0 else "")
+                    it_stack.setData(Qt.UserRole, (s_idx, stack, pid))
+                    it_stack.setBackground(bg)
+                    self.tbl_edit_pts.setItem(r, 0, it_stack)
 
                     it_num = QTableWidgetItem(str(p.number))
                     it_num.setData(Qt.UserRole, (s_idx, stack, pid))
@@ -1269,11 +1431,14 @@ class BaseQAWorkbenchDialog(QDialog):
                 self.tbl_edit_pts.selectRow(0)
                 self._select_and_focus_points(pids[:1])
         elif stacks and self.tbl_edit_pts.rowCount() > 0:
-            self.current_selected_stack = stacks[0]
+            self.current_selected_stack = list(stacks[0])
             self.tbl_edit_pts.selectRow(0)
             self._select_stack_points(stacks[0])
+        self._update_review_navigation()
 
     def _show_summary_page(self, *, recheck: bool = True, refresh: bool = True):
+        if self.current_edit_finding is not None:
+            self.review_anchor_key = self.current_edit_finding.get("key")
         self.current_edit_finding = None
         self.current_selected_stack = []
         self.issue_snapshot = None
@@ -1290,17 +1455,57 @@ class BaseQAWorkbenchDialog(QDialog):
         elif refresh:
             self._populate_findings()
             self._sync_view_flags()
+        self._update_review_navigation()
 
     def _action_save_issue(self):
-        if self._has_unapplied_issue_edits():
-            # Save is the single commit point for inline dropdown/text edits. If
-            # validation fails, keep the user on the issue instead of losing input.
-            if not self._apply_pending_issue_edits(return_to_summary=True):
-                return
-        elif self.stack.currentIndex() != 0:
-            # Actions already recheck when applied, so returning must not trigger a
-            # second full QA pass.
+        """Apply the current flag's selection and return to the all-flags summary."""
+        self._action_apply_current_issue_changes(return_to_summary=True)
+
+    def _action_apply_current_issue_changes(
+        self, _checked: bool = False, *, return_to_summary: bool = False,
+        advance_to_next: bool = False,
+    ) -> bool:
+        if not self.current_edit_finding:
+            return False
+
+        stack_action = self._safe_widget_text(getattr(self, "cb_stack_action", None), "currentData")
+        if stack_action:
+            applied = self._action_apply_selected_stack_action()
+        elif self._has_unapplied_issue_edits():
+            applied = self._apply_pending_issue_edits(return_to_summary=return_to_summary)
+        elif return_to_summary and self.stack.currentIndex() == 1:
             self._show_summary_page(recheck=False, refresh=False)
+            return True
+        else:
+            self.lbl_status.setText("Choose a correction or stack action before applying changes.")
+            return False
+
+        if not applied:
+            self.lbl_status.setText("No valid corrections were applied. Review the current flag and try again.")
+            return False
+        if return_to_summary and self.stack.currentIndex() == 1:
+            self._show_summary_page(recheck=False, refresh=False)
+        elif advance_to_next:
+            self._advance_after_applied_flag()
+        return True
+
+    def _advance_after_applied_flag(self):
+        finding = self.current_edit_finding
+        if finding is None:
+            return
+        if finding.get("status") != "resolved":
+            remaining = len(finding.get("pids", []) or [])
+            self.lbl_status.setText(
+                f"Changes applied. This flag still has {remaining} point(s) to review.")
+            return
+
+        next_finding = self._review_neighbor(1, finding)
+        if next_finding is not None:
+            self.review_anchor_key = next_finding.get("key")
+            self._open_inline_editor(next_finding)
+        else:
+            self._show_summary_page(recheck=False, refresh=False)
+            self.lbl_status.setText("Flag resolved. No more unresolved flags follow this one.")
 
     def _action_discard_issue(self):
         data_changed = False
@@ -1360,7 +1565,9 @@ class BaseQAWorkbenchDialog(QDialog):
             action = self._safe_widget_text(cb_action, "currentText")
             if action in ("Correct", "Correct (Leave # in Descriptor)", "Ignore"):
                 return True
-        return False
+
+        stack_action = self._safe_widget_text(getattr(self, "cb_stack_action", None), "currentData")
+        return bool(stack_action)
 
     def _apply_pending_issue_edits(self, *, return_to_summary: bool = False) -> bool:
         # A stale wrapper is ignored rather than dereferenced. Normally the editor
@@ -1413,8 +1620,10 @@ class BaseQAWorkbenchDialog(QDialog):
         row = self.tbl_active.currentRow()
         if 0 <= row < len(self.active_findings):
             item = self.active_findings[row]
+            self.review_anchor_key = item.get("key")
             pids = item.get("pids", [])
             self._select_and_focus_points(pids)
+        self._update_review_navigation()
 
     def _on_edit_point_selected(self):
         row = self.tbl_edit_pts.currentRow()
@@ -1426,8 +1635,16 @@ class BaseQAWorkbenchDialog(QDialog):
                 data = it.data(Qt.UserRole)
                 if data and isinstance(data, tuple) and len(data) >= 2:
                     s_idx, stack = data[0], data[1]
-                    self.current_selected_stack = stack
-                    self._select_stack_points(stack)
+                    selected_stack = list(stack)
+                    if selected_stack != self.current_selected_stack:
+                        self.current_selected_stack = selected_stack
+                        combo = getattr(self, "cb_stack_action", None)
+                        if combo is not None:
+                            try:
+                                combo.setCurrentIndex(0)
+                            except RuntimeError:
+                                pass
+                    self._select_stack_points(selected_stack)
                 elif data is not None:
                     pid_list = [data] if isinstance(data, int) else list(data)
                     self._select_and_focus_points(pid_list)
@@ -1512,8 +1729,12 @@ class BaseQAWorkbenchDialog(QDialog):
                 self.tbl_edit_resolved.setItem(r, 0, QTableWidgetItem(h.get("check", "")))
                 self.tbl_edit_resolved.setItem(r, 1, QTableWidgetItem(h.get("resolution", "Resolved")))
                 self.tbl_edit_resolved.setItem(r, 2, QTableWidgetItem(", ".join(str(p) for p in h.get("points", []))))
+            show_history = bool(hist)
         else:
             self.tbl_edit_resolved.setRowCount(0)
+            show_history = False
+        self.lbl_edit_resolved_title.setVisible(show_history)
+        self.tbl_edit_resolved.setVisible(show_history)
 
     # ------------------------------------------------------------------ Transaction & Undo/Redo
     def _take_snapshot(self, point_ids: Sequence[int] | set[int] | None = None) -> _PointSnapshot:
@@ -1715,14 +1936,29 @@ class BaseQAWorkbenchDialog(QDialog):
         else:
             self._show_summary_page(recheck=False, refresh=False)
 
-    def _action_ignore(self, key: str):
+    def _action_ignore(self, key: str, *, advance_to_next: bool = False):
         if not key and self.current_edit_finding:
             key = self.current_edit_finding.get("key", "")
-        if key:
-            self.ignored_keys.add(key)
+        if not key and self.stack.currentIndex() == 0:
+            row = self.tbl_active.currentRow()
+            if 0 <= row < len(self.active_findings):
+                key = self.active_findings[row].get("key", "")
+        if not key:
+            return
+
+        current = next((finding for finding in self.active_findings
+                        if finding.get("key") == key), None)
+        next_finding = self._review_neighbor(1, current) if advance_to_next else None
+        self.review_anchor_key = key
+        self.ignored_keys.add(key)
         # Ignoring hides an existing result; it does not change project data, so
         # refresh the tracked rows without running the expensive QA checks again.
         self._show_summary_page(recheck=False, refresh=True)
+        if advance_to_next and next_finding is not None:
+            if next_finding.get("key") not in self.ignored_keys:
+                self._open_inline_editor(next_finding)
+        elif advance_to_next:
+            self.lbl_status.setText("Flag ignored. No next unresolved flag remains.")
 
     # ------------------------------------------------------------------ Save & Discard Exits
     def export_report_csv(self):
@@ -1745,7 +1981,7 @@ class BaseQAWorkbenchDialog(QDialog):
 
     def _save_and_exit(self) -> bool:
         if self._has_unapplied_issue_edits():
-            if not self._apply_pending_issue_edits(return_to_summary=True):
+            if not self._action_apply_current_issue_changes(return_to_summary=True):
                 return False
         self.dirty = False
         self.accept()
@@ -1791,6 +2027,8 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
 
     workbench_title = "Fix Point Errors"
     start_maximized = True
+    start_full_screen = True
+    enable_flag_navigation = True
 
     def __init__(self, state, parent=None):
         self.close_tol = 0.05
@@ -2011,12 +2249,12 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             lay_g.addWidget(Hint(hint_text))
             lay_g.addWidget(self.tbl_corrections)
 
-            # Batch selection is staged; Save & Return performs the actual correction.
+            # Batch selection is staged; Apply & Next commits the selected rows.
             if not is_spacing:
                 row_btns = QHBoxLayout()
                 row_btns.setSpacing(8)
                 btn_correct_all = QPushButton("Select All Correct")
-                btn_correct_all.setToolTip("Set every row to Correct; Save & Return applies the selections.")
+                btn_correct_all.setToolTip("Set every row to Correct; Apply & Next applies the selections.")
                 btn_correct_all.clicked.connect(self._action_correct_all_separator_corrections)
                 row_btns.addWidget(btn_correct_all)
                 row_btns.addStretch(1)
@@ -2029,51 +2267,34 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             else:
                 self.w_close_tol_bar.hide()
 
-            # Compact toolbar for stack resolution mirroring the dialog
-            row_c_btns = QHBoxLayout()
-            row_c_btns.setSpacing(6)
+            grp_stack_action = QGroupBox("Selected Stack Action")
+            lay_stack_action = QHBoxLayout(grp_stack_action)
+            lay_stack_action.setSpacing(8)
+            lay_stack_action.addWidget(QLabel("Choose one action:"))
 
-            btn_resolve_stack = QPushButton("Resolve Stack...")
-            btn_resolve_stack.setProperty("accent", True)
-            btn_resolve_stack.setToolTip("Open popup dialog with per-point action dropdowns for the selected stack")
-            btn_resolve_stack.clicked.connect(lambda: self._action_resolve_selected_stack(is_duplicate=not is_close))
-            row_c_btns.addWidget(btn_resolve_stack)
-
-            btn_merge = QPushButton("Merge Stack")
-            btn_merge.setToolTip("Combines code groups & notes into primary point and averages coordinates")
-            btn_merge.clicked.connect(lambda: self._action_merge_selected_stack(average=True))
-            row_c_btns.addWidget(btn_merge)
-
-            btn_del_others = QPushButton("Delete Others")
-            btn_del_others.setToolTip("Keep first point and delete other points in selected stack")
-            btn_del_others.clicked.connect(self._action_delete_others_selected_stack)
-            row_c_btns.addWidget(btn_del_others)
-
+            self.cb_stack_action = QComboBox()
+            self.cb_stack_action.addItem("Select an action…", None)
+            self.cb_stack_action.addItem("Merge into head and average coordinates", "merge")
+            self.cb_stack_action.addItem("Keep head; delete other points", "keep")
             if is_exact_dup or is_lookalike:
-                btn_ren = QPushButton("Renumber Second")
-                btn_ren.setToolTip("Assign next free point number to second point in stack")
-                btn_ren.clicked.connect(self._action_renumber_selected_stack)
-                row_c_btns.addWidget(btn_ren)
+                self.cb_stack_action.addItem("Renumber second point", "renumber")
+            self.cb_stack_action.addItem("Ignore this stack", "ignore")
+            self.cb_stack_action.setToolTip(
+                "Selecting an action does not change the project. Use Apply & Next to confirm it.")
+            lay_stack_action.addWidget(self.cb_stack_action, 1)
 
-            if is_lookalike:
-                btn_ignore_point = QPushButton("Ignore Point")
-                btn_ignore_point.setToolTip(
-                    "Ignore the selected affected-point stack only; other stacks remain active.")
-                btn_ignore_point.clicked.connect(self._action_ignore_selected_lookalike_point)
-                row_c_btns.addWidget(btn_ignore_point)
-
-            row_c_btns.addStretch(1)
-
-            if is_lookalike:
-                btn_skip = QPushButton("Skip Stack")
-                btn_skip.setToolTip("Skip only the selected look-alike stack; other stacks remain active.")
-                btn_skip.clicked.connect(self._action_ignore_selected_lookalike_point)
-            else:
-                btn_skip = QPushButton("Skip Finding")
-                btn_skip.clicked.connect(lambda: self._action_ignore(finding.get("key", "")))
-            row_c_btns.addWidget(btn_skip)
-
-            self.lay_edit_tools.addLayout(row_c_btns)
+            btn_edit_stack = QPushButton("Edit Stack…")
+            self.btn_stack_edit = btn_edit_stack
+            btn_edit_stack.setToolTip(
+                "Set an action for each point or choose a different head/target point")
+            btn_edit_stack.clicked.connect(
+                lambda: self._action_resolve_selected_stack(
+                    is_duplicate=(is_exact_dup or is_lookalike)))
+            lay_stack_action.addWidget(btn_edit_stack)
+            self.lay_edit_tools.addWidget(grp_stack_action)
+            self.lay_edit_tools.addWidget(Hint(
+                "Select a stack row above. Use Edit Stack for point-by-point choices or to change the head/target; "
+                "the dropdown applies one action to the selected stack."))
 
         else:
             self.w_close_tol_bar.hide()
@@ -2169,7 +2390,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             scroll_pts.setWidget(w_pts_inner)
             lay_keyin.addWidget(scroll_pts, 1)
 
-            # Edits remain staged until Save & Return.
+            # Edits remain staged until Apply & Next or Apply & Return.
             row_d_btns = QHBoxLayout()
             row_d_btns.setSpacing(6)
 
@@ -2181,9 +2402,6 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             row_d_btns.addWidget(btn_autofix)
 
             row_d_btns.addStretch(1)
-            btn_skip = QPushButton("Skip Finding")
-            btn_skip.clicked.connect(lambda: self._action_ignore(finding.get("key", "")))
-            row_d_btns.addWidget(btn_skip)
             lay_keyin.addLayout(row_d_btns)
 
             sp_desc.addWidget(grp_keyin)
@@ -2493,15 +2711,48 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             ),
         )
 
+    def _action_apply_selected_stack_action(self) -> bool:
+        action = self._safe_widget_text(getattr(self, "cb_stack_action", None), "currentData")
+        if not action:
+            self.lbl_status.setText("Choose a stack action first.")
+            return False
+        stack = list(getattr(self, "current_selected_stack", []) or [])
+        points = [self.state.project.points[pid] for pid in stack
+                  if pid in self.state.project.points]
+        if not points:
+            self.lbl_status.setText("Select a point stack before applying an action.")
+            return False
+        if action == "renumber" and len(points) < 2:
+            self.lbl_status.setText("This stack has no second point to renumber.")
+            return False
+        if action == "merge":
+            self._action_merge_selected_stack(average=True)
+        elif action == "keep":
+            self._action_delete_others_selected_stack()
+        elif action == "renumber":
+            self._action_renumber_selected_stack()
+        elif action == "ignore":
+            self._action_ignore_selected_stack()
+        else:
+            return False
+        return True
+
     def _action_ignore_selected_lookalike_point(self):
-        """Ignore the selected look-alike stack without suppressing other stacks."""
+        """Compatibility handler for ignoring one selected look-alike stack."""
         finding = self.current_edit_finding
         if not finding or "look-alike" not in str(finding.get("check", "")).casefold():
+            return
+        self._action_ignore_selected_stack()
+
+    def _action_ignore_selected_stack(self):
+        """Ignore only the selected point group while leaving other groups active."""
+        finding = self.current_edit_finding
+        if not finding:
             return
 
         stacks = finding.get("stack_groups") or [finding.get("pids", [])]
         row = self.tbl_edit_pts.currentRow()
-        stack = []
+        stack: list[int] = []
         if row >= 0:
             item = self.tbl_edit_pts.item(row, 1)
             data = item.data(Qt.UserRole) if item else None
@@ -2509,7 +2760,6 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                 stack = list(data[1])
             elif isinstance(data, int):
                 stack = next((list(group) for group in stacks if data in group), [data])
-
         if not stack:
             selected = list(getattr(self, "current_selected_stack", []) or [])
             if selected and any(selected == list(group) for group in stacks):
@@ -2525,7 +2775,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
 
         numbers = [str(self.state.project.points[pid].number) for pid in stack]
         self._apply_fix(
-            f"Ignored look-alike stack ({', '.join(numbers)})",
+            f"Ignored stack ({', '.join(numbers)})",
             lambda: None,
             resolved_points=stack,
             stay_on_edit_page=True,
