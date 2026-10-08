@@ -1311,3 +1311,41 @@ def test_initial_view_staging_and_issue_scoped_undo_redo(win, app, auto):
     assert p1.desc == "EC1 ST - EC1" or "EC1" in p1.desc
     assert "rcp" in p3.desc
 
+
+def test_qa_view_splitter_fills_height_and_keeps_views_recoverable(win, app):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QSizePolicy
+    from plumbline.ui.qa_workspace import FixLineworkDialog
+
+    dialog = FixLineworkDialog(win.state, win)
+    try:
+        dialog.resize(1200, 900)
+        dialog.show()
+        app.processEvents()
+        app.processEvents()
+
+        splitter = dialog.split_views
+        assert splitter.orientation() == Qt.Vertical
+        assert splitter.count() == 2
+        assert not splitter.isCollapsible(0)
+        assert not splitter.isCollapsible(1)
+        assert splitter.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
+        assert dialog.canvas.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
+        assert dialog.view3d.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
+
+        sizes = splitter.sizes()
+        assert sum(sizes) >= splitter.height() - splitter.handleWidth() - 2
+        assert 0.57 <= sizes[0] / sum(sizes) <= 0.63
+        assert splitter.geometry().bottom() >= dialog.w_left.rect().bottom() - 2
+
+        # Extreme divider moves must leave each canvas above its minimum height.
+        for requested_sizes in ([0, 10000], [10000, 0]):
+            splitter.setSizes(requested_sizes)
+            app.processEvents()
+            actual_sizes = splitter.sizes()
+            assert actual_sizes[0] >= dialog.canvas.minimumHeight()
+            assert actual_sizes[1] >= dialog.view3d.minimumHeight()
+    finally:
+        dialog.close()
+        app.processEvents()
+

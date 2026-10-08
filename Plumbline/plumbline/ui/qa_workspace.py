@@ -406,6 +406,7 @@ class BaseQAWorkbenchDialog(QDialog):
         minimum_size = (900, 600) if (self.start_full_screen or self.start_maximized) else (1100, 720)
         self.setMinimumSize(*minimum_size)
         self._initial_window_state_pending = self.start_full_screen or self.start_maximized
+        self._initial_view_split_pending = True
         if self.start_full_screen or self.start_maximized:
             self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
             self.setSizeGripEnabled(not self.start_full_screen)
@@ -451,6 +452,9 @@ class BaseQAWorkbenchDialog(QDialog):
         if self._initial_window_state_pending:
             self._initial_window_state_pending = False
             QTimer.singleShot(0, self._apply_initial_window_state)
+        elif self._initial_view_split_pending:
+            self._initial_view_split_pending = False
+            QTimer.singleShot(0, self._apply_initial_view_split)
 
     def _apply_initial_window_state(self):
         """Apply the requested initial window state after the native window is shown."""
@@ -460,8 +464,18 @@ class BaseQAWorkbenchDialog(QDialog):
             self.showFullScreen()
         elif self.start_maximized and not self.isMaximized():
             self.showMaximized()
+        if self._initial_view_split_pending:
+            self._initial_view_split_pending = False
+            QTimer.singleShot(0, self._apply_initial_view_split)
         if self.enable_flag_navigation:
             QTimer.singleShot(0, self._update_review_navigation)
+
+    def _apply_initial_view_split(self):
+        """Balance both canvases after the final initial window geometry is known."""
+        handle = self.split_views.handleWidth()
+        available_height = max(2, self.split_views.height() - handle)
+        top_height = round(available_height * 3 / 5)
+        self.split_views.setSizes([top_height, available_height - top_height])
 
     def _toggle_full_screen(self):
         if self.isFullScreen():
@@ -576,17 +590,29 @@ class BaseQAWorkbenchDialog(QDialog):
 
         # Vertical Splitter: Top = 2D Canvas, Bottom = 3D View
         self.split_views = QSplitter(Qt.Vertical)
+        self.split_views.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # 2D Canvas
         self.canvas = CanvasView(self.state, parent=self)
         self.canvas.opts.show_grid = True
         self.canvas.opts.show_imagery = True
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.split_views.addWidget(self.canvas)
 
         # 3D Elevation / Terrain Canvas
         self.scene_provider = SceneProvider(self.state)
         self.view3d = View3D(self.state, self.scene_provider, parent=self)
+        self.view3d.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.split_views.addWidget(self.view3d)
+
+        # Preserve the existing 3:2 view balance while assigning new height to
+        # both canvases. Keep each pane above its widget minimum instead of letting
+        # a splitter drag collapse a view against the window edge.
+        self.split_views.setChildrenCollapsible(False)
+        self.split_views.setCollapsible(0, False)
+        self.split_views.setCollapsible(1, False)
+        self.split_views.setStretchFactor(0, 1)
+        self.split_views.setStretchFactor(1, 1)
         self.split_views.setSizes([450, 300])
 
         lay_left.addWidget(self.split_views, 1)
@@ -897,7 +923,6 @@ class BaseQAWorkbenchDialog(QDialog):
         self._on_stack_page_changed(self.stack.currentIndex())
         self.splitter.addWidget(self.w_right)
         self.splitter.setChildrenCollapsible(False)
-        self.split_views.setChildrenCollapsible(False)
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([560, 790])
