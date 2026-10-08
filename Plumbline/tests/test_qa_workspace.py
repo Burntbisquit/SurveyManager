@@ -854,6 +854,72 @@ def test_stack_dropdowns_stage_together_and_undo_restores_unapplied_choices(win,
     dialog._discard_and_exit()
 
 
+def test_bulk_stack_merge_keeps_head_coordinates_and_merges_descriptions(win, monkeypatch):
+    from PySide6.QtCore import Qt
+    from plumbline.fieldwork import bridge as FB
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog, merge_point_descriptions
+
+    pr = win.state.project
+    head = pr.add_point(920.0, 1020.0, 50.0, number="8921", desc="TREE / 12 INCH OAK")
+    other = pr.add_point(920.01, 1020.01, 70.0, number="8922", desc="SPOT / 512.3")
+    original_head_coords = (head.x, head.y, head.z)
+    original_head_desc = head.desc
+    check_finding = {
+        "check": "Close Points",
+        "flag": "ClosePointCollision",
+        "level": "warn",
+        "detail": "Two points are within the closeness tolerance.",
+        "pids": [head.id, other.id],
+        "key": "close-merge-keep-head-coordinates",
+    }
+
+    def fake_check_project(project, **kwargs):
+        return {
+            "findings": [dict(check_finding)],
+            "ids": list(project.points),
+            "rows": [],
+            "stats": {},
+            "flags": {},
+            "line_issues": [],
+        }
+
+    monkeypatch.setattr(FB, "check_project", fake_check_project)
+    dialog = FixPointErrorsDialog(win.state, win)
+    finding = next(f for f in dialog.active_findings if f["key"] == check_finding["key"])
+    dialog._open_inline_editor(finding)
+
+    stack_key = dialog._stack_key([head.id, other.id])
+    combo = dialog.stack_action_combos[stack_key]
+    keep_coords_index = combo.findData("merge_keep_coords")
+    assert keep_coords_index >= 0
+    assert "keep its X/Y/Z unchanged" in combo.itemData(keep_coords_index, Qt.ToolTipRole)
+    combo.setCurrentIndex(keep_coords_index)
+    expected_desc = merge_point_descriptions(
+        [head.desc, other.desc],
+        (pr.settings or {}).get("fieldbook_file"),
+        (pr.settings or {}).get("f2f_commands"),
+    )
+
+    # Applying merges descriptions and removes the other point without averaging coordinates.
+    dialog.btn_issue_apply.click()
+    assert head.id in pr.points
+    assert other.id not in pr.points
+    assert (head.x, head.y, head.z) == original_head_coords
+    assert head.desc == expected_desc
+    assert head.desc != original_head_desc
+    resolution_summary = dialog.tbl_edit_resolved.item(0, 1).text()
+    assert "merged descriptions into #8921; kept head coordinates" in resolution_summary
+    assert "removed 1" in resolution_summary
+
+    # Undo restores point data and leaves the new action selected but unapplied.
+    dialog._undo_issue()
+    assert head.id in pr.points and other.id in pr.points
+    assert head.desc == original_head_desc
+    assert (head.x, head.y, head.z) == original_head_coords
+    assert dialog.stack_action_combos[stack_key].currentData() == "merge_keep_coords"
+    dialog._discard_and_exit()
+
+
 def test_common_conversion_dialog_orders_correct_before_ignore_and_preserves_codes(app, tmp_path):
     from PySide6.QtWidgets import QPushButton
     from plumbline.fieldwork.clean import CleanDescriptionDialog

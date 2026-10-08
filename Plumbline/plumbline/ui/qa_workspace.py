@@ -1606,6 +1606,12 @@ class BaseQAWorkbenchWindow(QMainWindow):
                         combo = _DownTabComboBox(self.tbl_edit_pts, r, 6)
                         combo.addItem("Select an action…", None)
                         combo.addItem("Merge all into head; average coordinates", "merge")
+                        combo.addItem("Merge all into head; keep head coordinates", "merge_keep_coords")
+                        combo.setItemData(
+                            combo.findData("merge_keep_coords"),
+                            "Merge descriptions into the head, keep its X/Y/Z unchanged, and remove the other points.",
+                            Qt.ToolTipRole,
+                        )
                         combo.addItem("Keep head; delete other points", "keep")
                         if is_dup:
                             combo.addItem("Renumber second point", "renumber")
@@ -3124,7 +3130,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
             merged_desc = ""
             average_coords = False
 
-            if action == "merge":
+            if action in ("merge", "merge_keep_coords"):
                 merge_ids = [point.id for point in points]
                 target_id = points[0].id
                 merged_desc = merge_point_descriptions(
@@ -3132,7 +3138,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
                     (pr.settings or {}).get("fieldbook_file"),
                     (pr.settings or {}).get("f2f_commands"),
                 )
-                average_coords = True
+                average_coords = action == "merge"
             elif action == "keep":
                 target_id = points[0].id
                 delete_point_ids = [point.id for point in points[1:]]
@@ -3176,6 +3182,11 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
             target = pr.points.get(target_id) if target_id is not None else None
             if plan.get("kind") == "bulk" and action == "merge":
                 summary = f"Stack {stack_index}: Merged into #{target.number if target else '?'}"
+            elif plan.get("kind") == "bulk" and action == "merge_keep_coords":
+                summary = (
+                    f"Stack {stack_index}: merged descriptions into "
+                    f"#{target.number if target else '?'}; kept head coordinates"
+                )
             elif plan.get("kind") == "bulk" and action == "keep":
                 summary = f"Stack {stack_index}: kept head"
             elif plan.get("kind") == "bulk" and action == "renumber":
