@@ -255,7 +255,7 @@ def test_fix_point_errors_dialog_opens_and_resolves(win, app, auto):
     app.processEvents()
     assert dlg.isMaximized()
     assert dlg.windowFlags() & Qt.WindowMaximizeButtonHint
-    assert dlg.sizeGripEnabled()
+    assert dlg.isSizeGripEnabled()
     dlg.showNormal()
     app.processEvents()
     assert not dlg.isMaximized()

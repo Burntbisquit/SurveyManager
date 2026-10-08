@@ -840,18 +840,26 @@ class BaseQAWorkbenchDialog(QDialog):
         err_pids: set[int] = set()
 
         for f in all_findings:
-            rows = f.get("rows")
-            if rows is not None:
-                raw_pids = [ids[i] for i in rows if 0 <= i < len(ids)]
+            raw_pids = f.get("_raw_pids")
+            if raw_pids is None:
+                rows = f.get("rows")
+                if rows is not None:
+                    raw_pids = [ids[i] for i in rows if 0 <= i < len(ids)]
+                else:
+                    source_pids = f.get("pids") or f.get("points") or []
+                    raw_pids = []
+                    for pid in source_pids:
+                        if pid in pr.points:
+                            raw_pids.append(pid)
+                        else:
+                            matching = [p.id for p in pr.points.values() if p.number == str(pid)]
+                            raw_pids.extend(matching)
+                # The displayed/tracked ``pids`` list is filtered in place below.
+                # Keep the detector's original scope for fast metadata-only undo/redo
+                # and refreshes that do not need to rerun the full QA pass.
+                f["_raw_pids"] = list(raw_pids)
             else:
-                source_pids = f.get("pids") or f.get("points") or []
-                raw_pids = []
-                for pid in source_pids:
-                    if pid in pr.points:
-                        raw_pids.append(pid)
-                    else:
-                        matching = [p.id for p in pr.points.values() if p.number == str(pid)]
-                        raw_pids.extend(matching)
+                raw_pids = list(raw_pids)
 
             raw_groups = f.get("groups")
             if raw_groups is not None:
