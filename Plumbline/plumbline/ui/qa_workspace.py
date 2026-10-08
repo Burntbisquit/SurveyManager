@@ -498,14 +498,17 @@ class BaseQAWorkbenchDialog(QDialog):
 
         # Top Banner
         self.banner = Banner()
+        self.banner.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         root_lay.addWidget(self.banner)
 
         # Main Splitter: Left Pane (2D/3D Views) | Right Pane (Issues List & Deep Editor)
         self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         root_lay.addWidget(self.splitter, 1)
 
         # ==================== LEFT PANE: 2D & 3D Split Views ====================
         self.w_left = QWidget()
+        self.w_left.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         lay_left = QVBoxLayout(self.w_left)
         lay_left.setContentsMargins(0, 0, 0, 0)
         lay_left.setSpacing(4)
@@ -620,6 +623,7 @@ class BaseQAWorkbenchDialog(QDialog):
 
         # ==================== RIGHT PANE: Stacked Pages ====================
         self.w_right = QWidget()
+        self.w_right.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         lay_right = QVBoxLayout(self.w_right)
         lay_right.setContentsMargins(0, 0, 0, 0)
         lay_right.setSpacing(4)

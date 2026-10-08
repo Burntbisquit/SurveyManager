@@ -1325,6 +1325,19 @@ def test_qa_view_splitter_fills_height_and_keeps_views_recoverable(win, app):
         app.processEvents()
 
         splitter = dialog.split_views
+        assert dialog.splitter.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
+        assert dialog.w_left.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
+        assert dialog.w_right.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
+        root_layout = dialog.layout()
+        margins = root_layout.contentsMargins()
+        available_height = (
+            dialog.height() - margins.top() - margins.bottom()
+            - dialog.banner.height() - root_layout.spacing()
+        )
+        assert dialog.splitter.height() >= available_height - 2
+        assert dialog.w_left.height() >= dialog.splitter.height() - 2
+        assert dialog.w_right.height() >= dialog.splitter.height() - 2
+
         assert splitter.orientation() == Qt.Vertical
         assert splitter.count() == 2
         assert not splitter.isCollapsible(0)
