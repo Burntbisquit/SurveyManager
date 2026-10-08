@@ -46,24 +46,23 @@ coded strings into polylines (breaklines for codes flagged as such). Edit featur
 * **Imagery > Open View Center in Google Maps** (`Ctrl+Shift+M`): opens the middle of the plan view in your browser (needs a real
   coordinate system, not local coordinates).
 
-## 6. Imagery checks
+## 6. Aligning imagery
 
 **Imagery > Add Imagery** adds Esri World Imagery, USGS orthos, OpenStreetMap, any XYZ tile URL, or your own georeferenced
 GeoTIFF (or PNG/JPG + world file).
 
-* **Look up the source accuracy** first. Online imagery is often only good to a few metres - at the sample location Esri states
-  about 8.5 m. Offsets smaller than the imagery's own accuracy say nothing about your survey. For a precise check use a
-  high-accuracy orthophoto file.
-* **Start checking**: the view centres on each survey point; click the same feature in the imagery (building corner,
-  manhole...). Mean offset, RMSE, NSSDA 95% accuracy and the suggested nudge update live. *Report...* produces the table
-  with thumbnails.
+* **Look up source accuracy** first. Online imagery can be several metres off; at the sample location Esri states about 8.5 m.
+  A visual alignment is only as trustworthy as the image source. For precise work, use a high-accuracy orthophoto.
+* **Nudge by points**: select a visible imagery layer and click *Nudge by points...*. In the top view, click a feature in the
+  image, then where it should land (often a survey point). The target click follows the current snap setting. Repeat with more
+  point pairs if useful, then press Enter or right-click to apply their average shift; Esc cancels. The survey points never move.
 * **Google Earth round trip**: export a KMZ, drop pins named with the point numbers, save, and import the pins.
 
 ## 7. Output
 
 **File > Export** writes DXF (layers, colours, arcs, contours, labelled points), LandXML, GIS, Google Earth and point text files.
-**Reports** builds point lists, surface and volume summaries, line/curve tables, data-quality findings, CRS and imagery-check
-reports - viewable, printable to PDF, or saved as HTML / CSV / Excel.
+**Reports** builds point lists, surface and volume summaries, line/curve tables, data-quality findings and CRS reports -
+viewable, printable to PDF, or saved as HTML / CSV / Excel.
 
 ## 8. Make it yours
 

@@ -592,7 +592,7 @@ def test_imagery_tiles_render_offline_and_the_panel_has_no_check_controls(win, a
     img = win.canvas.render_image(700)
     assert img.width() == 700
 
-    for gone in ("btn_start", "btn_stop", "btn_report", "btn_csv", "btn_nudge", "btn_del",
+    for gone in ("btn_start", "btn_stop", "btn_report", "btn_csv", "btn_del",
                  "table", "stats", "cmb_which", "ed_filter", "sp_tol", "sp_mpp", "lbl_tol",
                  "_point_ids", "refresh_checks", "refresh_stats", "_apply_nudge", "_export_csv",
                  "start_requested", "stop_requested", "report_requested"):
@@ -600,6 +600,7 @@ def test_imagery_tiles_render_offline_and_the_panel_has_no_check_controls(win, a
     assert [b.text() for b in (win.imagery.btn_add, win.imagery.btn_rm, win.imagery.btn_meta,
                                win.imagery.btn_ge_out, win.imagery.btn_ge_in)] == \
         ["Add...", "Remove", "Look up imagery source at the view centre", "Export KMZ...", "Import pins..."]
+    assert win.imagery.btn_nudge_points.text() == "Nudge by points..."
     assert not pr.checks, "nothing in the interface writes a check record any more"
 
     # the nudge is a display offset; the survey itself never moves
@@ -622,6 +623,39 @@ def test_imagery_tiles_render_offline_and_the_panel_has_no_check_controls(win, a
         pump(app, 2, 40)
     assert _Tiles.hits == hits
     assert len(win.canvas.imagery._pix) > 0
+
+
+def test_imagery_nudge_collects_point_pairs_and_changes_only_the_display_offset(win, app, auto):
+    from plumbline.core.model import ImageryLayer
+
+    pr = win.state.project
+    layer_id = pr.new_id()
+    layer = ImageryLayer(layer_id, "Nudge test", "file", {"path": ""}, nudge=(10.0, -3.0))
+    pr.imagery[layer_id] = layer
+    win.imagery.refresh()
+    win.imagery.lst.setCurrentRow(0)
+    win.d_img.show()
+    point = next(iter(pr.points.values()))
+    original_xy = (point.x, point.y)
+
+    win.imagery.btn_nudge_points.click()
+    tool = win._imagery_nudge_tool
+    assert tool is not None and win.canvas.tool is tool
+    assert win.imagery.btn_nudge_points.text() == "Cancel point nudge"
+
+    # The image feature is 8 units west and 4 north of the target survey point. Click it first,
+    # then click the survey point; aligning the image should add (+8, -4) to its current nudge.
+    click_world(win, point.x - 8.0, point.y + 4.0)
+    click_world(win, point.x, point.y)
+    assert len(tool.pairs) == 1
+    QTest.keyClick(win.canvas, Qt.Key_Return)
+
+    assert layer.nudge == pytest.approx((18.0, -7.0), abs=0.5)
+    assert (point.x, point.y) == original_xy
+    assert win.canvas.tool.name == "pan"
+    assert win._imagery_nudge_tool is None
+    assert win.imagery.btn_nudge_points.text() == "Nudge by points..."
+    assert win.state.undo_stack[-1][0] == "Nudge imagery by 1 point pair(s)"
 
 
 def test_google_earth_pins_come_in_as_reference_points(win, app, auto, tmp_path, monkeypatch):

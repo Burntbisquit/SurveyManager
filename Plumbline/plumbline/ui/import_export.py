@@ -122,17 +122,23 @@ def apply_import(state, batch: ImportBatch, plan: ImportPlan, label: str, path=N
         # This is inside the edit, so undoing the import takes the record with it, and it is what
         # "change the CRS of a file afterwards" reads and rewrites.
         if src.name:
+            converted_on_import = bool(plan.src_crs is not None or plan.geographic or
+                                       plan.scale_xy != 1.0 or plan.z_scale != 1.0)
+            rec = FCRC.make_from_project(pr, method="imported" if converted_on_import else "project")
+            # Keep the file's declared/chosen source as provenance, but the row's primary CRS
+            # describes the coordinates now stored in the project after apply_import's transform.
+            source_rec = None
             if plan.src_crs is not None:
                 try:
-                    from .crs import ProjectCRS as _PC
-                    rec = FCRC.record_from_crs(_PC(plan.src_crs), method="chosen")
+                    from ..core.crs import ProjectCRS as _PC
+                    source_rec = FCRC.record_from_crs(_PC(plan.src_crs), method="chosen")
                 except Exception:
-                    rec = FCRC.make_from_project(pr, method="chosen")
+                    source_rec = None
             elif plan.geographic:
-                rec = FCRC.make(key="", label="longitude / latitude (WGS 84)", unit="m", vunit="m",
-                                vertical="HAE", method="chosen")
-            else:
-                rec = FCRC.make_from_project(pr, method="project" if plan.assign_crs is None else "chosen")
+                source_rec = FCRC.make(key="EPSG:4326", label="longitude / latitude (WGS 84)",
+                                       unit="degree", vunit=pr.crs.vunit, vertical="HAE", method="chosen")
+            if source_rec is not None:
+                rec["source_crs"] = source_rec
             FCRC.record(pr, src.name, rec)
         if plan.process_linework:
             stats["linework"] = pr.process_linework()["strings"]
@@ -415,7 +421,7 @@ class ImportOptionsPanel(QWidget):
             return ("This project uses local coordinates, so a file in another system cannot be converted. "
                     "Either assign a coordinate system to the project, or import the numbers as local coordinates.")
         if self.geographic and self.project.crs.is_local:
-            return "Longitude/latitude data needs a project coordinate system. Assign one first (Coordinates menu)."
+            return "Longitude/latitude data needs a project coordinate system. Assign one first (Survey menu)."
         return self.vg.validate()
     
 

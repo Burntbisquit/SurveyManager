@@ -203,7 +203,7 @@ holding data comes out byte-identical - so it doubles as a regression check betw
 
 ## Coordinate systems
 
-The coordinate-system manager (**Coordinates > Project Coordinate System**) is the part of a CAD tool that bites, so it is explicit:
+The coordinate-system manager (**Survey > Project Coordinate System**) is the part of a CAD tool that bites, so it is explicit:
 
 ![CRS manager](docs/img/crs_manager.png)
 
@@ -258,7 +258,9 @@ image* or *Custom tile URL*.
 
 **Comparing imagery with your points is a measurement, not a report.** Pan the imagery under the drawing and measure with
 **Draw > Distance / Bearing** (two clicks: distance and bearing) or with the *Measure* tool on any pair. *Nudge east / north* shifts the
-**displayed** imagery to sit where you want it - the survey is never altered, and the nudge is saved with the layer.
+**displayed** imagery to sit where you want it - the survey is never altered, and the nudge is saved with the layer. For point-based alignment,
+select a visible layer and use *Nudge by points...*: click an image feature, then where it should land (the target follows the current snap setting).
+Repeat for extra pairs and press Enter or right-click to apply their average shift.
 
 **Google Earth round trip**: *Export KMZ* (datum handling shown and remembered) -> open in Google Earth -> drop a pin on the same feature for each
 point, named with the point number -> save the pins as KML/KMZ -> *Import pins*. The pins come in as **reference points** on the `OTHER` layer

@@ -27,7 +27,7 @@ class AddImageryDialog(QDialog):
         root = QVBoxLayout(self)
         if state.project.crs.is_local:
             root.addWidget(Banner("This project uses local coordinates, so online imagery cannot be placed. Assign a coordinate system first "
-                                  "(Coordinates menu). A georeferenced image file in your own coordinates still works.", "warn"))
+                                  "(Survey menu). A georeferenced image file in your own coordinates still works.", "warn"))
         # --- tiles
         self.r_tiles = QRadioButton("Online satellite / map tiles")
         self.r_tiles.setChecked(not state.project.crs.is_local)
@@ -172,12 +172,14 @@ class ImageryDock(QWidget):
     add_requested = Signal()
     ge_import_requested = Signal()
     ge_export_requested = Signal()
+    nudge_by_points_requested = Signal()
 
     def __init__(self, state, canvas, parent=None):
         super().__init__(parent)
         self.state = state
         self.canvas = canvas
         self._busy = False
+        self._nudge_active = False
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
@@ -211,6 +213,11 @@ class ImageryDock(QWidget):
         form.addRow("Nudge east:", self.sp_de)
         form.addRow("Nudge north:", self.sp_dn)
         l1.addLayout(form)
+        self.btn_nudge_points = QPushButton("Nudge by points...")
+        self.btn_nudge_points.setToolTip(
+            "In the top view, click an image feature, then where it should land; the target click uses the current snap setting. "
+            "Repeat for more pairs; press Enter or right-click to apply the average shift, or Esc to cancel.")
+        l1.addWidget(self.btn_nudge_points)
         self.lbl_layer = Hint("")
         l1.addWidget(self.lbl_layer)
         self.lbl_legacy = Hint("")
@@ -253,6 +260,7 @@ class ImageryDock(QWidget):
         # wiring
         self.btn_add.clicked.connect(self.add_requested.emit)
         self.btn_rm.clicked.connect(self._remove)
+        self.btn_nudge_points.clicked.connect(self.nudge_by_points_requested.emit)
         self.lst.currentRowChanged.connect(self._layer_selected)
         self.lst.itemChanged.connect(self._item_changed)
         self.sl_op.valueChanged.connect(self._opacity)
@@ -320,8 +328,14 @@ class ImageryDock(QWidget):
     def _layer_selected(self, row):
         lay = self.current_layer()
         enabled = lay is not None
-        for w in (self.sl_op, self.sp_de, self.sp_dn, self.btn_rm):
-            w.setEnabled(enabled)
+        self.lst.setEnabled(not self._nudge_active)
+        self.btn_add.setEnabled(not self._nudge_active)
+        self.btn_rm.setEnabled(enabled and not self._nudge_active)
+        self.btn_nudge_points.setEnabled(enabled or self._nudge_active)
+        for w in (self.sl_op, self.sp_de, self.sp_dn):
+            w.setEnabled(enabled and not self._nudge_active)
+        for w in (self.btn_meta, self.btn_ge_out, self.btn_ge_in, self.chk_off, self.btn_cache):
+            w.setEnabled(not self._nudge_active)
         if lay is None:
             self.lbl_layer.setText("No imagery loaded. Use Add...")
             return
@@ -337,6 +351,17 @@ class ImageryDock(QWidget):
             self._show_meta(meta)
         else:
             self.lbl_meta.setVisible(False)
+
+    def set_nudge_mode_active(self, active: bool):
+        self._nudge_active = bool(active)
+        self.btn_nudge_points.setText("Cancel point nudge" if self._nudge_active else "Nudge by points...")
+        self.btn_nudge_points.setToolTip(
+            "Click an image feature, then where it should land (the target follows the current snap setting). "
+            "Repeat pairs, then press Enter/right-click to apply the average nudge, or Esc to cancel."
+            if self._nudge_active else
+            "In the top view, click an image feature, then where it should land; the target click uses the current snap setting. "
+            "Repeat for more pairs; press Enter or right-click to apply the average shift, or Esc to cancel.")
+        self._layer_selected(self.lst.currentRow())
 
     def _item_changed(self, it):
         if self._busy:

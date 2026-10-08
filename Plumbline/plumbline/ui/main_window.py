@@ -43,8 +43,8 @@ from .import_export import (IMPORT_FILTER, POINTS_FILTER, ImportPlan, Importer, 
 from .imagery_ui import AddImageryDialog, ImageryDock, _acc_text
 from .new_project import NewProjectDialog
 from .surface_dialogs import ContourDialog, ProfileDialog, SurfaceDialog, VolumeDialog, build_report_text
-from .tools import (ArcTool, DepthLineTool, DrawPolylineTool, MeasureTool, MoveTool, PanTool, PointTool,
-                    SelectTool, TextTool, ZoomWindowTool, parse_coordinate)
+from .tools import (ArcTool, DepthLineTool, DrawPolylineTool, ImageryNudgeTool, MeasureTool, MoveTool,
+                    PanTool, PointTool, SelectTool, TextTool, ZoomWindowTool, parse_coordinate)
 from .view3d import SceneProvider, View3DPanel
 from .widgets import FormDialog, confirm, dspin, error_box, info_box, ispin, run_blocking
 
@@ -171,6 +171,7 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(icons.app_icon())
         self.resize(1480, 920)
         self._icon_actions: list = []
+        self._imagery_nudge_tool = None
         s = settings()
         theme.apply_theme(QApplication.instance(), s.get("theme"))
         C.set_proj_network(bool(s.get("proj_network")))
@@ -432,9 +433,8 @@ class MainWindow(QMainWindow):
              tip="A CSV of stake-out, control or other reference coordinates.  "
                                 "One layer per role, and the points stay out of the fieldwork list.")
         self.a_file_crs = A("File &Coordinate Systems...", self.file_crs_dialog,
-             tip="What coordinate system each imported file's numbers were taken to be "
-                                "in - and how to change it afterwards (relabel, reproject, or the "
-                                "ground/grid SAF).")
+             tip="Set a file's coordinates to the project system, reproject them, or correct their "
+                 "ground/grid Surface Adjustment Factor (SAF).")
         self.a_ref_folder = A("Import Points from F&older...", self.import_points_folder,
                tip="Every point file in a folder, as one import.  The default is this "
                                   "job's field data; choose a reference role for somebody else's "
@@ -521,7 +521,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         m.addActions([self.a_ref_file, self.a_ref_folder])
         m.addSeparator()
-        m.addAction(self.a_file_crs)
+        m.addActions([self.a_crs, self.a_calc, self.a_file_crs])
         m.addSeparator()
         m.addActions([self.a_fix_points, self.a_fix_linework, self.a_fieldbook, self.a_codes, self.a_linework, self.a_join_points, self.a_edit_linework_coding])
         m.addSeparator()
@@ -532,8 +532,6 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_img_add)
         m.addSeparator()
         m.addActions([self.a_gmaps, self.a_gmaps_copy])
-        m = add_menu("&Coordinates")
-        m.addActions([self.a_crs, self.a_calc])
         m = add_menu("&Reports")
         m.addActions([self.a_r_pts, self.a_r_lines, self.a_r_qa, self.a_r_audit, self.a_r_crs, self.a_sf_rep])
         # (there is no Tools menu: its four items were a folder, a window and two imports, and
@@ -658,6 +656,7 @@ class MainWindow(QMainWindow):
         self.imagery.add_requested.connect(self.add_imagery)
         self.imagery.ge_import_requested.connect(self.import_ge_pins)
         self.imagery.ge_export_requested.connect(self._export_kml)
+        self.imagery.nudge_by_points_requested.connect(self.toggle_imagery_nudge)
         self._tile_timer = QTimer(self)
         self._tile_timer.timeout.connect(self._tile_status)
         self._tile_timer.start(400)
@@ -887,7 +886,7 @@ class MainWindow(QMainWindow):
             url, lat, lon, zoom = maps.maps_link_for_view(pr, v.cx, v.cy, v.scale, satellite)
         except C.LocalCRSError:
             info_box(self, "Google Maps", "This project uses a local coordinate system, so the view has no real-world location.\n\n"
-                                          "Assign a coordinate system first (Coordinates > Project Coordinate System).")
+                                          "Assign a coordinate system first (Survey > Project Coordinate System).")
             return
         except Exception as ex:
             error_box(self, "Google Maps", f"Could not turn the view center into a latitude / longitude:\n{ex}")
@@ -1609,6 +1608,44 @@ class MainWindow(QMainWindow):
             ReportViewer(self, reports.surface_report(self.state.project, s)).exec()
 
     # ================================================================== imagery
+    def toggle_imagery_nudge(self):
+        """Pick image/target point pairs in the plan view and apply their mean display shift."""
+        active = self._imagery_nudge_tool
+        if active is not None and self.canvas.tool is active:
+            active.cancel()
+            self.set_tool("pan")
+            return
+
+        layer = self.imagery.current_layer()
+        if layer is None:
+            info_box(self, "Nudge Imagery", "Select an imagery layer first.")
+            return
+        if not layer.visible:
+            info_box(self, "Nudge Imagery", "Turn on the selected imagery layer before nudging it by points.")
+            return
+        if not self.canvas.opts.show_imagery:
+            self.view_toggles["show_imagery"].setChecked(True)
+
+        def on_deactivate():
+            self.imagery.set_nudge_mode_active(False)
+            if self._imagery_nudge_tool is tool:
+                self._imagery_nudge_tool = None
+
+        def on_finish(applied: bool):
+            if not applied:
+                self.state.log("Imagery nudge cancelled; no point pairs were applied.", "info")
+            if self.canvas.tool is tool:
+                self.set_tool("pan")
+
+        tool = ImageryNudgeTool(self.canvas, layer.id, on_finish=on_finish, on_deactivate=on_deactivate)
+        self._imagery_nudge_tool = tool
+        self.tool_group.setExclusive(False)
+        for action in self.tool_acts.values():
+            action.setChecked(False)
+        self.tool_group.setExclusive(True)
+        self.imagery.set_nudge_mode_active(True)
+        self.canvas.set_tool(tool)
+
     def _unique_layer_name(self, base: str) -> str:
         names = {l.name for l in self.state.project.imagery.values()}
         n, k = base, 2

@@ -558,7 +558,7 @@ user's (which system, and assign or reproject) are the ones the dialog asks for.
                 self.lbl_geoid.setText("No geoid model is chosen for this datum: NGVD29 is related to "
                                        "NAVD88 by VERTCON, not to the ellipsoid.  This dialog no longer "
                                        "converts heights - set the datum here, then move the heights with "
-                                       "the reprojection tool (Coordinates > Reproject), which records "
+                                       "the Reproject option in Survey > Project Coordinate System, which records "
                                        "what it did.")
             else:
                 self.lbl_geoid.setText("No geoid model is needed for this datum.")
