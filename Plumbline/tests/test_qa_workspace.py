@@ -1362,3 +1362,30 @@ def test_qa_view_splitter_fills_height_and_keeps_views_recoverable(win, app):
         dialog.close()
         app.processEvents()
 
+
+def test_fix_point_fullscreen_reflows_workbench_to_screen_bottom(win, app):
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    dialog = FixPointErrorsDialog(win.state, win)
+    try:
+        dialog.show()
+        app.processEvents()
+        app.processEvents()
+
+        screen = dialog.screen() or app.primaryScreen()
+        assert dialog.isFullScreen()
+        assert dialog.geometry().height() >= screen.geometry().height() - 2
+
+        root_layout = dialog.layout()
+        margins = root_layout.contentsMargins()
+        available_height = (
+            dialog.height() - margins.top() - margins.bottom()
+            - dialog.banner.height() - root_layout.spacing()
+        )
+        assert dialog.splitter.height() >= available_height - 2
+        assert dialog.w_left.height() >= dialog.splitter.height() - 2
+        assert dialog.w_right.height() >= dialog.splitter.height() - 2
+    finally:
+        dialog.close()
+        app.processEvents()
+

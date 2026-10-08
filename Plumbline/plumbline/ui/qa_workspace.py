@@ -471,7 +471,19 @@ class BaseQAWorkbenchDialog(QDialog):
             QTimer.singleShot(0, self._update_review_navigation)
 
     def _apply_initial_view_split(self):
-        """Balance both canvases after the final initial window geometry is known."""
+        """Reflow the workbench after fullscreen sizing, then balance the canvases."""
+        if self.start_full_screen:
+            screen = self.screen() or QApplication.primaryScreen()
+            if screen is not None:
+                self.setGeometry(screen.geometry())
+
+        root_layout = self.layout()
+        if root_layout is not None:
+            # Re-activate the top-level layout against the final fullscreen rect;
+            # otherwise the child splitters can retain their pre-fullscreen height.
+            root_layout.setGeometry(self.rect())
+            root_layout.activate()
+
         handle = self.split_views.handleWidth()
         available_height = max(2, self.split_views.height() - handle)
         top_height = round(available_height * 3 / 5)
