@@ -408,6 +408,7 @@ class BaseQAWorkbenchDialog(QDialog):
         self._initial_window_state_pending = self.start_full_screen or self.start_maximized
         self._initial_view_split_pending = True
         if self.start_full_screen or self.start_maximized:
+            self.setWindowFlag(Qt.WindowSystemMenuHint, True)
             self.setWindowFlag(Qt.WindowMinimizeButtonHint, True)
             self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
             self.setSizeGripEnabled(not self.start_full_screen)
@@ -419,6 +420,12 @@ class BaseQAWorkbenchDialog(QDialog):
                 self.resize(restore_width, restore_height)
             else:
                 self.resize(1350, 850)
+            # Request the native state before the window is first shown, so the
+            # layout receives the maximized geometry instead of its restore size.
+            if self.start_full_screen:
+                self.setWindowState(Qt.WindowFullScreen)
+            elif self.start_maximized:
+                self.setWindowState(Qt.WindowMaximized)
         else:
             self.resize(1350, 850)
 
@@ -447,6 +454,13 @@ class BaseQAWorkbenchDialog(QDialog):
         self.review_anchor_key: str | None = None
 
         self._build_ui()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        root_layout = self.layout()
+        if root_layout is not None and hasattr(self, "splitter"):
+            root_layout.setGeometry(self.contentsRect())
+            root_layout.activate()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -477,7 +491,7 @@ class BaseQAWorkbenchDialog(QDialog):
         if root_layout is not None:
             # Re-activate the workbench layout against the final window rectangle so
             # both panes use its full height, including after a maximize/restore cycle.
-            root_layout.setGeometry(self.rect())
+            root_layout.setGeometry(self.contentsRect())
             root_layout.activate()
 
         handle = self.split_views.handleWidth()
@@ -487,12 +501,10 @@ class BaseQAWorkbenchDialog(QDialog):
 
     def _build_ui(self):
         root_lay = QVBoxLayout(self)
-        if self.start_full_screen:
-            root_lay.setContentsMargins(0, 0, 0, 0)
-            root_lay.setSpacing(2)
-        else:
-            root_lay.setContentsMargins(6, 6, 6, 6)
-            root_lay.setSpacing(4)
+        # Like the main workbench's central canvas, the QA content is edge-to-edge
+        # within the native window client area in both maximized and restored sizes.
+        root_lay.setContentsMargins(0, 0, 0, 0)
+        root_lay.setSpacing(0)
 
         # Top Banner
         self.banner = Banner()

@@ -1374,11 +1374,16 @@ def test_fix_point_maximized_window_fills_workbench_at_multiple_sizes(win, app):
     def assert_workbench_fills_window():
         root_layout = dialog.layout()
         margins = root_layout.contentsMargins()
+        assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == (0, 0, 0, 0)
         available_height = (
             dialog.height() - margins.top() - margins.bottom()
             - dialog.banner.height() - root_layout.spacing()
         )
+        available_width = dialog.width() - margins.left() - margins.right()
         assert dialog.splitter.height() >= available_height - 2
+        assert dialog.splitter.width() >= available_width - 2
+        assert dialog.splitter.geometry().bottom() >= dialog.rect().bottom() - 2
+        assert dialog.splitter.geometry().right() >= dialog.rect().right() - 2
         assert dialog.w_left.height() >= dialog.splitter.height() - 2
         assert dialog.w_right.height() >= dialog.splitter.height() - 2
 
