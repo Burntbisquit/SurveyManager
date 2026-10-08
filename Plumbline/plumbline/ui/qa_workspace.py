@@ -381,7 +381,7 @@ class BaseQAWorkbenchDialog(QDialog):
         self._initial_window_state_pending = self.start_full_screen or self.start_maximized
         if self.start_full_screen or self.start_maximized:
             self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
-            self.setSizeGripEnabled(True)
+            self.setSizeGripEnabled(not self.start_full_screen)
             screen = self.screen() or QApplication.primaryScreen()
             available = screen.availableGeometry() if screen else None
             if available is not None:
@@ -438,8 +438,10 @@ class BaseQAWorkbenchDialog(QDialog):
 
     def _toggle_full_screen(self):
         if self.isFullScreen():
+            self.setSizeGripEnabled(True)
             self.showNormal()
         else:
+            self.setSizeGripEnabled(False)
             self.showFullScreen()
         if self.enable_flag_navigation:
             self.btn_full_screen.setText("Windowed" if self.isFullScreen() else "Full Screen")
