@@ -392,7 +392,7 @@ class ClosePointsResolveDialog(QDialog):
 
 # ------------------------------------------------------------------ Base Workbench Dialog
 class BaseQAWorkbenchDialog(QDialog):
-    """Base class for full-screen QA Workbenches with 2D/3D split views and inline resolution."""
+    """Base class for resizable QA Workbenches with 2D/3D split views and inline resolution."""
 
     workbench_title = "QA Workbench"
     start_maximized = False
@@ -408,6 +408,7 @@ class BaseQAWorkbenchDialog(QDialog):
         self._initial_window_state_pending = self.start_full_screen or self.start_maximized
         self._initial_view_split_pending = True
         if self.start_full_screen or self.start_maximized:
+            self.setWindowFlag(Qt.WindowMinimizeButtonHint, True)
             self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
             self.setSizeGripEnabled(not self.start_full_screen)
             screen = self.screen() or QApplication.primaryScreen()
@@ -471,16 +472,11 @@ class BaseQAWorkbenchDialog(QDialog):
             QTimer.singleShot(0, self._update_review_navigation)
 
     def _apply_initial_view_split(self):
-        """Reflow the workbench after fullscreen sizing, then balance the canvases."""
-        if self.start_full_screen:
-            screen = self.screen() or QApplication.primaryScreen()
-            if screen is not None:
-                self.setGeometry(screen.geometry())
-
+        """Reflow the top-level layout after initial sizing, then balance the canvases."""
         root_layout = self.layout()
         if root_layout is not None:
-            # Re-activate the top-level layout against the final fullscreen rect;
-            # otherwise the child splitters can retain their pre-fullscreen height.
+            # Re-activate the workbench layout against the final window rectangle so
+            # both panes use its full height, including after a maximize/restore cycle.
             root_layout.setGeometry(self.rect())
             root_layout.activate()
 
@@ -488,16 +484,6 @@ class BaseQAWorkbenchDialog(QDialog):
         available_height = max(2, self.split_views.height() - handle)
         top_height = round(available_height * 3 / 5)
         self.split_views.setSizes([top_height, available_height - top_height])
-
-    def _toggle_full_screen(self):
-        if self.isFullScreen():
-            self.setSizeGripEnabled(True)
-            self.showNormal()
-        else:
-            self.setSizeGripEnabled(False)
-            self.showFullScreen()
-        if self.enable_flag_navigation:
-            self.btn_full_screen.setText("Windowed" if self.isFullScreen() else "Full Screen")
 
     def _build_ui(self):
         root_lay = QVBoxLayout(self)
@@ -665,11 +651,6 @@ class BaseQAWorkbenchDialog(QDialog):
             self.btn_ignore_flag.setToolTip("Ignore the current or selected flag without changing project data")
             self.btn_ignore_flag.clicked.connect(self._ignore_current_flag_and_advance)
             self.lay_top_actions.addWidget(self.btn_ignore_flag)
-
-            self.btn_full_screen = QPushButton("Windowed")
-            self.btn_full_screen.setToolTip("Toggle between full-screen and a resizable window")
-            self.btn_full_screen.clicked.connect(self._toggle_full_screen)
-            self.lay_top_actions.addWidget(self.btn_full_screen)
 
         self.lay_top_actions.addStretch(1)
 
@@ -1021,8 +1002,6 @@ class BaseQAWorkbenchDialog(QDialog):
         self.btn_previous_flag.setEnabled(self._review_neighbor(-1) is not None)
         self.btn_next_flag.setEnabled(self._review_neighbor(1) is not None or (anchor is None and bool(pending)))
         self.btn_ignore_flag.setEnabled(bool(anchor and anchor.get("status") != "resolved"))
-        if hasattr(self, "btn_full_screen"):
-            self.btn_full_screen.setText("Windowed" if self.isFullScreen() else "Full Screen")
 
     def _navigate_review(self, direction: int):
         if (self.stack.currentIndex() == 1
@@ -2373,7 +2352,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
 
     workbench_title = "Fix Point Errors"
     start_maximized = True
-    start_full_screen = True
+    start_full_screen = False
     enable_flag_navigation = True
 
     def __init__(self, state, parent=None):

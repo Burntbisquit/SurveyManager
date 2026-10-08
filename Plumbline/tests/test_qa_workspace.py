@@ -265,18 +265,20 @@ def test_fix_point_errors_dialog_opens_and_resolves(win, app, auto):
     assert dlg.stack.count() == 2
     dlg.show()
     app.processEvents()
-    assert dlg.isFullScreen()
+    assert dlg.isMaximized()
+    assert not dlg.isFullScreen()
     assert dlg.windowFlags() & Qt.WindowMaximizeButtonHint
-    screen_geometry = dlg.screen().geometry()
-    assert dlg.geometry().width() >= screen_geometry.width() - 2
-    assert dlg.geometry().height() >= screen_geometry.height() - 2
+    assert dlg.windowFlags() & Qt.WindowMinimizeButtonHint
+    assert not any(button.text() in {"Windowed", "Full Screen"}
+                   for button in dlg.findChildren(QPushButton))
     dlg.showNormal()
     app.processEvents()
+    assert not dlg.isMaximized()
     assert not dlg.isFullScreen()
     dlg.hide()
     dlg.show()
     app.processEvents()
-    assert not dlg.isFullScreen()  # Restoring/showing again must not trigger another full-screen request.
+    assert not dlg.isMaximized() and not dlg.isFullScreen()  # Restoring/showing again stays windowed.
 
     # There is one issue-scoped pair, hidden on the summary page.
     assert sum(button.text() == "Undo" for button in dlg.findChildren(QPushButton)) == 1
@@ -1363,19 +1365,13 @@ def test_qa_view_splitter_fills_height_and_keeps_views_recoverable(win, app):
         app.processEvents()
 
 
-def test_fix_point_fullscreen_reflows_workbench_to_screen_bottom(win, app):
+def test_fix_point_maximized_window_fills_workbench_at_multiple_sizes(win, app):
+    from PySide6.QtCore import Qt
     from plumbline.ui.qa_workspace import FixPointErrorsDialog
 
     dialog = FixPointErrorsDialog(win.state, win)
-    try:
-        dialog.show()
-        app.processEvents()
-        app.processEvents()
 
-        screen = dialog.screen() or app.primaryScreen()
-        assert dialog.isFullScreen()
-        assert dialog.geometry().height() >= screen.geometry().height() - 2
-
+    def assert_workbench_fills_window():
         root_layout = dialog.layout()
         margins = root_layout.contentsMargins()
         available_height = (
@@ -1385,6 +1381,24 @@ def test_fix_point_fullscreen_reflows_workbench_to_screen_bottom(win, app):
         assert dialog.splitter.height() >= available_height - 2
         assert dialog.w_left.height() >= dialog.splitter.height() - 2
         assert dialog.w_right.height() >= dialog.splitter.height() - 2
+
+    try:
+        dialog.show()
+        app.processEvents()
+        app.processEvents()
+
+        assert dialog.isMaximized()
+        assert not dialog.isFullScreen()
+        assert dialog.windowFlags() & Qt.WindowMaximizeButtonHint
+        assert dialog.windowFlags() & Qt.WindowMinimizeButtonHint
+        assert_workbench_fills_window()
+
+        dialog.showNormal()
+        dialog.resize(1200, 700)
+        app.processEvents()
+        app.processEvents()
+        assert not dialog.isMaximized() and not dialog.isFullScreen()
+        assert_workbench_fills_window()
     finally:
         dialog.close()
         app.processEvents()
