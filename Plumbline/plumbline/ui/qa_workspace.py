@@ -12,7 +12,7 @@ Features:
 - Closeness tolerance configuration shown only when editing close points
 - Per-stack staged actions and per-point stack editors with batch Apply/Undo
 - Smart Description Merging: combines code groups and notes with the active Field Book separators
-- Export Check Report to CSV
+- Check report with zero-count checks, staged point-level autofix, and a persistent change audit
 - Clean exit prompts on unsaved changes
 """
 from __future__ import annotations
@@ -21,6 +21,8 @@ import copy
 import csv
 import math
 import re
+import uuid
+from datetime import datetime
 from typing import Sequence
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
@@ -30,7 +32,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                                QFormLayout, QFrame, QGridLayout, QGroupBox, QMainWindow,
                                QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSplitter,
-                               QStackedWidget, QTableWidget, QTableWidgetItem,
+                               QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem,
                                QToolButton, QVBoxLayout, QWidget)
 
 from ..core import point_linework_coder as PLC
@@ -190,6 +192,182 @@ def _average_finite(values: Sequence[float]) -> float:
         if math.isfinite(elevation):
             finite.append(elevation)
     return sum(finite) / len(finite) if finite else float("nan")
+
+
+def _point_audit_state(point: SurveyPoint | None) -> dict | None:
+    """Small, serializable before/after record for an audited point change."""
+    if point is None:
+        return None
+    z = float(point.z) if point.z is not None else float("nan")
+    return {
+        "number": str(point.number),
+        "x": float(point.x),
+        "y": float(point.y),
+        "z": z if math.isfinite(z) else None,
+        "description": str(point.desc or ""),
+    }
+
+
+def _point_audit_changed_fields(before: dict | None, after: dict | None) -> list[str]:
+    if before is None:
+        return ["added"] if after is not None else []
+    if after is None:
+        return ["removed"]
+    fields = []
+    if before.get("number") != after.get("number"):
+        fields.append("point number")
+    if before.get("y") != after.get("y"):
+        fields.append("northing")
+    if before.get("x") != after.get("x"):
+        fields.append("easting")
+    if before.get("z") != after.get("z"):
+        fields.append("elevation")
+    if before.get("description") != after.get("description"):
+        fields.append("description")
+    return fields
+
+
+def _point_audit_state_text(state: dict | None) -> str:
+    if state is None:
+        return "(removed)"
+    z = state.get("z")
+    z_text = "—" if z is None or not math.isfinite(float(z)) else f"{float(z):,.3f}"
+    return (
+        f"#{state.get('number', '')}  N {float(state.get('y', 0.0)):,.3f}  "
+        f"E {float(state.get('x', 0.0)):,.3f}  Z {z_text}\n{state.get('description', '')}"
+    )
+
+
+def _write_qa_report_csv(path, check_rows: Sequence[dict], point_audit: Sequence[dict]):
+    """Write both the check summary and changed-point audit to one reviewable CSV."""
+    with open(path, "w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["CHECK SUMMARY"])
+        writer.writerow(["Check", "Status", "Findings", "Points", "Details"])
+        for item in check_rows:
+            writer.writerow([
+                item.get("check", ""), item.get("status", ""),
+                item.get("finding_count", 0), item.get("point_count", 0), item.get("detail", ""),
+            ])
+        writer.writerow([])
+        writer.writerow(["RESOLVED POINT AUDIT"])
+        writer.writerow([
+            "When", "Check", "Resolution", "Point ID", "Changed Fields",
+            "Before Number", "Before Northing", "Before Easting", "Before Elevation",
+            "Before Description", "After Number", "After Northing", "After Easting",
+            "After Elevation", "After Description",
+        ])
+        for item in point_audit:
+            before = item.get("before") or {}
+            after = item.get("after") or {}
+            changed = item.get("changed_fields", [])
+            writer.writerow([
+                item.get("when", ""), item.get("check", ""), item.get("resolution", ""),
+                item.get("point_id", ""), ", ".join(changed),
+                before.get("number", ""), before.get("y", ""), before.get("x", ""),
+                before.get("z", ""), before.get("description", ""),
+                after.get("number", ""), after.get("y", ""), after.get("x", ""),
+                after.get("z", ""), after.get("description", ""),
+            ])
+
+
+class QAReportDialog(QDialog):
+    """Report view for every check (including clear checks) and changed-point audit entries."""
+
+    def __init__(self, check_rows: Sequence[dict], point_audit: Sequence[dict], parent=None):
+        super().__init__(parent)
+        self.check_rows = [dict(row) for row in check_rows]
+        self.point_audit = [dict(row) for row in point_audit]
+        self.setWindowTitle("QA Report — Checks and Point Audit")
+        self.resize(1150, 720)
+        layout = QVBoxLayout(self)
+        layout.addWidget(Hint(
+            "All available checks are listed, including checks with zero findings. "
+            "The point audit lists only points changed by a QA resolution."))
+
+        self.tabs = QTabWidget(self)
+        self.tbl_checks = QTableWidget(len(self.check_rows), 5)
+        self.tbl_checks.setHorizontalHeaderLabels(["Check", "Status", "Findings", "Points", "Details"])
+        self.tbl_checks.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl_checks.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl_checks.setAlternatingRowColors(True)
+        self.tbl_checks.verticalHeader().setVisible(False)
+        for row, item in enumerate(self.check_rows):
+            values = (
+                item.get("check", ""), item.get("status", ""),
+                str(item.get("finding_count", 0)), str(item.get("point_count", 0)),
+                item.get("detail", ""),
+            )
+            for col, value in enumerate(values):
+                self.tbl_checks.setItem(row, col, QTableWidgetItem(str(value)))
+        self.tbl_checks.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.tbl_checks.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.tbl_checks.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.tbl_checks.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.tbl_checks.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.tabs.addTab(self.tbl_checks, "Checks")
+
+        self.tbl_point_audit = QTableWidget(len(self.point_audit), 7)
+        self.tbl_point_audit.setHorizontalHeaderLabels(
+            ["When", "Check", "Point", "Change", "Before", "After", "Resolution"])
+        self.tbl_point_audit.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl_point_audit.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl_point_audit.setAlternatingRowColors(True)
+        self.tbl_point_audit.verticalHeader().setVisible(False)
+        for row, item in enumerate(self.point_audit):
+            before_state = item.get("before")
+            after_state = item.get("after")
+            before = before_state or {}
+            after = after_state or {}
+            number = after.get("number") if after_state else before.get("number", "")
+            if before_state is None:
+                change = "Added"
+            elif after_state is None:
+                change = "Removed"
+            else:
+                change = ", ".join(item.get("changed_fields", [])) or "Changed"
+            values = (
+                item.get("when", ""), item.get("check", ""),
+                f"#{number} (ID {item.get('point_id', '')})", change,
+                _point_audit_state_text(before_state), _point_audit_state_text(after_state),
+                item.get("resolution", ""),
+            )
+            for col, value in enumerate(values):
+                cell = QTableWidgetItem(str(value))
+                cell.setToolTip(str(value))
+                self.tbl_point_audit.setItem(row, col, cell)
+        audit_header = self.tbl_point_audit.horizontalHeader()
+        audit_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        audit_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        audit_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        audit_header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        audit_header.setSectionResizeMode(4, QHeaderView.Stretch)
+        audit_header.setSectionResizeMode(5, QHeaderView.Stretch)
+        audit_header.setSectionResizeMode(6, QHeaderView.Stretch)
+        self.tabs.addTab(self.tbl_point_audit, "Changed Points")
+        layout.addWidget(self.tabs, 1)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        self.btn_export = QPushButton("Export CSV…")
+        self.btn_export.setProperty("accent", True)
+        self.btn_export.clicked.connect(self.export_csv)
+        buttons.addWidget(self.btn_export)
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        buttons.addWidget(btn_close)
+        layout.addLayout(buttons)
+
+    def export_csv(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export QA Report", "QA_Report.csv", "CSV Files (*.csv)")
+        if not path:
+            return
+        try:
+            _write_qa_report_csv(path, self.check_rows, self.point_audit)
+            QMessageBox.information(self, "Export Successful", f"Report saved to:\n{path}")
+        except Exception as ex:
+            QMessageBox.critical(self, "Export Error", f"Failed to save QA report:\n{ex}")
 
 
 # ------------------------------------------------------------------ Stack Resolution Popup Dialog
@@ -431,6 +609,8 @@ class BaseQAWorkbenchWindow(QMainWindow):
         # Baseline snapshot for Discard on Exit
         self.baseline_app_dirty = self.state.dirty
         self.baseline_snapshot = self._take_snapshot()
+        self.baseline_qa_audit = copy.deepcopy(
+            (getattr(self.state.project, "settings", {}) or {}).get("qa_resolution_audit", []))
 
         # Local undo/redo history stacks
         self.history_undo: list[tuple[str, dict[int, tuple]]] = []
@@ -649,32 +829,13 @@ class BaseQAWorkbenchWindow(QMainWindow):
         self.lay_top_actions.setContentsMargins(0, 0, 0, 0)
         self.lay_top_actions.setSpacing(6)
 
-        if self.enable_flag_navigation:
-            self.lbl_review_position = QLabel("Choose a flag to review")
-            self.lbl_review_position.setProperty("hint", "true")
-            self.lay_top_actions.addWidget(self.lbl_review_position)
-
-            self.btn_previous_flag = QPushButton("Previous Flag")
-            self.btn_previous_flag.clicked.connect(lambda: self._navigate_review(-1))
-            self.lay_top_actions.addWidget(self.btn_previous_flag)
-
-            self.btn_next_flag = QPushButton("Next Flag")
-            self.btn_next_flag.setProperty("accent", True)
-            self.btn_next_flag.clicked.connect(lambda: self._navigate_review(1))
-            self.lay_top_actions.addWidget(self.btn_next_flag)
-
-            self.btn_ignore_flag = QPushButton("Ignore Flag & Next")
-            self.btn_ignore_flag.setToolTip("Ignore the current or selected flag without changing project data")
-            self.btn_ignore_flag.clicked.connect(self._ignore_current_flag_and_advance)
-            self.lay_top_actions.addWidget(self.btn_ignore_flag)
-
         self.lay_top_actions.addStretch(1)
 
-        self.btn_export = QPushButton("Export Check Report...")
-        self.btn_export.setIcon(icons.icon("export"))
-        self.btn_export.setToolTip("Export all active and resolved findings to CSV")
-        self.btn_export.clicked.connect(self.export_report_csv)
-        self.lay_top_actions.addWidget(self.btn_export)
+        self.btn_report = QPushButton("QA Report…")
+        self.btn_report.setIcon(icons.icon("export"))
+        self.btn_report.setToolTip("Review all checks, including zero findings, and export the changed-point audit")
+        self.btn_report.clicked.connect(self.open_report_view)
+        self.lay_top_actions.addWidget(self.btn_report)
 
         lay_right.addWidget(self.w_top_actions)
 
@@ -687,19 +848,18 @@ class BaseQAWorkbenchWindow(QMainWindow):
         lay_sum.setContentsMargins(0, 0, 0, 0)
         lay_sum.setSpacing(4)
 
-        lay_sum.addWidget(QLabel("<b>Flags Requiring Review</b>"))
+        lay_sum.addWidget(QLabel("<b>Check Results</b>"))
         summary_hint = (
-            "Use Previous/Next Flag to review findings. Stack choices remain staged until Apply or Save; "
-            "Ignore Flag & Next skips a finding without changing project data."
-            if self.enable_flag_navigation else
-            "Select an issue to review its points and inline correction tools."
+            "Every check is listed, including clear and not-run checks. Select a row to highlight its points "
+            "or use Review/Edit to open its page. In the editor, Tab moves through points and stack actions; "
+            "changes stay staged until Apply or Save."
         )
         lbl_sum_hint = QLabel(summary_hint)
         lbl_sum_hint.setProperty("hint", "true")
         lay_sum.addWidget(lbl_sum_hint)
 
         self.tbl_active = DownTabTableWidget(0, 5)
-        self.tbl_active.setHorizontalHeaderLabels(["Edit", "Status", "Check", "Resolution Summary / Details", "Points"])
+        self.tbl_active.setHorizontalHeaderLabels(["Review", "Status", "Check", "Details", "Points / Count"])
         self.tbl_active.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_active.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tbl_active.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -717,7 +877,7 @@ class BaseQAWorkbenchWindow(QMainWindow):
         lay_sum.addWidget(self.tbl_active, 2)
 
         # Resolved Issues Section (Historical / Reference)
-        self.lbl_resolved_title = QLabel("<b>Resolved Issues (This Session):</b>")
+        self.lbl_resolved_title = QLabel("<b>Resolved Change Summary:</b>")
         lay_sum.addWidget(self.lbl_resolved_title)
 
         self.tbl_resolved = DownTabTableWidget(0, 4)
@@ -975,7 +1135,8 @@ class BaseQAWorkbenchWindow(QMainWindow):
     def _review_neighbor(self, direction: int, anchor: dict | None = None) -> dict | None:
         """Return the next unresolved finding without wrapping past the ends of the queue."""
         pending = [finding for finding in self.active_findings
-                   if finding.get("status") != "resolved"]
+                   if finding.get("status") not in {"resolved", "clear", "not_run"}
+                   and not finding.get("zero_check")]
         if not pending:
             return None
 
@@ -994,48 +1155,14 @@ class BaseQAWorkbenchWindow(QMainWindow):
                        else range(anchor_index - 1, -1, -1))
         for idx in row_indices:
             candidate = rows[idx]
-            if candidate.get("status") != "resolved":
+            if (candidate.get("status") not in {"resolved", "clear", "not_run"}
+                    and not candidate.get("zero_check")):
                 return candidate
         return None
 
     def _update_review_navigation(self):
-        if not self.enable_flag_navigation or not hasattr(self, "btn_next_flag"):
-            return
-        pending = [finding for finding in self.active_findings
-                   if finding.get("status") != "resolved"]
-        anchor = self._review_anchor_finding()
-        if anchor is None:
-            self.lbl_review_position.setText(
-                f"{len(pending)} flag{'s' if len(pending) != 1 else ''} to review")
-        elif anchor.get("status") == "resolved":
-            self.lbl_review_position.setText(f"Resolved: {anchor.get('check', 'Flag')}")
-        else:
-            position = next((idx + 1 for idx, finding in enumerate(pending)
-                             if finding.get("key") == anchor.get("key")), None)
-            prefix = f"Flag {position} of {len(pending)}" if position is not None else "Reviewing flag"
-            self.lbl_review_position.setText(f"{prefix}: {anchor.get('check', 'Flag')}")
-
-        self.btn_previous_flag.setEnabled(self._review_neighbor(-1) is not None)
-        self.btn_next_flag.setEnabled(self._review_neighbor(1) is not None or (anchor is None and bool(pending)))
-        self.btn_ignore_flag.setEnabled(bool(anchor and anchor.get("status") != "resolved"))
-
-    def _navigate_review(self, direction: int):
-        if (self.stack.currentIndex() == 1
-                and self._has_unapplied_issue_edits()):
-            self.lbl_status.setText("Apply or discard the current flag's staged changes before moving on.")
-            return
-        target = self._review_neighbor(direction)
-        if target is None:
-            if self.stack.currentIndex() == 1 and self.current_edit_finding:
-                self.lbl_status.setText("No more unresolved flags in that direction.")
-            return
-        self.review_anchor_key = target.get("key")
-        self._open_inline_editor(target)
-
-    def _ignore_current_flag_and_advance(self):
-        finding = self._review_anchor_finding()
-        if finding is not None and finding.get("status") != "resolved":
-            self._action_ignore(finding.get("key", ""), advance_to_next=True)
+        """No Previous/Next/Ignore toolbar remains; reviewers choose rows and Tab through edits."""
+        return
 
     # ------------------------------------------------------------------ Subclass Extension Hooks
     def _filter_finding(self, finding: dict) -> bool:
@@ -1089,15 +1216,119 @@ class BaseQAWorkbenchWindow(QMainWindow):
             label = v.get("label") or "Project Feature Codes"
             self.banner.set(f"Vocabulary: {label} ({n:,} codes active) — All checks active.", "info")
 
+    def _report_check_catalog(self) -> list[tuple[str, str, str]]:
+        """Canonical checks for this workbench: (display name, key, category)."""
+        from ..fieldwork import bridge as FB
+        from ..fieldwork import linecheck as LC
+        if self.enable_flag_navigation:
+            checks = [
+                ("Duplicate point numbers", "duplicate numbers", "points"),
+                ("Look-alike point numbers", "look-alike numbers", "points"),
+                ("Close points", "close points", "points"),
+            ]
+            checks.extend((title, flag, "descriptions") for flag, title in FB.FLAG_TITLES.items())
+            return checks
+        return [(issue, issue, "linework") for issue in LC.ISSUE_TYPES]
+
+    def _report_check_rows(self) -> list[dict]:
+        """Return current result counts for every check, including clear and skipped checks."""
+        from ..fieldwork.linecheck import ISSUE_FLAGS
+        result = getattr(self, "result", {}) or {}
+        findings = [
+            finding for finding in result.get("findings", [])
+            if finding.get("check", "").casefold() not in {"ok", "no field points"}
+            and self._filter_finding(finding)
+        ]
+        ids = result.get("ids") or list(self.state.project.points)
+        have_points = bool(result.get("rows") or self.state.project.points)
+        code_checks_ran = bool(result.get("code_checks") or self.code_set)
+        line_checks_ran = bool(self.fieldbook_path or self.code_set)
+        rows = []
+
+        for label, check_key, category in self._report_check_catalog():
+            if category == "descriptions":
+                matches = [item for item in findings
+                           if str(item.get("flag", "")) == check_key]
+                did_run = code_checks_ran and have_points
+            elif category == "linework":
+                matches = [item for item in findings
+                           if str(item.get("flag", "")) == ISSUE_FLAGS.get(check_key, "")
+                           or str(item.get("check", "")).casefold() == f"line: {check_key.lower()}"]
+                did_run = line_checks_ran and have_points
+            else:
+                matches = [item for item in findings
+                           if str(item.get("check", "")).casefold() == check_key.casefold()]
+                did_run = have_points
+
+            pids: set[int] = set()
+            finding_count = 0
+            details = []
+            for item in matches:
+                groups = item.get("groups") or []
+                item_pids = set(item.get("pids") or [])
+                for row_index in item.get("rows", []) or []:
+                    if isinstance(row_index, int) and 0 <= row_index < len(ids):
+                        item_pids.add(ids[row_index])
+                pids.update(item_pids)
+                finding_count += len(groups) if groups else max(1, len(item_pids))
+                message = item.get("message") or item.get("detail") or ""
+                if message:
+                    details.append(str(message))
+
+            if matches:
+                status = "FINDINGS"
+                detail = "; ".join(dict.fromkeys(details)) or "Findings require review."
+            elif did_run:
+                status = "CLEAR"
+                detail = "0 findings — check passed."
+            else:
+                status = "NOT RUN"
+                detail = "No field points or no required Field Book/code vocabulary is available."
+            rows.append({
+                "check": label,
+                "check_key": check_key,
+                "category": category,
+                "status": status,
+                "finding_count": finding_count,
+                "point_count": len(pids),
+                "detail": detail,
+                "pids": sorted(pids),
+            })
+        return rows
+
+    def _zero_check_findings(self, existing_findings: Sequence[dict] = ()) -> list[dict]:
+        """Build review entries for clear checks without duplicating resolved issue rows."""
+        from ..fieldwork.linecheck import ISSUE_FLAGS
+        entries = []
+        for row in self._report_check_rows():
+            if row["status"] == "FINDINGS":
+                continue
+            aliases = {str(row["check"]).casefold(), str(row["check_key"]).casefold()}
+            line_flag = ISSUE_FLAGS.get(row["check_key"])
+            if line_flag:
+                aliases.add(line_flag.casefold())
+            if any(str(item.get("check", "")).casefold() in aliases
+                   or str(item.get("flag", "")).casefold() in aliases
+                   for item in existing_findings):
+                continue
+            status = "clear" if row["status"] == "CLEAR" else "not_run"
+            entries.append({
+                "check": row["check"],
+                "flag": row["check_key"],
+                "level": "info",
+                "detail": row["detail"],
+                "message": row["detail"],
+                "pids": [],
+                "points": [],
+                "stack_groups": [],
+                "status": status,
+                "zero_check": True,
+                "key": f"zero-check:{self.workbench_title}:{row['check_key']}",
+            })
+        return entries
+
     def run_check(self):
         pr = self.state.project
-        if not pr.points:
-            self.tbl_active.setRowCount(0)
-            self.error_point_ids.clear()
-            self._sync_view_flags()
-            self.lbl_status.setText("No points in project.")
-            return
-
         from ..fieldwork import bridge as FB
         ne_tol = getattr(self, "close_tol", 0.05)
         self.result = FB.check_project(pr, f2f=self.code_set,
@@ -1118,6 +1349,8 @@ class BaseQAWorkbenchWindow(QMainWindow):
         err_pids: set[int] = set()
 
         for f in all_findings:
+            if str(f.get("check", "")).casefold() in {"ok", "no field points"}:
+                continue
             raw_pids = f.get("_raw_pids")
             if raw_pids is None:
                 rows = f.get("rows")
@@ -1230,31 +1463,47 @@ class BaseQAWorkbenchWindow(QMainWindow):
             f for f in self.tracked_findings
             if self._filter_finding(f) and f.get("key") not in self.ignored_keys
         ]
-        self.active_findings = visible_tracked
+        zero_checks = self._zero_check_findings(visible_tracked)
+        summary_findings = visible_tracked + zero_checks
+        self.active_findings = summary_findings
         self.error_point_ids = err_pids
 
-        # Populate Master Active Issues Table (Page 0)
-        self.tbl_active.setRowCount(len(visible_tracked))
+        # Populate findings plus zero-count check rows; those rows open read-only review pages.
+        self.tbl_active.setRowCount(len(summary_findings))
         dark = theme.current() == "dark"
         c_resolved_bg = QColor(24, 48, 32, 180) if dark else QColor(235, 247, 238)
         brush_resolved = QBrush(c_resolved_bg)
 
-        for r, item in enumerate(visible_tracked):
+        for r, item in enumerate(summary_findings):
             st = item.get("status", "active")
-            is_res = (st == "resolved")
-            is_part = (st == "partial")
+            is_res = st == "resolved"
+            is_part = st == "partial"
+            is_zero = bool(item.get("zero_check"))
+            is_clear = is_zero and st == "clear"
+            is_not_run = is_zero and st == "not_run"
 
-            # Col 0: Edit Button
-            btn_edit = QPushButton("Review" if is_res else "Edit")
-            btn_edit.setProperty("accent", not is_res)
-            btn_edit.setToolTip("Review resolutions for this issue" if is_res else "Open issue resolution screen")
+            # Col 0: Edit / Review button
+            btn_edit = QPushButton("Review" if is_res or is_zero else "Edit")
+            btn_edit.setProperty("accent", not (is_res or is_zero))
+            btn_edit.setToolTip(
+                "Open the check results page" if is_zero else
+                "Review resolutions for this issue" if is_res else
+                "Open issue resolution screen")
             btn_edit.clicked.connect(lambda _, it=item: self._open_inline_editor(it))
             self.tbl_active.setCellWidget(r, 0, btn_edit)
 
             # Col 1: Status / Level
-            if is_res:
-                item_lvl = QTableWidgetItem("RESOLVED")
+            if is_clear or is_res:
+                status_text = "CLEAR" if is_clear else "RESOLVED"
+                item_lvl = QTableWidgetItem(status_text)
                 item_lvl.setForeground(QColor("#27ae60"))
+                fnt = item_lvl.font()
+                fnt.setBold(True)
+                item_lvl.setFont(fnt)
+                item_lvl.setBackground(brush_resolved)
+            elif is_not_run:
+                item_lvl = QTableWidgetItem("NOT RUN")
+                item_lvl.setForeground(QColor("#3498db"))
                 fnt = item_lvl.font()
                 fnt.setBold(True)
                 item_lvl.setFont(fnt)
@@ -1276,13 +1525,11 @@ class BaseQAWorkbenchWindow(QMainWindow):
                 fnt = item_lvl.font()
                 fnt.setBold(True)
                 item_lvl.setFont(fnt)
-            if is_res:
-                item_lvl.setBackground(brush_resolved)
             self.tbl_active.setItem(r, 1, item_lvl)
 
             # Col 2: Check Name
             it_chk = QTableWidgetItem(item.get("check", ""))
-            if is_res:
+            if is_clear or is_res:
                 it_chk.setBackground(brush_resolved)
             self.tbl_active.setItem(r, 2, it_chk)
 
@@ -1302,10 +1549,15 @@ class BaseQAWorkbenchWindow(QMainWindow):
                 it_det = QTableWidgetItem(detail)
             self.tbl_active.setItem(r, 3, it_det)
 
-            # Col 4: Points
-            p_nums = item.get("points") or [str(pr.points[pid].number) for pid in item.get("pids", []) if pid in pr.points]
-            it_pts = QTableWidgetItem(", ".join(str(p) for p in p_nums))
-            if is_res:
+            # Col 4 shows affected numbers for findings, and the finding count for clear checks.
+            if is_zero:
+                point_text = "0"
+            else:
+                p_nums = item.get("points") or [
+                    str(pr.points[pid].number) for pid in item.get("pids", []) if pid in pr.points]
+                point_text = ", ".join(str(point) for point in p_nums)
+            it_pts = QTableWidgetItem(point_text)
+            if is_clear or is_res:
                 it_pts.setBackground(brush_resolved)
             self.tbl_active.setItem(r, 4, it_pts)
 
@@ -1418,6 +1670,8 @@ class BaseQAWorkbenchWindow(QMainWindow):
         """Remember only this issue's points so Discard can restore without a full-project copy."""
         self.issue_snapshot = self._take_snapshot(self._finding_point_scope(finding))
         self.issue_metadata_snapshot = {
+            "qa_resolution_audit": copy.deepcopy(
+                (getattr(self.state.project, "settings", {}) or {}).get("qa_resolution_audit", [])),
             "finding": {
                 "status": finding.get("status", "active"),
                 "resolutions": list(finding.get("resolutions", [])),
@@ -1447,6 +1701,7 @@ class BaseQAWorkbenchWindow(QMainWindow):
         self.sep_corrections = []
         self.current_focused_ed = None
         self.btn_autofix_descriptions = None
+        self.autofix_buttons = {}
         self.cb_stack_action = None  # Compatibility alias for the first per-stack dropdown.
         self.stack_action_combos = {}
         self.stack_action_keys = {}
@@ -1466,6 +1721,10 @@ class BaseQAWorkbenchWindow(QMainWindow):
         st = finding.get("status", "active")
         if st == "resolved":
             self.lbl_issue_status.setText("<span style='color: #27ae60; font-weight: bold;'>[✓ Resolved]</span>")
+        elif finding.get("zero_check") and st == "clear":
+            self.lbl_issue_status.setText("<span style='color: #27ae60; font-weight: bold;'>[✓ Clear — 0 findings]</span>")
+        elif finding.get("zero_check"):
+            self.lbl_issue_status.setText("<span style='color: #3498db; font-weight: bold;'>[Not run]</span>")
         elif st == "partial":
             self.lbl_issue_status.setText("<span style='color: #f39c12; font-weight: bold;'>[Partial]</span>")
         else:
@@ -1494,8 +1753,11 @@ class BaseQAWorkbenchWindow(QMainWindow):
             if pids:
                 stacks = [pids]
 
+        # Keep zero-result review pages read-only and show why the check is clear or skipped.
+        if finding.get("zero_check"):
+            self.lbl_edit_detail.setText(str(finding.get("detail", "No findings for this check.")))
         # Update detail text above closeness tolerance with just number of groups
-        if is_close or is_dup:
+        elif is_close or is_dup:
             num_groups = len(stacks)
             group_word = "close point group" if is_close else "duplicate number group"
             if num_groups == 0 and st == "resolved":
@@ -1821,6 +2083,9 @@ class BaseQAWorkbenchWindow(QMainWindow):
                         value = copy.deepcopy(value)
                     finding[key] = value
             self.resolved_findings[:] = session["resolved_findings"]
+            settings = getattr(self.state.project, "settings", None)
+            if isinstance(settings, dict):
+                settings["qa_resolution_audit"] = copy.deepcopy(session["qa_resolution_audit"])
             self.history_undo[:] = session["history_undo"]
             self.history_redo[:] = session["history_redo"]
             self.dirty = session["dirty"]
@@ -2141,6 +2406,34 @@ class BaseQAWorkbenchWindow(QMainWindow):
             self.btn_undo.setEnabled(True)
             self.btn_redo.setEnabled(False)
 
+    def _remove_point_audit_event(self, resolution_id: str | None):
+        if not resolution_id:
+            return
+        settings = getattr(self.state.project, "settings", None)
+        if not isinstance(settings, dict):
+            return
+        current = settings.get("qa_resolution_audit", [])
+        if not isinstance(current, list):
+            return
+        filtered = [row for row in current if row.get("resolution_id") != resolution_id]
+        if len(filtered) != len(current):
+            settings["qa_resolution_audit"] = filtered
+
+    def _restore_point_audit_event(self, audit_rows: Sequence[dict]):
+        if not audit_rows:
+            return
+        settings = getattr(self.state.project, "settings", None)
+        if not isinstance(settings, dict):
+            return
+        current = settings.setdefault("qa_resolution_audit", [])
+        if not isinstance(current, list):
+            current = []
+            settings["qa_resolution_audit"] = current
+        resolution_id = audit_rows[0].get("resolution_id")
+        if resolution_id and any(row.get("resolution_id") == resolution_id for row in current):
+            return
+        current.extend(copy.deepcopy(list(audit_rows)))
+
     def _undo_issue(self):
         f = self.current_edit_finding
         if not f:
@@ -2160,14 +2453,19 @@ class BaseQAWorkbenchWindow(QMainWindow):
         self._restore_issue_ui_state(f, getattr(snap, "ui_state", None))
         if f.get("resolutions"):
             f["resolutions"].pop()
+        last_item = None
         if f.get("resolved_history"):
             last_item = f["resolved_history"].pop()
             f.setdefault("redo_resolved_history", []).append(last_item)
             f.setdefault("ignored_pids", set()).difference_update(last_item.get("ignored_pids", []))
+            self._remove_point_audit_event(last_item.get("resolution_id"))
         self._update_issue_undo_buttons()
         self.btn_issue_redo.setEnabled(True)
-        if self.resolved_findings:
-            self.resolved_findings.pop()
+        if last_item and last_item.get("resolution_id"):
+            match = next((idx for idx, item in enumerate(self.resolved_findings)
+                          if item.get("resolution_id") == last_item["resolution_id"]), None)
+            if match is not None:
+                self.resolved_findings.pop(match)
         if data_changed:
             self.run_check()
         else:
@@ -2195,12 +2493,19 @@ class BaseQAWorkbenchWindow(QMainWindow):
             last_item = f["redo_resolved_history"].pop()
             f.setdefault("resolved_history", []).append(last_item)
             f.setdefault("ignored_pids", set()).update(last_item.get("ignored_pids", []))
+            self._restore_point_audit_event(last_item.get("point_audit", []))
+            if last_item.get("point_audit") and not any(
+                    item.get("resolution_id") == last_item.get("resolution_id")
+                    for item in self.resolved_findings):
+                self.resolved_findings.append(last_item)
         else:
             res_item = {
+                "resolution_id": uuid.uuid4().hex,
                 "level": f.get("level", "warn"),
                 "check": f.get("check", "Issue"),
                 "resolution": desc,
                 "points": list(f.get("points", [])),
+                "point_audit": [],
             }
             f.setdefault("resolved_history", []).append(res_item)
         self.btn_issue_redo.setEnabled(bool(h_redo))
@@ -2241,6 +2546,10 @@ class BaseQAWorkbenchWindow(QMainWindow):
         elif cur_finding:
             p_nums = list(cur_finding.get("points", []))
 
+        before_by_id = {
+            pid: _point_audit_state(pr.points.get(pid))
+            for pid in dict.fromkeys(resolved_points or [])
+        }
         self._push_undo(resolution_desc, point_ids=resolved_points)
         if cur_finding is not None:
             cur_finding["stack_action_drafts"] = {}
@@ -2250,19 +2559,60 @@ class BaseQAWorkbenchWindow(QMainWindow):
         if cur_finding and ignored_pids:
             cur_finding.setdefault("ignored_pids", set()).update(ignored_pids)
         fix_fn()
+
+        resolution_id = uuid.uuid4().hex
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        point_audit_rows = []
+        for pid, before in before_by_id.items():
+            after = _point_audit_state(pr.points.get(pid))
+            changed_fields = _point_audit_changed_fields(before, after)
+            if not changed_fields:
+                continue
+            point_audit_rows.append({
+                "resolution_id": resolution_id,
+                "when": timestamp,
+                "check": cur_finding.get("check", "Issue") if cur_finding else "Issue",
+                "resolution": resolution_desc,
+                "point_id": int(pid),
+                "before": before,
+                "after": after,
+                "changed_fields": changed_fields,
+            })
+
+        if point_audit_rows:
+            settings = getattr(pr, "settings", None)
+            if not isinstance(settings, dict):
+                settings = {}
+                pr.settings = settings
+            audit = settings.setdefault("qa_resolution_audit", [])
+            if not isinstance(audit, list):
+                audit = []
+                settings["qa_resolution_audit"] = audit
+            audit.extend(copy.deepcopy(point_audit_rows))
+            project_changed = True
+
         if project_changed:
             pr.process_linework()
             self.state.set_dirty(True)
             self.state.refresh(("points", "entities"))
 
+        changed_numbers = []
+        for audit_row in point_audit_rows:
+            state = audit_row.get("after") or audit_row.get("before") or {}
+            number = state.get("number")
+            if number is not None:
+                changed_numbers.append(str(number))
         res_item = {
+            "resolution_id": resolution_id,
             "level": cur_finding.get("level", "warn") if cur_finding else "warn",
             "check": cur_finding.get("check", "Issue") if cur_finding else "Issue",
             "resolution": resolution_desc,
-            "points": p_nums,
+            "points": changed_numbers,
             "ignored_pids": ignored_pids,
+            "point_audit": copy.deepcopy(point_audit_rows),
         }
-        self.resolved_findings.append(res_item)
+        if point_audit_rows:
+            self.resolved_findings.append(res_item)
         if cur_finding:
             cur_finding.setdefault("resolutions", []).append(resolution_desc)
             cur_finding.setdefault("resolved_history", []).append(res_item)
@@ -2307,24 +2657,17 @@ class BaseQAWorkbenchWindow(QMainWindow):
         elif advance_to_next:
             self.lbl_status.setText("Flag ignored. No next unresolved flag remains.")
 
-    # ------------------------------------------------------------------ Save & Discard Exits
+    # ------------------------------------------------------------------ QA Report View
+    def open_report_view(self, _checked: bool = False):
+        settings = getattr(self.state.project, "settings", {}) or {}
+        audit = settings.get("qa_resolution_audit", [])
+        dialog = QAReportDialog(self._report_check_rows(), audit, self)
+        self.report_dialog = dialog
+        dialog.exec()
+
     def export_report_csv(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Export Check Report", "Check_Report.csv", "CSV Files (*.csv)")
-        if not path:
-            return
-        try:
-            with open(path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(["Status", "Level", "Check", "Details", "Points"])
-                for item in self.active_findings:
-                    writer.writerow(["ACTIVE", item.get("level", "warn"), item.get("check", ""),
-                                     item.get("detail", ""), ", ".join(str(p) for p in item.get("points", []))])
-                for item in self.resolved_findings:
-                    writer.writerow(["RESOLVED", item.get("level", "warn"), item.get("check", ""),
-                                     item.get("resolution", ""), ", ".join(str(p) for p in item.get("points", []))])
-            QMessageBox.information(self, "Export Successful", f"Report saved to:\n{path}")
-        except Exception as ex:
-            QMessageBox.critical(self, "Export Error", f"Failed to save CSV report:\n{ex}")
+        """Compatibility hook: export is now launched from the QA Report view."""
+        self.open_report_view()
 
     def _prepare_save_for_exit(self) -> bool:
         if self._has_unapplied_issue_edits():
@@ -2341,6 +2684,9 @@ class BaseQAWorkbenchWindow(QMainWindow):
 
     def _restore_before_exit(self):
         self._restore_snapshot(self.baseline_snapshot)
+        settings = getattr(self.state.project, "settings", None)
+        if isinstance(settings, dict):
+            settings["qa_resolution_audit"] = copy.deepcopy(self.baseline_qa_audit)
         self.state.set_dirty(self.baseline_app_dirty)
         self.dirty = False
 
@@ -2451,6 +2797,13 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
             self._action_resolve_stack_dialog(stk, is_duplicate=is_dup)
 
     def _build_inline_tools(self, finding: dict):
+        if finding.get("zero_check"):
+            if hasattr(self, "w_close_tol_bar"):
+                self.w_close_tol_bar.hide()
+            label = finding.get("detail", "No findings for this check.")
+            self.lay_edit_tools.addWidget(Hint(str(label)))
+            return
+
         pr = self.state.project
         chk = finding.get("check", "").lower()
         flag = str(finding.get("flag", ""))
@@ -2662,6 +3015,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
             lay_pts_inner.setSpacing(8)
 
             self.desc_edits: list[tuple[SurveyPoint, QLineEdit, QLabel]] = []
+            self.autofix_buttons: dict[int, QPushButton] = {}
             self.current_focused_ed: QLineEdit | None = None
 
             for p in pts:
@@ -2687,6 +3041,23 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
                 description_draft = finding.get("description_drafts", {}).get(p.id)
                 ed = QLineEdit(str(p.desc or "") if description_draft is None else str(description_draft))
                 row_ed.addWidget(ed, 1)
+                is_unknown, autofix_guess = self._autofix_guess_for_description(p.desc)
+                if is_unknown:
+                    btn_autofix = QPushButton("Auto Fix")
+                    btn_autofix.setEnabled(autofix_guess is not None)
+                    btn_autofix.setToolTip(
+                        "Stage the safe Field Book suggestion in this point's description. "
+                        "Apply or Save commits it."
+                        if autofix_guess else
+                        "No safe Field Book suggestion is available; correct the description manually."
+                    )
+                    if autofix_guess is not None:
+                        btn_autofix.clicked.connect(
+                            lambda _checked=False, editor=ed, suggestion=autofix_guess:
+                                editor.setText(suggestion)
+                        )
+                    self.autofix_buttons[p.id] = btn_autofix
+                    row_ed.addWidget(btn_autofix)
                 lay_p.addLayout(row_ed)
 
                 lbl_status = QLabel("")
@@ -2729,19 +3100,8 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
             scroll_pts.setWidget(w_pts_inner)
             lay_keyin.addWidget(scroll_pts, 1)
 
-            # Edits remain staged until page-level Apply or Save.
-            row_d_btns = QHBoxLayout()
-            row_d_btns.setSpacing(6)
-
-            btn_autofix = QPushButton("Auto Fix All")
-            btn_autofix.setEnabled(False)
-            btn_autofix.setToolTip("Auto Fix is temporarily disabled. Edit descriptions manually or use Fieldbook Lookup.")
-            btn_autofix.clicked.connect(self._action_autofix_descriptions)
-            self.btn_autofix_descriptions = btn_autofix
-            row_d_btns.addWidget(btn_autofix)
-
-            row_d_btns.addStretch(1)
-            lay_keyin.addLayout(row_d_btns)
+            # Each unknown-code point has its own safe-guess button beside the staged editor.
+            self.btn_autofix_descriptions = None  # compatibility alias; Auto Fix is per point now
 
             sp_desc.addWidget(grp_keyin)
 
@@ -2835,6 +3195,26 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
             pat = re.compile(rf"\b{re.escape(tok_esc)}\b", re.IGNORECASE)
             escaped = pat.sub(f"<span style='color: #e74c3c; text-decoration: underline; font-weight: bold;'>{tok_esc}</span>", escaped)
         return escaped
+
+    def _autofix_guess_for_description(self, description: str | None) -> tuple[bool, str | None]:
+        """Return the existing Fieldwork Manager safe guess for an unknown-code description."""
+        from ..fieldwork.parse import parse_desc_field
+        from ..fieldwork.clean import _get_autofix_for_desc
+
+        raw = str(description or "")
+        parsed = parse_desc_field(raw, self.code_set or set(), fieldbook_path=self.fieldbook_path or None)
+        unknown_flags = [str(flag) for flag in parsed.get("flags", [])
+                         if str(flag).casefold().startswith("unknowncode:")]
+        if not unknown_flags:
+            return False, None
+        guess = _get_autofix_for_desc(
+            raw, " ".join(unknown_flags), str(parsed.get("flag_detail", "")),
+            self.code_set or set(), fieldbook_path=self.fieldbook_path or None,
+        )
+        if not guess or str(guess).strip() == raw.strip():
+            return True, None
+        valid, _message = self._validate_desc_text(str(guess), self.code_set or set())
+        return True, str(guess) if valid else None
 
     def _validate_desc_text(self, txt: str, f2f_set: set | None = None) -> tuple[bool, str]:
         """Check if keyed-in description parses cleanly against Field Book vocabulary."""
@@ -3603,8 +3983,14 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
         self._action_apply_descriptions()
 
     def _action_autofix_descriptions(self):
-        """Auto Fix is temporarily disabled; use manual edits or Fieldbook Lookup."""
-        return
+        """Compatibility action that stages safe guesses without mutating project points."""
+        for item in getattr(self, "desc_edits", []):
+            if len(item) < 2:
+                continue
+            point, editor = item[0], item[1]
+            is_unknown, suggestion = self._autofix_guess_for_description(point.desc)
+            if is_unknown and suggestion:
+                editor.setText(suggestion)
 
 
 
@@ -3625,6 +4011,10 @@ class FixLineworkDialog(BaseQAWorkbenchWindow):
         return False
 
     def _build_inline_tools(self, finding: dict):
+        if finding.get("zero_check"):
+            self.lay_edit_tools.addWidget(Hint(str(finding.get("detail", "No findings for this check."))))
+            return
+
         pr = self.state.project
         pids = finding.get("pids", [])
         pts = [pr.points[pid] for pid in pids if pid in pr.points]

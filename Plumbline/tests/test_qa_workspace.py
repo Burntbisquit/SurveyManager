@@ -352,7 +352,7 @@ def test_fix_point_errors_dialog_opens_and_resolves(win, app, auto):
     dlg._save_and_exit()
 
 
-def test_flag_review_navigation_waits_for_corrections_and_ignore_advances(win, monkeypatch):
+def test_flag_review_is_row_and_tab_driven_without_navigation_buttons(win, monkeypatch):
     from plumbline.fieldwork import bridge as FB
     from plumbline.ui.qa_workspace import FixPointErrorsDialog
 
@@ -379,39 +379,34 @@ def test_flag_review_navigation_waits_for_corrections_and_ignore_advances(win, m
             "key": key,
         } for check, key, point in checks if point.desc == "BADCODE"]
         return {"findings": findings, "ids": ids,
-                "rows": [], "stats": {}, "flags": {}, "line_issues": []}
+                "rows": [], "stats": {}, "flags": {}, "line_issues": [], "code_checks": True}
 
     monkeypatch.setattr(FB, "check_project", fake_check_project)
     dialog = FixPointErrorsDialog(win.state, win)
 
-    # The summary's Next starts with the first finding; staged edits prevent losing input.
-    dialog.btn_next_flag.click()
+    assert not hasattr(dialog, "btn_previous_flag")
+    assert not hasattr(dialog, "btn_next_flag")
+    assert not hasattr(dialog, "btn_ignore_flag")
+
+    # Review is opened from the finding row; staged edits cannot be lost by Return.
+    finding = next(item for item in dialog.active_findings if item.get("key") == "review-flag-a")
+    row = dialog.active_findings.index(finding)
+    dialog.tbl_active.cellWidget(row, 0).click()
     assert dialog.current_edit_finding["key"] == "review-flag-a"
+    dialog._validate_desc_text = lambda text, f2f_set=None: (True, "Valid code")
     dialog.desc_edits[0][1].setText("EP")
-    dialog.btn_next_flag.click()
-    assert dialog.current_edit_finding["key"] == "review-flag-a"
-    assert "Apply or discard" in dialog.lbl_status.text()
+    dialog.btn_issue_return.click()
+    assert dialog.stack.currentIndex() == 1
+    assert "Apply or Discard" in dialog.lbl_status.text()
 
     dialog._action_discard_issue()
-    dialog.btn_next_flag.click()
-    assert dialog.current_edit_finding["key"] == "review-flag-b"
-
-    # Ignore & Next dismisses only the current flag and immediately opens the next one.
-    dialog.btn_ignore_flag.click()
-    assert "review-flag-b" in dialog.ignored_keys
-    assert dialog.current_edit_finding["key"] == "review-flag-c"
-
-    dialog.btn_previous_flag.click()
-    assert dialog.current_edit_finding["key"] == "review-flag-a"
-
-    # Apply commits only this flag's staged changes; Next navigation remains explicit.
+    finding = next(item for item in dialog.active_findings if item.get("key") == "review-flag-a")
+    dialog._open_inline_editor(finding)
     dialog._validate_desc_text = lambda text, f2f_set=None: (True, "Valid code")
     dialog.desc_edits[0][1].setText("EP")
     dialog.btn_issue_apply.click()
     assert points[0].desc == "EP"
     assert dialog.current_edit_finding["key"] == "review-flag-a"
-    dialog.btn_next_flag.click()
-    assert dialog.current_edit_finding["key"] == "review-flag-c"
     dialog._discard_and_exit()
 
 
@@ -1015,7 +1010,7 @@ def test_close_stack_ignore_suppresses_only_the_selected_point(win, monkeypatch)
     assert dialog.current_edit_finding["ignored_pids"] == {p2.id}
     assert dialog.tbl_active.item(0, 1).text() == "PARTIAL"
     dialog._action_ignore(dialog.current_edit_finding["key"])
-    assert dialog.active_findings == []
+    assert all(item.get("zero_check") for item in dialog.active_findings)
     assert dialog.error_point_ids == set()
 
 
@@ -1077,6 +1072,7 @@ def test_issue_page_hides_exit_controls_and_deleted_separator_widgets_are_safe(w
 # ------------------------------------------------------------------ Fix Unknown Code & Fieldbook Lookup
 def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
+    from plumbline.fieldwork import clean as clean_module
     from plumbline.ui.qa_workspace import FixPointErrorsDialog
 
     pr = win.state.project
@@ -1086,6 +1082,11 @@ def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkey
     pr.settings["f2f_path"] = "test-office-standard.csv"
 
     p_unk = pr.add_point(850, 950, 50, number="8801", desc="BADCODE1 ST")
+    p_unk2 = pr.add_point(851, 951, 50, number="8802", desc="BADCODE2 ST")
+    monkeypatch.setattr(
+        clean_module, "_get_autofix_for_desc",
+        lambda raw, *_args, **_kwargs: "RCP ST" if raw.startswith("BADCODE") else raw,
+    )
 
     dlg = FixPointErrorsDialog(win.state, win)
     dlg.show()
@@ -1096,18 +1097,24 @@ def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkey
     assert unk_finding is not None
     assert unk_finding.get("level") == "error"
 
-    # 2. Open inline editor for Unknown Code
+    # 2. Open inline editor for Unknown Code; each affected point gets its own staged Auto Fix.
     dlg._open_inline_editor(unk_finding)
     assert dlg.stack.currentIndex() == 1
-    assert not dlg.btn_autofix_descriptions.isEnabled()
-    assert "temporarily disabled" in dlg.btn_autofix_descriptions.toolTip().lower()
+    assert p_unk.id in dlg.autofix_buttons and p_unk2.id in dlg.autofix_buttons
+    auto_fix_button = dlg.autofix_buttons[p_unk.id]
+    second_auto_fix_button = dlg.autofix_buttons[p_unk2.id]
+    assert auto_fix_button.isEnabled() and second_auto_fix_button.isEnabled()
 
     # Fixed-description input uses a dark foreground on its pale validation background.
     fixed_edit = next(item[1] for item in dlg.desc_edits if item[0].id == p_unk.id)
+    second_fixed_edit = next(item[1] for item in dlg.desc_edits if item[0].id == p_unk2.id)
     assert "color: #1f2933" in fixed_edit.styleSheet()
-    old_fixed_text = fixed_edit.text()
-    dlg._action_autofix_descriptions()
-    assert fixed_edit.text() == old_fixed_text
+    auto_fix_button.click()
+    second_auto_fix_button.click()
+    assert fixed_edit.text() == "RCP ST" and second_fixed_edit.text() == "RCP ST"
+    assert p_unk.desc == "BADCODE1 ST" and p_unk2.desc == "BADCODE2 ST"
+    fixed_edit.setText(p_unk.desc)
+    second_fixed_edit.setText(p_unk2.desc)
 
     # 3. Verify original description highlights error token in red/underline
     highlighted = dlg._highlight_unknown_tokens(p_unk.desc)
@@ -1166,6 +1173,91 @@ def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkey
     assert len(dlg.resolved_findings) >= 1
 
     dlg._save_and_exit()
+
+
+def test_qa_report_includes_zero_checks_persistent_point_audit_and_export(tmp_path, win, monkeypatch):
+    from plumbline.fieldwork import bridge as FB
+    from plumbline.ui.qa_workspace import (
+        FixPointErrorsDialog,
+        QAReportDialog,
+        _write_qa_report_csv,
+    )
+
+    pr = win.state.project
+    point = pr.add_point(350.0, 450.0, 25.0, number="93501", desc="BADCODE ST")
+
+    def fake_check_project(project, **kwargs):
+        ids = list(project.points)
+        return {
+            "rows": [[pid] for pid in ids],
+            "ids": ids,
+            "findings": [],
+            "stats": {},
+            "flags": {},
+            "line_issues": [],
+            "code_checks": True,
+        }
+
+    monkeypatch.setattr(FB, "check_project", fake_check_project)
+    dialog = FixPointErrorsDialog(win.state, win)
+    assert dialog.btn_report.text() == "QA Report…"
+    assert not hasattr(dialog, "btn_export")
+
+    # Clear checks remain visible and have a page to review.
+    clear_close = next(row for row in dialog._report_check_rows()
+                       if row["check"] == "Close points")
+    assert clear_close["status"] == "CLEAR"
+    assert clear_close["finding_count"] == 0
+    clear_row = next(idx for idx, item in enumerate(dialog.active_findings)
+                     if item.get("zero_check") and item["check"] == "Close points")
+    assert dialog.tbl_active.item(clear_row, 1).text() == "CLEAR"
+    dialog.tbl_active.cellWidget(clear_row, 0).click()
+    assert dialog.current_edit_finding["zero_check"]
+    assert "0 findings" in dialog.lbl_edit_detail.text()
+    dialog._action_return_to_summary()
+
+    # A correction creates durable before/after records for changed points only.
+    finding = {
+        "check": "Unknown code",
+        "flag": "UnknownCode",
+        "level": "error",
+        "detail": "Unknown code on one point.",
+        "pids": [point.id],
+        "points": [point.number],
+        "stack_groups": [[point.id]],
+        "key": "point-audit-regression",
+    }
+    dialog._open_inline_editor(finding)
+    dialog._apply_fix(
+        "Correct description",
+        lambda: setattr(point, "desc", "EP ST"),
+        resolved_points=[point.id],
+    )
+    audit = pr.settings["qa_resolution_audit"]
+    assert len(audit) == 1
+    assert audit[0]["before"]["description"] == "BADCODE ST"
+    assert audit[0]["after"]["description"] == "EP ST"
+    assert audit[0]["changed_fields"] == ["description"]
+
+    report = QAReportDialog(dialog._report_check_rows(), audit, win)
+    assert report.tabs.count() == 2
+    assert report.tbl_point_audit.rowCount() == 1
+    assert report.btn_export.text().startswith("Export")
+    report_path = tmp_path / "qa_report.csv"
+    _write_qa_report_csv(report_path, dialog._report_check_rows(), audit)
+    exported = report_path.read_text(encoding="utf-8")
+    assert "CHECK SUMMARY" in exported and "RESOLVED POINT AUDIT" in exported
+    assert "Close points,CLEAR,0,0" in exported
+    assert "BADCODE ST" in exported and "EP ST" in exported
+    report.close()
+
+    dialog._undo_issue()
+    assert point.desc == "BADCODE ST"
+    assert pr.settings["qa_resolution_audit"] == []
+    dialog._redo_issue()
+    assert point.desc == "EP ST"
+    assert len(pr.settings["qa_resolution_audit"]) == 1
+    dialog._discard_and_exit()
 
 
 def test_qa_workbench_uses_selected_vocabulary_and_fieldbook_path(win, monkeypatch):
