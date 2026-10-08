@@ -1358,15 +1358,28 @@ class MainWindow(QMainWindow):
             self.canvas.invalidate()
 
     # ================================================================== survey
+    def _show_modal_qa_workbench(self, workbench):
+        """Show a central-widget QA window modally while keeping the main window alive."""
+        self._qa_workbench_window = workbench
+        workbench.setWindowModality(Qt.WindowModal)
+        workbench.setAttribute(Qt.WA_DeleteOnClose, True)
+        workbench.destroyed.connect(self._clear_qa_workbench_reference)
+        workbench.show()
+        workbench.raise_()
+        workbench.activateWindow()
+
+    def _clear_qa_workbench_reference(self, *_):
+        self._qa_workbench_window = None
+
     def open_fix_point_errors(self):
         """Survey > Fix Point Errors: open the dedicated Fix Point Errors workbench."""
         from .qa_workspace import FixPointErrorsDialog
-        FixPointErrorsDialog(self.state, self).exec()
+        self._show_modal_qa_workbench(FixPointErrorsDialog(self.state, self))
 
     def open_fix_linework(self):
         """Survey > Fix Linework: open the dedicated Fix Linework workbench."""
         from .qa_workspace import FixLineworkDialog
-        FixLineworkDialog(self.state, self).exec()
+        self._show_modal_qa_workbench(FixLineworkDialog(self.state, self))
 
     def qa_dialog(self):
         self.open_fix_point_errors()

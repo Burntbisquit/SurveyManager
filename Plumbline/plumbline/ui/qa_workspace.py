@@ -1,6 +1,6 @@
 """Full-Featured QA & Error Resolution Workbenches for Plumbline.
 
-Provides dedicated, non-modal workbenches for fixing field errors:
+Provides dedicated, window-modal workbenches for fixing field errors:
 1. FixPointErrorsDialog: Point & code errors (Duplicates, Proximity, Unrecognized Codes, Letter Cases)
 2. FixLineworkDialog: Linework errors & sequence cleanup (missing line/curve meanings, bowties, inverted codes, gaps)
 
@@ -27,7 +27,7 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                                QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
-                               QFormLayout, QFrame, QGridLayout, QGroupBox,
+                               QFormLayout, QFrame, QGridLayout, QGroupBox, QMainWindow,
                                QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSplitter,
                                QStackedWidget, QTableWidget, QTableWidgetItem,
@@ -390,8 +390,8 @@ class ClosePointsResolveDialog(QDialog):
         }
 
 
-# ------------------------------------------------------------------ Base Workbench Dialog
-class BaseQAWorkbenchDialog(QDialog):
+# ------------------------------------------------------------------ Base Workbench Window
+class BaseQAWorkbenchWindow(QMainWindow):
     """Base class for resizable QA Workbenches with 2D/3D split views and inline resolution."""
 
     workbench_title = "QA Workbench"
@@ -411,7 +411,6 @@ class BaseQAWorkbenchDialog(QDialog):
             self.setWindowFlag(Qt.WindowSystemMenuHint, True)
             self.setWindowFlag(Qt.WindowMinimizeButtonHint, True)
             self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
-            self.setSizeGripEnabled(not self.start_full_screen)
             screen = self.screen() or QApplication.primaryScreen()
             available = screen.availableGeometry() if screen else None
             if available is not None:
@@ -457,9 +456,10 @@ class BaseQAWorkbenchDialog(QDialog):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        root_layout = self.layout()
-        if root_layout is not None and hasattr(self, "splitter"):
-            root_layout.setGeometry(self.contentsRect())
+        central = self.centralWidget()
+        root_layout = getattr(self, "root_layout", None)
+        if central is not None and root_layout is not None:
+            root_layout.setGeometry(central.contentsRect())
             root_layout.activate()
 
     def showEvent(self, event):
@@ -487,11 +487,12 @@ class BaseQAWorkbenchDialog(QDialog):
 
     def _apply_initial_view_split(self):
         """Reflow the top-level layout after initial sizing, then balance the canvases."""
-        root_layout = self.layout()
-        if root_layout is not None:
-            # Re-activate the workbench layout against the final window rectangle so
-            # both panes use its full height, including after a maximize/restore cycle.
-            root_layout.setGeometry(self.contentsRect())
+        root_layout = getattr(self, "root_layout", None)
+        central = self.centralWidget()
+        if central is not None and root_layout is not None:
+            # QMainWindow owns the central-widget geometry; activate its layout only
+            # after that area has received the native maximize/restore size.
+            root_layout.setGeometry(central.contentsRect())
             root_layout.activate()
 
         handle = self.split_views.handleWidth()
@@ -500,9 +501,12 @@ class BaseQAWorkbenchDialog(QDialog):
         self.split_views.setSizes([top_height, available_height - top_height])
 
     def _build_ui(self):
-        root_lay = QVBoxLayout(self)
-        # Like the main workbench's central canvas, the QA content is edge-to-edge
-        # within the native window client area in both maximized and restored sizes.
+        # Match the main window: the complete QA workspace is a central widget, so
+        # QMainWindow owns its right/bottom geometry as the native window resizes.
+        self.root_widget = QWidget(self)
+        self.setCentralWidget(self.root_widget)
+        self.root_layout = QVBoxLayout(self.root_widget)
+        root_lay = self.root_layout
         root_lay.setContentsMargins(0, 0, 0, 0)
         root_lay.setSpacing(0)
 
@@ -2316,19 +2320,27 @@ class BaseQAWorkbenchDialog(QDialog):
         except Exception as ex:
             QMessageBox.critical(self, "Export Error", f"Failed to save CSV report:\n{ex}")
 
-    def _save_and_exit(self) -> bool:
+    def _prepare_save_for_exit(self) -> bool:
         if self._has_unapplied_issue_edits():
             if not self._action_apply_current_issue_changes(return_to_summary=True):
                 return False
         self.dirty = False
-        self.accept()
         return True
 
-    def _discard_and_exit(self):
+    def _save_and_exit(self) -> bool:
+        if not self._prepare_save_for_exit():
+            return False
+        self.close()
+        return True
+
+    def _restore_before_exit(self):
         self._restore_snapshot(self.baseline_snapshot)
         self.state.set_dirty(self.baseline_app_dirty)
         self.dirty = False
-        self.reject()
+
+    def _discard_and_exit(self):
+        self._restore_before_exit()
+        self.close()
 
     def closeEvent(self, event):
         if self.dirty or self._has_unapplied_issue_edits():
@@ -2343,12 +2355,12 @@ class BaseQAWorkbenchDialog(QDialog):
 
             clicked = mb.clickedButton()
             if clicked == b_save:
-                if self._save_and_exit():
+                if self._prepare_save_for_exit():
                     event.accept()
                 else:
                     event.ignore()
             elif clicked == b_discard:
-                self._discard_and_exit()
+                self._restore_before_exit()
                 event.accept()
             else:
                 event.ignore()
@@ -2359,7 +2371,7 @@ class BaseQAWorkbenchDialog(QDialog):
 # ============================================================================
 # 1. FIX POINT ERRORS WORKBENCH
 # ============================================================================
-class FixPointErrorsDialog(BaseQAWorkbenchDialog):
+class FixPointErrorsDialog(BaseQAWorkbenchWindow):
     """Workbench dedicated to Category 1: Point & Code Errors."""
 
     workbench_title = "Fix Point Errors"
@@ -3588,7 +3600,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
 # ============================================================================
 # 2. FIX LINEWORK WORKBENCH
 # ============================================================================
-class FixLineworkDialog(BaseQAWorkbenchDialog):
+class FixLineworkDialog(BaseQAWorkbenchWindow):
     """Workbench dedicated to Category 2: Linework Errors & Cleanup."""
 
     workbench_title = "Fix Linework"

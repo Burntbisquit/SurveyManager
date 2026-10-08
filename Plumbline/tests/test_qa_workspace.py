@@ -1330,13 +1330,16 @@ def test_qa_view_splitter_fills_height_and_keeps_views_recoverable(win, app):
         assert dialog.splitter.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
         assert dialog.w_left.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
         assert dialog.w_right.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
-        root_layout = dialog.layout()
+        root_layout = dialog.root_layout
         margins = root_layout.contentsMargins()
         available_height = (
-            dialog.height() - margins.top() - margins.bottom()
+            dialog.root_widget.height() - margins.top() - margins.bottom()
             - dialog.banner.height() - root_layout.spacing()
         )
         assert dialog.splitter.height() >= available_height - 2
+        assert dialog.splitter.width() >= dialog.root_widget.width() - 2
+        assert dialog.splitter.geometry().bottom() >= dialog.root_widget.rect().bottom() - 2
+        assert dialog.splitter.geometry().right() >= dialog.root_widget.rect().right() - 2
         assert dialog.w_left.height() >= dialog.splitter.height() - 2
         assert dialog.w_right.height() >= dialog.splitter.height() - 2
 
@@ -1367,23 +1370,26 @@ def test_qa_view_splitter_fills_height_and_keeps_views_recoverable(win, app):
 
 def test_fix_point_maximized_window_fills_workbench_at_multiple_sizes(win, app):
     from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QMainWindow
     from plumbline.ui.qa_workspace import FixPointErrorsDialog
 
     dialog = FixPointErrorsDialog(win.state, win)
+    assert isinstance(dialog, QMainWindow)
+    assert dialog.centralWidget() is dialog.root_widget
 
     def assert_workbench_fills_window():
-        root_layout = dialog.layout()
+        root_layout = dialog.root_layout
         margins = root_layout.contentsMargins()
         assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == (0, 0, 0, 0)
         available_height = (
-            dialog.height() - margins.top() - margins.bottom()
+            dialog.root_widget.height() - margins.top() - margins.bottom()
             - dialog.banner.height() - root_layout.spacing()
         )
-        available_width = dialog.width() - margins.left() - margins.right()
+        available_width = dialog.root_widget.width() - margins.left() - margins.right()
         assert dialog.splitter.height() >= available_height - 2
         assert dialog.splitter.width() >= available_width - 2
-        assert dialog.splitter.geometry().bottom() >= dialog.rect().bottom() - 2
-        assert dialog.splitter.geometry().right() >= dialog.rect().right() - 2
+        assert dialog.splitter.geometry().bottom() >= dialog.root_widget.rect().bottom() - 2
+        assert dialog.splitter.geometry().right() >= dialog.root_widget.rect().right() - 2
         assert dialog.w_left.height() >= dialog.splitter.height() - 2
         assert dialog.w_right.height() >= dialog.splitter.height() - 2
 
@@ -1407,4 +1413,20 @@ def test_fix_point_maximized_window_fills_workbench_at_multiple_sizes(win, app):
     finally:
         dialog.close()
         app.processEvents()
+
+
+def test_main_window_opens_qa_workbench_as_modal_central_window(win, app):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QMainWindow
+
+    win.open_fix_point_errors()
+    app.processEvents()
+
+    dialog = win._qa_workbench_window
+    assert isinstance(dialog, QMainWindow)
+    assert dialog.centralWidget() is dialog.root_widget
+    assert dialog.windowModality() == Qt.WindowModal
+    dialog._discard_and_exit()
+    app.processEvents()
+    assert win._qa_workbench_window is None
 
