@@ -10,13 +10,14 @@ Features:
 - Traceback local undo/redo and autosave transaction staging
 - Deep inline point/linework resolution tools (with point selection highlighting in 2D/3D)
 - Closeness tolerance configuration shown only when editing close points
-- Stacked close points with per-point action dropdowns dialog
+- Per-stack staged actions and per-point stack editors with batch Apply/Undo
 - Smart Description Merging: combines code groups and notes with the active Field Book separators
 - Export Check Report to CSV
 - Clean exit prompts on unsaved changes
 """
 from __future__ import annotations
 
+import copy
 import csv
 import math
 import re
@@ -80,7 +81,7 @@ class DownTabTableWidget(QTableWidget):
 
 
 class _DownTabComboBox(QComboBox):
-    """Tab from an embedded list combo to the same column in the next row, without wraparound."""
+    """Tab through embedded combos in one column, skipping blank rows and avoiding wraparound."""
 
     def __init__(self, table, row: int, column: int, parent=None):
         super().__init__(parent)
@@ -92,12 +93,16 @@ class _DownTabComboBox(QComboBox):
         if event.key() in (Qt.Key_Tab, Qt.Key_Backtab):
             step = -1 if event.key() == Qt.Key_Backtab or event.modifiers() & Qt.ShiftModifier else 1
             target_row = self._row + step
-            if 0 <= target_row < self._table.rowCount():
-                self._table.setCurrentCell(target_row, self._column)
+            while 0 <= target_row < self._table.rowCount():
                 target = self._table.cellWidget(target_row, self._column)
                 if target is not None:
+                    self._table.setCurrentCell(target_row, self._column)
                     target.setFocus(Qt.TabFocusReason)
-            event.accept()
+                    event.accept()
+                    return
+                target_row += step
+            # Let normal Qt focus traversal continue past the first/last embedded combo.
+            super().keyPressEvent(event)
             return
         super().keyPressEvent(event)
 
@@ -110,9 +115,10 @@ class _PointSnapshot(dict[int, tuple]):
     points added later without touching unrelated points.
     """
 
-    def __init__(self, points=(), *, scope: set[int] | None = None):
+    def __init__(self, points=(), *, scope: set[int] | None = None, ui_state: dict | None = None):
         super().__init__(points)
         self.scope = None if scope is None else set(scope)
+        self.ui_state = copy.deepcopy(ui_state)
 
 
 # ------------------------------------------------------------------ Helper Functions
@@ -190,10 +196,14 @@ def _average_finite(values: Sequence[float]) -> float:
 class ClosePointsResolveDialog(QDialog):
     """Modal popup dialog for resolving a single stack of close or duplicate points."""
 
-    def __init__(self, state, points: Sequence[SurveyPoint], is_duplicate: bool = False, parent=None):
+    def __init__(
+        self, state, points: Sequence[SurveyPoint], is_duplicate: bool = False,
+        parent=None, initial_plan: dict | None = None,
+    ):
         super().__init__(parent)
         self.state = state
         self.points = list(points)
+        self.initial_plan = initial_plan or {}
         project_settings = getattr(state.project, "settings", {}) or {}
         self.fieldbook_path = project_settings.get("fieldbook_file")
         self.commands = project_settings.get("f2f_commands")
@@ -264,6 +274,18 @@ class ClosePointsResolveDialog(QDialog):
                 cmb.setCurrentIndex(0)  # Merge (Target)
             else:
                 cmb.setCurrentIndex(1)  # Merge (Into Target)
+            initial_actions = self.initial_plan.get("actions", {})
+            initial_action = initial_actions.get(p.id, initial_actions.get(str(p.id)))
+            if initial_action:
+                action_labels = {
+                    "target": "Merge (Target)",
+                    "merge": "Merge (Into Target)",
+                    "delete": "Delete Point",
+                    "keep": "Keep Point",
+                    "renumber": "Renumber Point",
+                    "ignore": "Ignore",
+                }
+                cmb.setCurrentText(action_labels.get(initial_action, initial_action))
             cmb.currentIndexChanged.connect(self._on_row_action_changed)
             self.combos.append(cmb)
             self.tbl.setCellWidget(r, 5, cmb)
@@ -286,11 +308,13 @@ class ClosePointsResolveDialog(QDialog):
 
         lay.addWidget(box_opt)
 
-        # Buttons
+        # Stage the point-level choices in the workbench; project data changes only
+        # when the page-level Apply or Save action is used.
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
-        b_apply = QPushButton("Apply")
+        b_apply = QPushButton("Stage Choices")
         b_apply.setProperty("accent", True)
+        b_apply.setToolTip("Return these point-level choices to the page without changing project data")
         b_apply.clicked.connect(self.accept)
         b_cancel = QPushButton("Cancel")
         b_cancel.clicked.connect(self.reject)
@@ -299,6 +323,9 @@ class ClosePointsResolveDialog(QDialog):
         lay.addLayout(btn_row)
 
         self._update_preview()
+        if self.initial_plan:
+            self.ed_preview_desc.setText(str(self.initial_plan.get("merged_desc", "")))
+            self.chk_avg_coords.setChecked(bool(self.initial_plan.get("average_coords", True)))
 
     def _on_row_action_changed(self):
         self._update_preview()
@@ -622,7 +649,13 @@ class BaseQAWorkbenchDialog(QDialog):
         lay_sum.setSpacing(4)
 
         lay_sum.addWidget(QLabel("<b>Flags Requiring Review</b>"))
-        lbl_sum_hint = QLabel("Use Previous/Next Flag to work through findings, or open any row directly. Apply & Next commits a correction; Ignore Flag & Next skips that finding.")
+        summary_hint = (
+            "Use Previous/Next Flag to review findings. Stack choices remain staged until Apply or Save; "
+            "Ignore Flag & Next skips a finding without changing project data."
+            if self.enable_flag_navigation else
+            "Select an issue to review its points and inline correction tools."
+        )
+        lbl_sum_hint = QLabel(summary_hint)
         lbl_sum_hint.setProperty("hint", "true")
         lay_sum.addWidget(lbl_sum_hint)
 
@@ -693,7 +726,9 @@ class BaseQAWorkbenchDialog(QDialog):
 
         self.btn_issue_undo = QPushButton("Undo")
         self.btn_issue_undo.setIcon(icons.icon("undo"))
-        self.btn_issue_undo.setToolTip("Undo last correction on this issue")
+        self.btn_issue_undo.setToolTip(
+            "Undo the last applied batch and restore its dropdown choices without applying them again; "
+            "if nothing has been applied, clear the current staged choices")
         self.btn_issue_undo.setEnabled(False)
         self.btn_issue_undo.clicked.connect(self._undo_issue)
         lay_bb.addWidget(self.btn_issue_undo)
@@ -719,19 +754,26 @@ class BaseQAWorkbenchDialog(QDialog):
 
         # Table of Affected Points
         self.lay_edit.addWidget(QLabel("<b>Affected Points (Click on point / stack to highlight):</b>"))
-        self.tbl_edit_pts = DownTabTableWidget(0, 6)
-        self.tbl_edit_pts.setHorizontalHeaderLabels(["Edit", "Pt #", "Northing", "Easting", "Elevation", "Description"])
+        self.tbl_edit_pts = DownTabTableWidget(0, 7 if self.enable_flag_navigation else 6)
+        if self.enable_flag_navigation:
+            self.tbl_edit_pts.setHorizontalHeaderLabels(
+                ["Stack", "Pt #", "Northing", "Easting", "Elevation", "Description", "Action"])
+        else:
+            self.tbl_edit_pts.setHorizontalHeaderLabels(
+                ["Stack", "Pt #", "Northing", "Easting", "Elevation", "Description"])
         self.tbl_edit_pts.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_edit_pts.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tbl_edit_pts.verticalHeader().setVisible(False)
         hh_e = self.tbl_edit_pts.horizontalHeader()
         hh_e.setSectionResizeMode(QHeaderView.Interactive)
-        self.tbl_edit_pts.setColumnWidth(0, 55)
+        self.tbl_edit_pts.setColumnWidth(0, 120 if self.enable_flag_navigation else 55)
         self.tbl_edit_pts.setColumnWidth(1, 65)
         self.tbl_edit_pts.setColumnWidth(2, 105)
         self.tbl_edit_pts.setColumnWidth(3, 105)
         self.tbl_edit_pts.setColumnWidth(4, 90)
-        self.tbl_edit_pts.setColumnWidth(5, 260)
+        self.tbl_edit_pts.setColumnWidth(5, 240 if self.enable_flag_navigation else 260)
+        if self.enable_flag_navigation:
+            self.tbl_edit_pts.setColumnWidth(6, 220)
         hh_e.setStretchLastSection(True)
         self.tbl_edit_pts.itemSelectionChanged.connect(self._on_edit_point_selected)
         self.tbl_edit_pts.cellDoubleClicked.connect(self._on_edit_pts_double_clicked)
@@ -771,23 +813,51 @@ class BaseQAWorkbenchDialog(QDialog):
         lay_ib.setContentsMargins(0, 4, 0, 0)
         lay_ib.setSpacing(8)
 
-        self.btn_issue_apply = QPushButton("Apply & Next")
-        self.btn_issue_apply.setProperty("accent", True)
-        self.btn_issue_apply.setToolTip(
-            "Apply the selected stack action or staged corrections; continue to the next flag when this one is resolved")
-        self.btn_issue_apply.clicked.connect(
-            lambda: self._action_apply_current_issue_changes(advance_to_next=True))
-        lay_ib.addWidget(self.btn_issue_apply)
+        self.btn_issue_return = None
+        if self.enable_flag_navigation:
+            self.btn_issue_apply = QPushButton("Apply")
+            self.btn_issue_apply.setProperty("accent", True)
+            self.btn_issue_apply.setToolTip(
+                "Apply all staged stack and point corrections on this flag, then stay here")
+            self.btn_issue_apply.clicked.connect(self._action_apply_current_issue_changes)
+            lay_ib.addWidget(self.btn_issue_apply)
 
-        self.btn_issue_save = QPushButton("Apply & Return")
-        self.btn_issue_save.setToolTip("Apply any staged changes for this flag and return to All Issues")
-        self.btn_issue_save.clicked.connect(self._action_save_issue)
-        lay_ib.addWidget(self.btn_issue_save)
+            self.btn_issue_save = QPushButton("Save")
+            self.btn_issue_save.setToolTip(
+                "Apply staged changes for this flag and return to the issue list; use Save & Exit there to finish")
+            self.btn_issue_save.clicked.connect(self._action_save_issue)
+            lay_ib.addWidget(self.btn_issue_save)
 
-        self.btn_issue_discard = QPushButton("Discard & Return")
-        self.btn_issue_discard.setToolTip("Revert changes made on this flag in this session and return to All Issues")
-        self.btn_issue_discard.clicked.connect(self._action_discard_issue)
-        lay_ib.addWidget(self.btn_issue_discard)
+            self.btn_issue_discard = QPushButton("Discard")
+            self.btn_issue_discard.setToolTip(
+                "Discard staged choices and revert changes made since opening this flag")
+            self.btn_issue_discard.clicked.connect(self._action_discard_issue)
+            lay_ib.addWidget(self.btn_issue_discard)
+
+            self.btn_issue_return = QPushButton("Return")
+            self.btn_issue_return.setToolTip(
+                "Return to the issue list without applying; Apply or Discard staged choices first")
+            self.btn_issue_return.clicked.connect(self._action_return_to_summary)
+            lay_ib.addWidget(self.btn_issue_return)
+        else:
+            # Keep the linework workbench's established action flow unchanged.
+            self.btn_issue_apply = QPushButton("Apply & Next")
+            self.btn_issue_apply.setProperty("accent", True)
+            self.btn_issue_apply.setToolTip(
+                "Apply the selected correction and continue when this issue is resolved")
+            self.btn_issue_apply.clicked.connect(
+                lambda: self._action_apply_current_issue_changes(advance_to_next=True))
+            lay_ib.addWidget(self.btn_issue_apply)
+
+            self.btn_issue_save = QPushButton("Apply & Return")
+            self.btn_issue_save.setToolTip("Apply staged changes for this issue and return to the issue list")
+            self.btn_issue_save.clicked.connect(self._action_save_issue)
+            lay_ib.addWidget(self.btn_issue_save)
+
+            self.btn_issue_discard = QPushButton("Discard & Return")
+            self.btn_issue_discard.setToolTip("Revert changes made since opening this issue")
+            self.btn_issue_discard.clicked.connect(self._action_discard_issue)
+            lay_ib.addWidget(self.btn_issue_discard)
 
         lay_ib.addStretch(1)
         self.w_issue_bottom.hide()
@@ -945,16 +1015,26 @@ class BaseQAWorkbenchDialog(QDialog):
         pass
 
     def _on_edit_pts_double_clicked(self, row: int, col: int):
-        it = self.tbl_edit_pts.item(row, 1)
-        if it:
-            data = it.data(Qt.UserRole)
-            if data and isinstance(data, tuple) and len(data) >= 2:
-                stack = data[1]
-                chk = self.current_edit_finding.get("check", "") if self.current_edit_finding else ""
-                is_dup = "duplicate" in chk.lower() or "look-alike" in chk.lower()
-                if hasattr(self, "_action_resolve_stack_dialog"):
-                    self._action_resolve_stack_dialog(stack, is_duplicate=is_dup)
-                return
+        data = None
+        for column in range(self.tbl_edit_pts.columnCount()):
+            item = self.tbl_edit_pts.item(row, column)
+            if item is not None:
+                data = item.data(Qt.UserRole)
+                if data is not None:
+                    break
+        if isinstance(data, tuple) and len(data) >= 2:
+            stack = list(data[1])
+            chk = self.current_edit_finding.get("check", "") if self.current_edit_finding else ""
+            detail = self.current_edit_finding.get("detail", "") if self.current_edit_finding else ""
+            check_lower = chk.lower()
+            is_dup = ("duplicate" in check_lower or "look-alike" in check_lower
+                      or ("number" in check_lower and "used" in str(detail).lower()))
+            if hasattr(self, "_action_resolve_stack_dialog"):
+                self._action_resolve_stack_dialog(stack, is_duplicate=is_dup)
+            return
+        if isinstance(data, int):
+            self._select_and_focus_points([data])
+            return
         self._on_stack_clicked()
 
     # ------------------------------------------------------------------ Check & State Management
@@ -1211,6 +1291,78 @@ class BaseQAWorkbenchDialog(QDialog):
         self._update_review_navigation()
 
     # ------------------------------------------------------------------ Inline Detail View (Page 1)
+    @staticmethod
+    def _stack_key(stack_pids: Sequence[int]) -> tuple[int, ...]:
+        """Stable key for a stack, independent of detector ordering."""
+        return tuple(sorted(int(pid) for pid in stack_pids))
+
+    def _on_stack_action_changed(self, stack_key: tuple[int, ...], combo: QComboBox):
+        finding = self.current_edit_finding
+        if finding is None:
+            return
+        drafts = finding.setdefault("stack_action_drafts", {})
+        action = self._safe_widget_text(combo, "currentData")
+        if action is None:
+            drafts.pop(stack_key, None)
+        elif action == "individual":
+            # The popup's detailed plan is already stored under this key.
+            if drafts.get(stack_key, {}).get("kind") != "individual":
+                drafts.pop(stack_key, None)
+        else:
+            drafts[stack_key] = {"kind": "bulk", "action": action}
+        if action != "individual":
+            individual_index = combo.findData("individual")
+            if individual_index >= 0:
+                combo.blockSignals(True)
+                combo.removeItem(individual_index)
+                combo.blockSignals(False)
+        if action:
+            self.lbl_status.setText("Stack action staged; project data is unchanged until Apply or Save.")
+        self._update_issue_undo_buttons()
+        self._update_review_navigation()
+
+    def _capture_current_issue_ui_state(self) -> dict | None:
+        """Capture staged controls so Undo can restore them without applying them."""
+        finding = self.current_edit_finding
+        if finding is None:
+            return None
+        state = {
+            "stack_action_drafts": copy.deepcopy(finding.get("stack_action_drafts", {})),
+            "description_drafts": {},
+            "separator_drafts": {},
+        }
+        for item in getattr(self, "desc_edits", []):
+            if len(item) < 2:
+                continue
+            point, editor = item[0], item[1]
+            text = self._safe_widget_text(editor, "text")
+            if text is not None and text != (point.desc or ""):
+                state["description_drafts"][point.id] = text
+
+        for item in getattr(self, "sep_corrections", []):
+            if len(item) < 4:
+                continue
+            point, _original, fixed_item, combo = item[:4]
+            action = self._safe_widget_text(combo, "currentText")
+            fixed = self._safe_widget_text(fixed_item, "text")
+            if action is not None and fixed is not None:
+                state["separator_drafts"][point.id] = {"action": action, "fixed": fixed}
+
+        for stack_key, combo in getattr(self, "stack_action_combos", {}).items():
+            action = self._safe_widget_text(combo, "currentData")
+            if action is None:
+                state["stack_action_drafts"].pop(stack_key, None)
+            elif action != "individual":
+                state["stack_action_drafts"][stack_key] = {"kind": "bulk", "action": action}
+        return state
+
+    @staticmethod
+    def _restore_issue_ui_state(finding: dict, ui_state: dict | None):
+        if ui_state is None:
+            return
+        for key in ("stack_action_drafts", "description_drafts", "separator_drafts"):
+            finding[key] = copy.deepcopy(ui_state.get(key, {}))
+
     def _finding_point_scope(self, finding: dict) -> set[int] | None:
         """Return the point IDs an issue can affect, or None if history is project-wide."""
         scope = set(finding.get("pids", []) or [])
@@ -1239,6 +1391,9 @@ class BaseQAWorkbenchDialog(QDialog):
                 "history_undo": list(finding.get("history_undo", [])),
                 "history_redo": list(finding.get("history_redo", [])),
                 "redo_resolved_history": list(finding.get("redo_resolved_history", [])),
+                "stack_action_drafts": copy.deepcopy(finding.get("stack_action_drafts", {})),
+                "description_drafts": copy.deepcopy(finding.get("description_drafts", {})),
+                "separator_drafts": copy.deepcopy(finding.get("separator_drafts", {})),
             },
             "resolved_findings": list(self.resolved_findings),
             "history_undo": list(self.history_undo),
@@ -1256,7 +1411,10 @@ class BaseQAWorkbenchDialog(QDialog):
         self.sep_corrections = []
         self.current_focused_ed = None
         self.btn_autofix_descriptions = None
-        self.cb_stack_action = None
+        self.cb_stack_action = None  # Compatibility alias for the first per-stack dropdown.
+        self.stack_action_combos = {}
+        self.stack_action_keys = {}
+        self.stack_action_indices = {}
         self.btn_stack_edit = None
 
         if start_session is None:
@@ -1286,8 +1444,12 @@ class BaseQAWorkbenchDialog(QDialog):
         self.btn_issue_redo.setEnabled(bool(h_redo))
 
         pr = self.state.project
-        is_close = "close" in chk.lower()
-        is_dup = "duplicate" in chk.lower() or "look-alike" in chk.lower()
+        check_lower = chk.lower()
+        is_close = "close" in check_lower or "top of each other" in check_lower
+        detail_lower = str(finding.get("detail", "")).lower()
+        is_exact_dup = "duplicate" in check_lower or ("number" in check_lower and "used" in detail_lower)
+        is_lookalike = "look-alike" in check_lower
+        is_dup = is_exact_dup or is_lookalike
 
         # Stacks: list of point ID lists
         stacks = finding.get("stack_groups") or []
@@ -1313,8 +1475,13 @@ class BaseQAWorkbenchDialog(QDialog):
         flag = str(finding.get("flag", ""))
         is_sep = "MisplacedAfterSeparator" in flag or "potential code in descriptor" in chk.lower() or "text before" in chk.lower() or "separator" in chk.lower()
 
-        # Populate Affected Points Table
-        if is_sep:
+        # Populate Affected Points Table. Stack actions live beside each stack so the
+        # whole page can be staged and applied as one batch.
+        is_stack_issue = is_close or is_dup
+        self.stack_action_combos: dict[tuple[int, ...], QComboBox] = {}
+        self.stack_action_keys: dict[tuple[int, ...], list[int]] = {}
+        self.stack_action_indices: dict[tuple[int, ...], int] = {}
+        if is_sep or (self.enable_flag_navigation and not is_stack_issue):
             self.tbl_edit_pts.setRowCount(0)
             self.tbl_edit_pts.setColumnCount(5)
             self.tbl_edit_pts.setHorizontalHeaderLabels(["Pt #", "Northing", "Easting", "Elevation", "Description"])
@@ -1325,8 +1492,7 @@ class BaseQAWorkbenchDialog(QDialog):
             hh_e.setSectionResizeMode(3, QHeaderView.ResizeToContents)
             hh_e.setSectionResizeMode(4, QHeaderView.Stretch)
 
-            pids = finding.get("pids", [])
-            for pid in pids:
+            for pid in finding.get("pids", []):
                 p = pr.points.get(pid)
                 if not p:
                     continue
@@ -1352,10 +1518,11 @@ class BaseQAWorkbenchDialog(QDialog):
                 it_desc = QTableWidgetItem(str(p.desc or ""))
                 it_desc.setData(Qt.UserRole, pid)
                 self.tbl_edit_pts.setItem(r, 4, it_desc)
-        else:
+        elif self.enable_flag_navigation:
             self.tbl_edit_pts.setRowCount(0)
-            self.tbl_edit_pts.setColumnCount(6)
-            self.tbl_edit_pts.setHorizontalHeaderLabels(["Stack", "Pt #", "Northing", "Easting", "Elevation", "Description"])
+            self.tbl_edit_pts.setColumnCount(7)
+            self.tbl_edit_pts.setHorizontalHeaderLabels(
+                ["Stack", "Pt #", "Northing", "Easting", "Elevation", "Description", "Action"])
             hh_e = self.tbl_edit_pts.horizontalHeader()
             hh_e.setSectionResizeMode(0, QHeaderView.ResizeToContents)
             hh_e.setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -1363,49 +1530,125 @@ class BaseQAWorkbenchDialog(QDialog):
             hh_e.setSectionResizeMode(3, QHeaderView.ResizeToContents)
             hh_e.setSectionResizeMode(4, QHeaderView.ResizeToContents)
             hh_e.setSectionResizeMode(5, QHeaderView.Stretch)
+            hh_e.setSectionResizeMode(6, QHeaderView.ResizeToContents)
+            hh_e.setStretchLastSection(False)
 
             dark = theme.current() == "dark"
             c_even = QColor(36, 59, 83, 110) if dark else QColor(245, 248, 252)
             c_odd = QColor(20, 36, 52, 110) if dark else QColor(228, 235, 244)
+            stack_drafts = finding.setdefault("stack_action_drafts", {})
 
             for s_idx, stack in enumerate(stacks):
+                stack_ids = [int(pid) for pid in stack if pid in pr.points]
+                if not stack_ids:
+                    continue
+                stack_key = self._stack_key(stack_ids)
                 bg = QBrush(c_even if (s_idx % 2 == 0) else c_odd)
-                for p_idx, pid in enumerate(stack):
+                for p_idx, pid in enumerate(stack_ids):
                     p = pr.points.get(pid)
                     if not p:
                         continue
                     r = self.tbl_edit_pts.rowCount()
                     self.tbl_edit_pts.insertRow(r)
+                    row_data = (s_idx, stack_ids, pid)
 
-                    it_stack = QTableWidgetItem(f"Stack {s_idx + 1}" if p_idx == 0 else "")
-                    it_stack.setData(Qt.UserRole, (s_idx, stack, pid))
-                    it_stack.setBackground(bg)
-                    self.tbl_edit_pts.setItem(r, 0, it_stack)
+                    if p_idx == 0:
+                        stack_cell = QWidget()
+                        stack_layout = QVBoxLayout(stack_cell)
+                        stack_layout.setContentsMargins(4, 2, 4, 2)
+                        stack_layout.setSpacing(2)
+                        stack_layout.addWidget(QLabel(f"Stack {s_idx + 1}"))
+                        btn_edit_stack = QPushButton("Edit Stack")
+                        btn_edit_stack.setToolTip(
+                            "Choose a separate action for each point in this stack; choices remain staged until Apply")
+                        btn_edit_stack.clicked.connect(
+                            lambda _checked=False, ids=list(stack_ids), duplicate=is_dup:
+                                self._action_resolve_stack_dialog(ids, is_duplicate=duplicate))
+                        stack_layout.addWidget(btn_edit_stack)
+                        self.tbl_edit_pts.setCellWidget(r, 0, stack_cell)
 
-                    it_num = QTableWidgetItem(str(p.number))
-                    it_num.setData(Qt.UserRole, (s_idx, stack, pid))
-                    it_num.setBackground(bg)
-                    self.tbl_edit_pts.setItem(r, 1, it_num)
+                        combo = _DownTabComboBox(self.tbl_edit_pts, r, 6)
+                        combo.addItem("Select an action…", None)
+                        combo.addItem("Merge all into head; average coordinates", "merge")
+                        combo.addItem("Keep head; delete other points", "keep")
+                        if is_dup:
+                            combo.addItem("Renumber second point", "renumber")
+                        combo.addItem("Ignore this stack", "ignore")
 
-                    it_y = QTableWidgetItem(f"{p.y:,.3f}")
-                    it_y.setData(Qt.UserRole, (s_idx, stack, pid))
-                    it_y.setBackground(bg)
-                    self.tbl_edit_pts.setItem(r, 2, it_y)
+                        draft = stack_drafts.get(stack_key)
+                        if draft and draft.get("kind") == "individual":
+                            combo.addItem(
+                                f"Point-by-point choices ({len(draft.get('actions', {}))})", "individual")
+                            combo.setCurrentIndex(combo.findData("individual"))
+                        elif draft and draft.get("kind") == "bulk":
+                            index = combo.findData(draft.get("action"))
+                            combo.setCurrentIndex(index if index >= 0 else 0)
 
-                    it_x = QTableWidgetItem(f"{p.x:,.3f}")
-                    it_x.setData(Qt.UserRole, (s_idx, stack, pid))
-                    it_x.setBackground(bg)
-                    self.tbl_edit_pts.setItem(r, 3, it_x)
+                        combo.setToolTip(
+                            "Choose a stack action. This only stages the choice; Apply commits all staged stacks.")
+                        combo.currentIndexChanged.connect(
+                            lambda _index, key=stack_key, action_combo=combo:
+                                self._on_stack_action_changed(key, action_combo))
+                        self.tbl_edit_pts.setCellWidget(r, 6, combo)
+                        self.stack_action_combos[stack_key] = combo
+                        self.stack_action_keys[stack_key] = list(stack_ids)
+                        self.stack_action_indices[stack_key] = s_idx + 1
+                        self.tbl_edit_pts.setRowHeight(r, 68)
+                    else:
+                        it_stack = QTableWidgetItem("")
+                        it_stack.setData(Qt.UserRole, row_data)
+                        it_stack.setBackground(bg)
+                        self.tbl_edit_pts.setItem(r, 0, it_stack)
 
-                    it_z = QTableWidgetItem(f"{p.z:,.3f}")
-                    it_z.setData(Qt.UserRole, (s_idx, stack, pid))
-                    it_z.setBackground(bg)
-                    self.tbl_edit_pts.setItem(r, 4, it_z)
+                    for column, text in (
+                        (1, str(p.number)),
+                        (2, f"{p.y:,.3f}"),
+                        (3, f"{p.x:,.3f}"),
+                        (4, f"{p.z:,.3f}"),
+                        (5, str(p.desc or "")),
+                    ):
+                        item = QTableWidgetItem(text)
+                        item.setData(Qt.UserRole, row_data)
+                        item.setBackground(bg)
+                        self.tbl_edit_pts.setItem(r, column, item)
+        else:
+            # Preserve the linework workbench's original grouped-point table.
+            self.tbl_edit_pts.setRowCount(0)
+            self.tbl_edit_pts.setColumnCount(6)
+            self.tbl_edit_pts.setHorizontalHeaderLabels(
+                ["Stack", "Pt #", "Northing", "Easting", "Elevation", "Description"])
+            hh_e = self.tbl_edit_pts.horizontalHeader()
+            for column in range(5):
+                hh_e.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+            hh_e.setSectionResizeMode(5, QHeaderView.Stretch)
+            hh_e.setStretchLastSection(True)
 
-                    it_desc = QTableWidgetItem(str(p.desc or ""))
-                    it_desc.setData(Qt.UserRole, (s_idx, stack, pid))
-                    it_desc.setBackground(bg)
-                    self.tbl_edit_pts.setItem(r, 5, it_desc)
+            dark = theme.current() == "dark"
+            c_even = QColor(36, 59, 83, 110) if dark else QColor(245, 248, 252)
+            c_odd = QColor(20, 36, 52, 110) if dark else QColor(228, 235, 244)
+            for s_idx, stack in enumerate(stacks):
+                stack_ids = [pid for pid in stack if pid in pr.points]
+                bg = QBrush(c_even if s_idx % 2 == 0 else c_odd)
+                for p_idx, pid in enumerate(stack_ids):
+                    point = pr.points[pid]
+                    row = self.tbl_edit_pts.rowCount()
+                    self.tbl_edit_pts.insertRow(row)
+                    row_data = (s_idx, stack_ids, pid)
+                    values = (
+                        f"Stack {s_idx + 1}" if p_idx == 0 else "",
+                        str(point.number),
+                        f"{point.y:,.3f}",
+                        f"{point.x:,.3f}",
+                        f"{point.z:,.3f}",
+                        str(point.desc or ""),
+                    )
+                    for column, text in enumerate(values):
+                        item = QTableWidgetItem(text)
+                        item.setData(Qt.UserRole, row_data)
+                        item.setBackground(bg)
+                        self.tbl_edit_pts.setItem(row, column, item)
+
+        self.cb_stack_action = next(iter(self.stack_action_combos.values()), None)
 
         # Clear and build inline tools
         while self.lay_edit_tools.count():
@@ -1426,8 +1669,8 @@ class BaseQAWorkbenchDialog(QDialog):
         if hasattr(self, "scroll_edit"):
             self.scroll_edit.verticalScrollBar().setValue(0)
 
-        # Select first point / stack and center view
-        if is_sep:
+        # Select first point / stack and center view.
+        if is_sep or (self.enable_flag_navigation and not is_stack_issue):
             pids = finding.get("pids", [])
             if pids and self.tbl_edit_pts.rowCount() > 0:
                 self.tbl_edit_pts.selectRow(0)
@@ -1436,6 +1679,7 @@ class BaseQAWorkbenchDialog(QDialog):
             self.current_selected_stack = list(stacks[0])
             self.tbl_edit_pts.selectRow(0)
             self._select_stack_points(stacks[0])
+        self._update_issue_undo_buttons()
         self._update_review_navigation()
 
     def _show_summary_page(self, *, recheck: bool = True, refresh: bool = True):
@@ -1459,9 +1703,17 @@ class BaseQAWorkbenchDialog(QDialog):
             self._sync_view_flags()
         self._update_review_navigation()
 
-    def _action_save_issue(self):
-        """Apply the current flag's selection and return to the all-flags summary."""
+    def _action_save_issue(self, _checked: bool = False):
+        """Apply the current flag's staged work and return to the issue list."""
         self._action_apply_current_issue_changes(return_to_summary=True)
+
+    def _action_return_to_summary(self, _checked: bool = False):
+        """Return without applying, but never silently drop staged choices."""
+        if self._has_unapplied_issue_edits():
+            self.lbl_status.setText("Apply or Discard the staged choices before returning to the issue list.")
+            return False
+        self._show_summary_page(recheck=False, refresh=False)
+        return True
 
     def _action_apply_current_issue_changes(
         self, _checked: bool = False, *, return_to_summary: bool = False,
@@ -1470,11 +1722,11 @@ class BaseQAWorkbenchDialog(QDialog):
         if not self.current_edit_finding:
             return False
 
-        stack_action = self._safe_widget_text(getattr(self, "cb_stack_action", None), "currentData")
-        if stack_action:
-            applied = self._action_apply_selected_stack_action()
-        elif self._has_unapplied_issue_edits():
-            applied = self._apply_pending_issue_edits(return_to_summary=return_to_summary)
+        if self._has_unapplied_issue_edits():
+            if getattr(self, "stack_action_combos", {}):
+                applied = self._action_apply_staged_stack_actions()
+            else:
+                applied = self._apply_pending_issue_edits(return_to_summary=return_to_summary)
         elif return_to_summary and self.stack.currentIndex() == 1:
             self._show_summary_page(recheck=False, refresh=False)
             return True
@@ -1509,7 +1761,7 @@ class BaseQAWorkbenchDialog(QDialog):
             self._show_summary_page(recheck=False, refresh=False)
             self.lbl_status.setText("Flag resolved. No more unresolved flags follow this one.")
 
-    def _action_discard_issue(self):
+    def _action_discard_issue(self, _checked: bool = False):
         data_changed = False
         if self.issue_snapshot is not None:
             data_changed = self._restore_snapshot(self.issue_snapshot)
@@ -1523,6 +1775,8 @@ class BaseQAWorkbenchDialog(QDialog):
                         value = set(value)
                     elif isinstance(value, list):
                         value = list(value)
+                    elif isinstance(value, dict):
+                        value = copy.deepcopy(value)
                     finding[key] = value
             self.resolved_findings[:] = session["resolved_findings"]
             self.history_undo[:] = session["history_undo"]
@@ -1533,6 +1787,9 @@ class BaseQAWorkbenchDialog(QDialog):
             finding.setdefault("history_undo", []).clear()
             finding.setdefault("history_redo", []).clear()
             finding.setdefault("resolutions", []).clear()
+            finding["stack_action_drafts"] = {}
+            finding["description_drafts"] = {}
+            finding["separator_drafts"] = {}
             finding["status"] = "active"
 
         if finding is not None:
@@ -1568,8 +1825,41 @@ class BaseQAWorkbenchDialog(QDialog):
             if action in ("Correct", "Correct (Leave # in Descriptor)", "Ignore"):
                 return True
 
-        stack_action = self._safe_widget_text(getattr(self, "cb_stack_action", None), "currentData")
-        return bool(stack_action)
+        for combo in getattr(self, "stack_action_combos", {}).values():
+            if self._safe_widget_text(combo, "currentData"):
+                return True
+        if self.current_edit_finding and self.current_edit_finding.get("stack_action_drafts"):
+            return True
+        return False
+
+    def _clear_unapplied_issue_edits(self):
+        finding = self.current_edit_finding
+        if finding is not None:
+            finding["stack_action_drafts"] = {}
+            finding["description_drafts"] = {}
+            finding["separator_drafts"] = {}
+        for combo in getattr(self, "stack_action_combos", {}).values():
+            combo.setCurrentIndex(0)
+        for item in getattr(self, "desc_edits", []):
+            if len(item) >= 2:
+                item[1].setText(item[0].desc or "")
+        for item in getattr(self, "sep_corrections", []):
+            if len(item) >= 4:
+                if len(item) > 4:
+                    item[2].setText(item[4])
+                item[3].setCurrentText("Skip")
+        self._update_issue_undo_buttons()
+        self._update_review_navigation()
+
+    def _update_issue_undo_buttons(self):
+        if not hasattr(self, "btn_issue_undo"):
+            return
+        finding = self.current_edit_finding or {}
+        has_applied_history = bool(finding.get("history_undo", []))
+        has_redo_history = bool(finding.get("history_redo", []))
+        has_staged_edits = self._has_unapplied_issue_edits()
+        self.btn_issue_undo.setEnabled(has_applied_history or has_staged_edits)
+        self.btn_issue_redo.setEnabled(has_redo_history)
 
     def _apply_pending_issue_edits(self, *, return_to_summary: bool = False) -> bool:
         # A stale wrapper is ignored rather than dereferenced. Normally the editor
@@ -1640,12 +1930,6 @@ class BaseQAWorkbenchDialog(QDialog):
                     selected_stack = list(stack)
                     if selected_stack != self.current_selected_stack:
                         self.current_selected_stack = selected_stack
-                        combo = getattr(self, "cb_stack_action", None)
-                        if combo is not None:
-                            try:
-                                combo.setCurrentIndex(0)
-                            except RuntimeError:
-                                pass
                     self._select_stack_points(selected_stack)
                 elif data is not None:
                     pid_list = [data] if isinstance(data, int) else list(data)
@@ -1725,7 +2009,8 @@ class BaseQAWorkbenchDialog(QDialog):
         # Update nested editor page table: tied specifically to current edit finding!
         cur_f = self.current_edit_finding
         if cur_f:
-            hist = cur_f.get("resolved_history", [])
+            # Keep this inline audit intentionally small: only the latest three batch summaries.
+            hist = (cur_f.get("resolved_history", []) or [])[-3:]
             self.tbl_edit_resolved.setRowCount(len(hist))
             for r, h in enumerate(hist):
                 self.tbl_edit_resolved.setItem(r, 0, QTableWidgetItem(h.get("check", "")))
@@ -1798,6 +2083,8 @@ class BaseQAWorkbenchDialog(QDialog):
         if point_ids is None and self.current_edit_finding:
             point_ids = self._finding_point_scope(self.current_edit_finding)
         snap = self._take_snapshot(point_ids)
+        if self.current_edit_finding is not None:
+            snap.ui_state = self._capture_current_issue_ui_state()
         self.dirty = True
         self.issue_dirty = True
         if self.current_edit_finding:
@@ -1819,17 +2106,23 @@ class BaseQAWorkbenchDialog(QDialog):
         h_undo = f.setdefault("history_undo", [])
         h_redo = f.setdefault("history_redo", [])
         if not h_undo:
+            if self._has_unapplied_issue_edits():
+                self._clear_unapplied_issue_edits()
+                self.lbl_status.setText("Staged choices cleared; no project data was changed.")
             return
         desc, snap = h_undo.pop()
-        h_redo.append((desc, self._take_snapshot(getattr(snap, "scope", None))))
+        redo_snapshot = self._take_snapshot(getattr(snap, "scope", None))
+        redo_snapshot.ui_state = self._capture_current_issue_ui_state()
+        h_redo.append((desc, redo_snapshot))
         data_changed = self._restore_snapshot(snap)
+        self._restore_issue_ui_state(f, getattr(snap, "ui_state", None))
         if f.get("resolutions"):
             f["resolutions"].pop()
         if f.get("resolved_history"):
             last_item = f["resolved_history"].pop()
             f.setdefault("redo_resolved_history", []).append(last_item)
             f.setdefault("ignored_pids", set()).difference_update(last_item.get("ignored_pids", []))
-        self.btn_issue_undo.setEnabled(bool(h_undo))
+        self._update_issue_undo_buttons()
         self.btn_issue_redo.setEnabled(True)
         if self.resolved_findings:
             self.resolved_findings.pop()
@@ -1850,8 +2143,11 @@ class BaseQAWorkbenchDialog(QDialog):
         if not h_redo:
             return
         desc, snap = h_redo.pop()
-        h_undo.append((desc, self._take_snapshot(getattr(snap, "scope", None))))
+        undo_snapshot = self._take_snapshot(getattr(snap, "scope", None))
+        undo_snapshot.ui_state = self._capture_current_issue_ui_state()
+        h_undo.append((desc, undo_snapshot))
         data_changed = self._restore_snapshot(snap)
+        self._restore_issue_ui_state(f, getattr(snap, "ui_state", None))
         f.setdefault("resolutions", []).append(desc)
         if f.get("redo_resolved_history"):
             last_item = f["redo_resolved_history"].pop()
@@ -1866,7 +2162,7 @@ class BaseQAWorkbenchDialog(QDialog):
             }
             f.setdefault("resolved_history", []).append(res_item)
         self.btn_issue_redo.setEnabled(bool(h_redo))
-        self.btn_issue_undo.setEnabled(True)
+        self._update_issue_undo_buttons()
         if data_changed:
             self.run_check()
         else:
@@ -1904,6 +2200,10 @@ class BaseQAWorkbenchDialog(QDialog):
             p_nums = list(cur_finding.get("points", []))
 
         self._push_undo(resolution_desc, point_ids=resolved_points)
+        if cur_finding is not None:
+            cur_finding["stack_action_drafts"] = {}
+            cur_finding["description_drafts"] = {}
+            cur_finding["separator_drafts"] = {}
         ignored_pids = list(dict.fromkeys(ignored_points or []))
         if cur_finding and ignored_pids:
             cur_finding.setdefault("ignored_pids", set()).update(ignored_pids)
@@ -1939,6 +2239,9 @@ class BaseQAWorkbenchDialog(QDialog):
             self._show_summary_page(recheck=False, refresh=False)
 
     def _action_ignore(self, key: str, *, advance_to_next: bool = False):
+        if self.stack.currentIndex() == 1 and self._has_unapplied_issue_edits():
+            self.lbl_status.setText("Apply or Discard the staged choices before ignoring this flag.")
+            return
         if not key and self.current_edit_finding:
             key = self.current_edit_finding.get("key", "")
         if not key and self.stack.currentIndex() == 0:
@@ -2091,7 +2394,10 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                 stk = stacks[0]
         if stk:
             chk = self.current_edit_finding.get("check", "") if self.current_edit_finding else ""
-            is_dup = "duplicate" in chk.lower() or "look-alike" in chk.lower()
+            detail = self.current_edit_finding.get("detail", "") if self.current_edit_finding else ""
+            check_lower = chk.lower()
+            is_dup = ("duplicate" in check_lower or "look-alike" in check_lower
+                      or ("number" in check_lower and "used" in str(detail).lower()))
             self._action_resolve_stack_dialog(stk, is_duplicate=is_dup)
 
     def _build_inline_tools(self, finding: dict):
@@ -2192,7 +2498,8 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                 it_orig.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
                 self.tbl_corrections.setItem(r, 1, it_orig)
 
-                it_fixed = QTableWidgetItem(sugg)
+                separator_draft = finding.get("separator_drafts", {}).get(p.id, {})
+                it_fixed = QTableWidgetItem(str(separator_draft.get("fixed", sugg)))
                 fixed_flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
                 if not is_spacing:
                     fixed_flags |= Qt.ItemIsEditable
@@ -2205,7 +2512,8 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                 cb_action.addItems(actions)
                 # Spacing fixes are safe, deterministic, and limited to whitespace;
                 # other separator corrections remain opt-in.
-                cb_action.setCurrentText("Correct" if is_spacing else "Skip")
+                default_action = "Correct" if is_spacing else "Skip"
+                cb_action.setCurrentText(str(separator_draft.get("action", default_action)))
 
                 # Connect dropdown change to update the Fixed Code column preview in real time
                 def _make_on_action_changed(it_f=it_fixed, s=sugg, sn=sugg_num, od=orig_desc):
@@ -2225,6 +2533,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                     return _on_act_changed
 
                 cb_action.currentTextChanged.connect(_make_on_action_changed())
+                cb_action.currentTextChanged.connect(lambda _text: self._update_issue_undo_buttons())
                 self.tbl_corrections.setCellWidget(r, 3, cb_action)
 
                 self.sep_corrections.append((p, orig_desc, it_fixed, cb_action, sugg, sugg_num))
@@ -2238,6 +2547,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                     cb.blockSignals(True)
                     cb.setCurrentText("Correct")
                     cb.blockSignals(False)
+                    self._update_issue_undo_buttons()
 
             self.tbl_corrections.cellChanged.connect(_on_corr_cell_changed)
 
@@ -2251,12 +2561,12 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             lay_g.addWidget(Hint(hint_text))
             lay_g.addWidget(self.tbl_corrections)
 
-            # Batch selection is staged; Apply & Next commits the selected rows.
+            # Row actions stay staged until the page-level Apply or Save action.
             if not is_spacing:
                 row_btns = QHBoxLayout()
                 row_btns.setSpacing(8)
                 btn_correct_all = QPushButton("Select All Correct")
-                btn_correct_all.setToolTip("Set every row to Correct; Apply & Next applies the selections.")
+                btn_correct_all.setToolTip("Set every row to Correct; Apply or Save applies the staged selections.")
                 btn_correct_all.clicked.connect(self._action_correct_all_separator_corrections)
                 row_btns.addWidget(btn_correct_all)
                 row_btns.addStretch(1)
@@ -2269,34 +2579,9 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             else:
                 self.w_close_tol_bar.hide()
 
-            grp_stack_action = QGroupBox("Selected Stack Action")
-            lay_stack_action = QHBoxLayout(grp_stack_action)
-            lay_stack_action.setSpacing(8)
-            lay_stack_action.addWidget(QLabel("Choose one action:"))
-
-            self.cb_stack_action = QComboBox()
-            self.cb_stack_action.addItem("Select an action…", None)
-            self.cb_stack_action.addItem("Merge into head and average coordinates", "merge")
-            self.cb_stack_action.addItem("Keep head; delete other points", "keep")
-            if is_exact_dup or is_lookalike:
-                self.cb_stack_action.addItem("Renumber second point", "renumber")
-            self.cb_stack_action.addItem("Ignore this stack", "ignore")
-            self.cb_stack_action.setToolTip(
-                "Selecting an action does not change the project. Use Apply & Next to confirm it.")
-            lay_stack_action.addWidget(self.cb_stack_action, 1)
-
-            btn_edit_stack = QPushButton("Edit Stack…")
-            self.btn_stack_edit = btn_edit_stack
-            btn_edit_stack.setToolTip(
-                "Set an action for each point or choose a different head/target point")
-            btn_edit_stack.clicked.connect(
-                lambda: self._action_resolve_selected_stack(
-                    is_duplicate=(is_exact_dup or is_lookalike)))
-            lay_stack_action.addWidget(btn_edit_stack)
-            self.lay_edit_tools.addWidget(grp_stack_action)
             self.lay_edit_tools.addWidget(Hint(
-                "Select a stack row above. Use Edit Stack for point-by-point choices or to change the head/target; "
-                "the dropdown applies one action to the selected stack."))
+                "Choose an action beside each stack, or use Edit Stack under its number to set point-by-point actions. "
+                "All choices on this page stay staged until Apply or Save."))
 
         else:
             self.w_close_tol_bar.hide()
@@ -2349,7 +2634,8 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
                 # Key-in box and status feedback
                 row_ed = QHBoxLayout()
                 row_ed.addWidget(QLabel("<b>Fixed:</b>"))
-                ed = QLineEdit(str(p.desc or ""))
+                description_draft = finding.get("description_drafts", {}).get(p.id)
+                ed = QLineEdit(str(p.desc or "") if description_draft is None else str(description_draft))
                 row_ed.addWidget(ed, 1)
                 lay_p.addLayout(row_ed)
 
@@ -2380,6 +2666,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
 
                 val_fn = _make_validate_handler()
                 ed.textChanged.connect(val_fn)
+                ed.textChanged.connect(lambda _text: self._update_issue_undo_buttons())
                 val_fn(ed.text())  # Run initial validation
 
                 self.desc_edits.append((p, ed, lbl_status))
@@ -2392,7 +2679,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
             scroll_pts.setWidget(w_pts_inner)
             lay_keyin.addWidget(scroll_pts, 1)
 
-            # Edits remain staged until Apply & Next or Apply & Return.
+            # Edits remain staged until page-level Apply or Save.
             row_d_btns = QHBoxLayout()
             row_d_btns.setSpacing(6)
 
@@ -2658,85 +2945,263 @@ class FixPointErrorsDialog(BaseQAWorkbenchDialog):
 
     # Specific Fix Actions
     def _action_resolve_stack_dialog(self, stack_pids: list[int], is_duplicate: bool = False):
+        """Collect per-point choices for one stack and stage them without mutating the project."""
         pr = self.state.project
         pts = [pr.points[pid] for pid in stack_pids if pid in pr.points]
         if not pts:
             return
-        dlg = ClosePointsResolveDialog(self.state, pts, is_duplicate=is_duplicate, parent=self)
+        stack_key = self._stack_key([p.id for p in pts])
+        self.current_selected_stack = [p.id for p in pts]
+        existing = (self.current_edit_finding or {}).get("stack_action_drafts", {}).get(stack_key, {})
+        initial_plan = existing if existing.get("kind") == "individual" else None
+        dlg = ClosePointsResolveDialog(
+            self.state, pts, is_duplicate=is_duplicate, parent=self, initial_plan=initial_plan)
         if dlg.exec() != QDialog.Accepted:
             return
-        res = dlg.get_result()
-        target_p = res["target_point"]
-        merge_pts = res["merge_points"]
-        delete_pts = res["delete_points"]
-        renumber_pts = res.get("renumber_points", [])
-        ignore_pts = res.get("ignore_points", [])
-        merged_desc = res["merged_desc"]
-        avg_coords = res["average_coords"]
 
-        pts_to_remove = [p for p in merge_pts if p.id != target_p.id] + delete_pts
-        next_number = (
-            max((int(pt.number) for pt in pr.points.values() if pt.number.isdigit()), default=0) + 1
-            if renumber_pts else 1
+        result = dlg.get_result()
+        target = result.get("target_point")
+        actions: dict[int, str] = {}
+        action_groups = (
+            (result.get("merge_points", []), "merge"),
+            (result.get("delete_points", []), "delete"),
+            (result.get("renumber_points", []), "renumber"),
+            (result.get("keep_points", []), "keep"),
+            (result.get("ignore_points", []), "ignore"),
         )
+        for group, action in action_groups:
+            for point in group:
+                actions[point.id] = action
+        merge_point_ids = {point.id for point in result.get("merge_points", [])}
+        if target is not None and target.id in merge_point_ids:
+            actions[target.id] = "target"
+        for point in pts:
+            actions.setdefault(point.id, "ignore")
 
-        def do_it():
-            nonlocal next_number
-            if avg_coords and len(merge_pts) > 1:
-                target_p.x = sum(p.x for p in merge_pts) / len(merge_pts)
-                target_p.y = sum(p.y for p in merge_pts) / len(merge_pts)
-                target_p.z = _average_finite([p.z for p in merge_pts])
-            if len(merge_pts) > 1 and merged_desc:
-                target_p.desc = merged_desc
-            for p in renumber_pts:
-                p.number = str(next_number)
-                next_number += 1
-            remove_ids = [p.id for p in pts_to_remove if p.id in pr.points]
-            if remove_ids:
-                pr.remove_points(remove_ids)
-
-        summary = f"Resolved stack into Pt #{target_p.number}"
-        if merged_desc:
-            summary += f" ({merged_desc})"
-        if ignore_pts:
-            summary += f"; ignored {len(ignore_pts)} point(s)"
-        self._apply_fix(
-            summary,
-            do_it,
-            resolved_points=stack_pids,
-            stay_on_edit_page=True,
-            ignored_points=[p.id for p in ignore_pts],
-            project_changed=bool(
-                pts_to_remove or renumber_pts
-                or (avg_coords and len(merge_pts) > 1)
-                or (len(merge_pts) > 1 and merged_desc and target_p.desc != merged_desc)
-            ),
-        )
+        plan = {
+            "kind": "individual",
+            "actions": actions,
+            "target_pid": target.id if target is not None and target.id in merge_point_ids else None,
+            "merged_desc": result.get("merged_desc", ""),
+            "average_coords": bool(result.get("average_coords", False)),
+        }
+        finding = self.current_edit_finding
+        if finding is None:
+            return
+        finding.setdefault("stack_action_drafts", {})[stack_key] = plan
+        combo = getattr(self, "stack_action_combos", {}).get(stack_key)
+        if combo is not None:
+            individual_index = combo.findData("individual")
+            if individual_index < 0:
+                combo.addItem(f"Point-by-point choices ({len(actions)})", "individual")
+                individual_index = combo.count() - 1
+            else:
+                combo.setItemText(individual_index, f"Point-by-point choices ({len(actions)})")
+            combo.setCurrentIndex(individual_index)
+        self.lbl_status.setText(
+            f"Point-by-point choices staged for {len(pts)} point(s). Project data is unchanged until Apply or Save.")
+        self._update_issue_undo_buttons()
+        self._update_review_navigation()
 
     def _action_apply_selected_stack_action(self) -> bool:
-        action = self._safe_widget_text(getattr(self, "cb_stack_action", None), "currentData")
-        if not action:
-            self.lbl_status.setText("Choose a stack action first.")
-            return False
+        """Compatibility hook: ensure the selected per-stack dropdown is staged."""
         stack = list(getattr(self, "current_selected_stack", []) or [])
-        points = [self.state.project.points[pid] for pid in stack
-                  if pid in self.state.project.points]
-        if not points:
-            self.lbl_status.setText("Select a point stack before applying an action.")
+        if not stack:
+            self.lbl_status.setText("Select a point stack before choosing an action.")
             return False
-        if action == "renumber" and len(points) < 2:
-            self.lbl_status.setText("This stack has no second point to renumber.")
+        key = self._stack_key(stack)
+        combo = getattr(self, "stack_action_combos", {}).get(key)
+        if combo is None or not combo.currentData():
+            self.lbl_status.setText("Choose an action beside the selected stack first.")
             return False
-        if action == "merge":
-            self._action_merge_selected_stack(average=True)
-        elif action == "keep":
-            self._action_delete_others_selected_stack()
-        elif action == "renumber":
-            self._action_renumber_selected_stack()
-        elif action == "ignore":
-            self._action_ignore_selected_stack()
-        else:
+        self._on_stack_action_changed(key, combo)
+        return True
+
+    def _action_apply_staged_stack_actions(self) -> bool:
+        """Apply every staged stack action as one undoable, minimally logged batch."""
+        finding = self.current_edit_finding
+        if finding is None:
             return False
+        pr = self.state.project
+        drafts = finding.setdefault("stack_action_drafts", {})
+        staged: list[tuple[tuple[int, ...], list[int], dict]] = []
+
+        for stack_key, combo in getattr(self, "stack_action_combos", {}).items():
+            action = self._safe_widget_text(combo, "currentData")
+            if not action:
+                continue
+            stack_ids = [pid for pid in self.stack_action_keys.get(stack_key, ()) if pid in pr.points]
+            if not stack_ids:
+                continue
+            if action == "individual":
+                plan = drafts.get(stack_key)
+                if not plan or plan.get("kind") != "individual":
+                    continue
+            else:
+                plan = {"kind": "bulk", "action": action}
+                drafts[stack_key] = plan
+            if plan.get("kind") == "bulk" and plan.get("action") == "renumber" and len(stack_ids) < 2:
+                self.lbl_status.setText("This stack has no second point to renumber.")
+                return False
+            if plan.get("kind") == "individual":
+                renumber_ids = [pid for pid in stack_ids
+                                if plan.get("actions", {}).get(pid) == "renumber"]
+                if renumber_ids and len(stack_ids) < 2:
+                    self.lbl_status.setText("This stack has no second point to renumber.")
+                    return False
+            staged.append((stack_key, stack_ids, copy.deepcopy(plan)))
+
+        if not staged:
+            self.lbl_status.setText("Choose an action beside at least one stack or edit a stack first.")
+            return False
+
+        next_number = max(
+            (int(point.number) for point in pr.points.values()
+             if str(point.number).isdigit()), default=0) + 1
+        operations: list[dict] = []
+        resolved_ids: list[int] = []
+        ignored_ids: list[int] = []
+        remove_ids: list[int] = []
+        renumber_assignments: list[tuple[int, str]] = []
+        summaries: list[str] = []
+
+        for batch_index, (stack_key, stack_ids, plan) in enumerate(staged, start=1):
+            stack_index = self.stack_action_indices.get(stack_key, batch_index)
+            points = [pr.points[pid] for pid in stack_ids if pid in pr.points]
+            if not points:
+                continue
+            resolved_ids.extend(point.id for point in points)
+            action = plan.get("action") if plan.get("kind") == "bulk" else "individual"
+            merge_ids: list[int] = []
+            target_id: int | None = None
+            delete_point_ids: list[int] = []
+            renumber_point_ids: list[int] = []
+            ignored_point_ids: list[int] = []
+            merged_desc = ""
+            average_coords = False
+
+            if action == "merge":
+                merge_ids = [point.id for point in points]
+                target_id = points[0].id
+                merged_desc = merge_point_descriptions(
+                    [point.desc for point in points],
+                    (pr.settings or {}).get("fieldbook_file"),
+                    (pr.settings or {}).get("f2f_commands"),
+                )
+                average_coords = True
+            elif action == "keep":
+                target_id = points[0].id
+                delete_point_ids = [point.id for point in points[1:]]
+            elif action == "renumber":
+                target_id = points[0].id
+                renumber_point_ids = [points[1].id]
+            elif action == "ignore":
+                target_id = points[0].id
+                ignored_point_ids = [point.id for point in points]
+            else:
+                point_actions = plan.get("actions", {})
+                merge_ids = [point.id for point in points
+                             if point_actions.get(point.id) in ("target", "merge")]
+                explicit_target = plan.get("target_pid")
+                if explicit_target in merge_ids:
+                    target_id = explicit_target
+                else:
+                    target_id = next(
+                        (point.id for point in points if point_actions.get(point.id) == "target"),
+                        merge_ids[0] if merge_ids else points[0].id,
+                    )
+                if target_id not in merge_ids and merge_ids:
+                    target_id = merge_ids[0]
+                delete_point_ids = [point.id for point in points
+                                    if point_actions.get(point.id) == "delete"]
+                renumber_point_ids = [point.id for point in points
+                                      if point_actions.get(point.id) == "renumber"]
+                ignored_point_ids = [point.id for point in points
+                                     if point_actions.get(point.id) == "ignore"]
+                if len(merge_ids) > 1:
+                    merged_desc = str(plan.get("merged_desc", ""))
+                    average_coords = bool(plan.get("average_coords", False))
+
+            for pid in renumber_point_ids:
+                renumber_assignments.append((pid, str(next_number)))
+                next_number += 1
+            remove_ids.extend(pid for pid in merge_ids if pid != target_id)
+            remove_ids.extend(delete_point_ids)
+            ignored_ids.extend(ignored_point_ids)
+
+            target = pr.points.get(target_id) if target_id is not None else None
+            if plan.get("kind") == "bulk" and action == "merge":
+                summary = f"Stack {stack_index}: Merged into #{target.number if target else '?'}"
+            elif plan.get("kind") == "bulk" and action == "keep":
+                summary = f"Stack {stack_index}: kept head"
+            elif plan.get("kind") == "bulk" and action == "renumber":
+                summary = f"Stack {stack_index}: renumbered second point"
+            elif plan.get("kind") == "bulk" and action == "ignore":
+                summary = f"Stack {stack_index}: ignored"
+            else:
+                summary = f"Stack {stack_index}: point-by-point choices"
+            removed_here = len([pid for pid in merge_ids if pid != target_id]) + len(delete_point_ids)
+            if removed_here:
+                summary += f", removed {removed_here}"
+            if renumber_point_ids:
+                summary += f", renumbered {len(renumber_point_ids)}"
+            if ignored_point_ids:
+                summary += f", ignored {len(ignored_point_ids)}"
+            summaries.append(summary)
+            operations.append({
+                "target_id": target_id,
+                "merge_ids": merge_ids,
+                "delete_ids": delete_point_ids,
+                "average_coords": average_coords,
+                "merged_desc": merged_desc,
+            })
+
+        if not resolved_ids:
+            self.lbl_status.setText("No available points remain in the staged stacks.")
+            return False
+
+        project_changed = bool(remove_ids or renumber_assignments)
+        for operation in operations:
+            target = pr.points.get(operation["target_id"])
+            merge_points = [pr.points[pid] for pid in operation["merge_ids"] if pid in pr.points]
+            if target is None:
+                continue
+            if operation["average_coords"] and len(merge_points) > 1:
+                average_x = sum(point.x for point in merge_points) / len(merge_points)
+                average_y = sum(point.y for point in merge_points) / len(merge_points)
+                average_z = _average_finite([point.z for point in merge_points])
+                project_changed |= (target.x, target.y, target.z) != (average_x, average_y, average_z)
+            if len(merge_points) > 1 and operation["merged_desc"]:
+                project_changed |= target.desc != operation["merged_desc"]
+
+        def do_it():
+            for operation in operations:
+                target = pr.points.get(operation["target_id"])
+                merge_points = [pr.points[pid] for pid in operation["merge_ids"] if pid in pr.points]
+                if target is not None and operation["average_coords"] and len(merge_points) > 1:
+                    target.x = sum(point.x for point in merge_points) / len(merge_points)
+                    target.y = sum(point.y for point in merge_points) / len(merge_points)
+                    target.z = _average_finite([point.z for point in merge_points])
+                if target is not None and len(merge_points) > 1 and operation["merged_desc"]:
+                    target.desc = operation["merged_desc"]
+            for pid, number in renumber_assignments:
+                if pid in pr.points:
+                    pr.points[pid].number = number
+            existing_removals = [pid for pid in dict.fromkeys(remove_ids) if pid in pr.points]
+            if existing_removals:
+                pr.remove_points(existing_removals)
+
+        resolution_desc = "; ".join(summaries[:4])
+        if len(summaries) > 4:
+            resolution_desc += f"; +{len(summaries) - 4} more stack actions"
+        self._apply_fix(
+            resolution_desc,
+            do_it,
+            resolved_points=list(dict.fromkeys(resolved_ids)),
+            stay_on_edit_page=True,
+            ignored_points=list(dict.fromkeys(ignored_ids)),
+            project_changed=project_changed,
+        )
         return True
 
     def _action_ignore_selected_lookalike_point(self):

@@ -190,11 +190,16 @@ def test_close_points_resolve_popup_and_merge(win, app, auto):
     assert not dlg.w_close_tol_bar.isHidden()  # Visible when editing close points!
     assert "2 close point groups detected" in dlg.lbl_edit_detail.text()  # Number of groups, no point numbers spam!
 
-    # Each point remains in its stack group; the single Edit Stack control is below the table.
+    # Every stack has an adjacent staged action dropdown and an Edit Stack button under its number.
+    from PySide6.QtWidgets import QComboBox, QPushButton
     assert dlg.tbl_edit_pts.rowCount() == 5
-    assert dlg.tbl_edit_pts.columnCount() == 6
+    assert dlg.tbl_edit_pts.columnCount() == 7
     assert dlg.tbl_edit_pts.horizontalHeaderItem(0).text() == "Stack"
-    assert dlg.tbl_edit_pts.item(0, 0).text() == "Stack 1"
+    assert dlg.tbl_edit_pts.horizontalHeaderItem(6).text() == "Action"
+    assert len(dlg.stack_action_combos) == 2
+    stack_cell = dlg.tbl_edit_pts.cellWidget(0, 0)
+    assert any(button.text() == "Edit Stack" for button in stack_cell.findChildren(QPushButton))
+    assert isinstance(dlg.tbl_edit_pts.cellWidget(0, 6), QComboBox)
 
     # Verify clicking point 0 selects whole stack 1
     dlg.tbl_edit_pts.selectRow(0)
@@ -397,11 +402,13 @@ def test_flag_review_navigation_waits_for_corrections_and_ignore_advances(win, m
     dialog.btn_previous_flag.click()
     assert dialog.current_edit_finding["key"] == "review-flag-a"
 
-    # Apply & Next resolves the edited flag and opens the next unresolved one.
+    # Apply commits only this flag's staged changes; Next navigation remains explicit.
     dialog._validate_desc_text = lambda text, f2f_set=None: (True, "Valid code")
     dialog.desc_edits[0][1].setText("EP")
     dialog.btn_issue_apply.click()
     assert points[0].desc == "EP"
+    assert dialog.current_edit_finding["key"] == "review-flag-a"
+    dialog.btn_next_flag.click()
     assert dialog.current_edit_finding["key"] == "review-flag-c"
     dialog._discard_and_exit()
 
@@ -542,7 +549,8 @@ def test_potential_code_in_descriptor_corrections_ui(win, app, auto):
 
     dlg._open_inline_editor(sep_finding)
     assert dlg.stack.currentIndex() == 1
-    assert not any(button.text() == "Apply" for button in dlg.findChildren(QPushButton))
+    assert {"Apply", "Save", "Discard", "Return"}.issubset(
+        {button.text() for button in dlg.findChildren(QPushButton)})
 
     # Verify points list has 5 data columns without Edit button in Col 0
     assert dlg.tbl_edit_pts.columnCount() == 5
@@ -762,7 +770,7 @@ def test_separator_ignore_clears_warning_and_discard_restores_it(win, monkeypatc
     assert len(calls) == 1  # Undo, redo, and discard all avoid redundant QA passes.
 
 
-def test_lookalike_ignore_and_skip_only_affect_the_selected_stack(win, monkeypatch):
+def test_stack_dropdowns_stage_together_and_undo_restores_unapplied_choices(win, monkeypatch):
     from PySide6.QtWidgets import QPushButton
     from plumbline.fieldwork import bridge as FB
     from plumbline.ui.qa_workspace import FixPointErrorsDialog
@@ -797,33 +805,51 @@ def test_lookalike_ignore_and_skip_only_affect_the_selected_stack(win, monkeypat
     dialog = FixPointErrorsDialog(win.state, win)
     finding = next(f for f in dialog.active_findings if f["key"] == check_finding["key"])
     dialog._open_inline_editor(finding)
-    assert dialog.cb_stack_action is not None
-    assert dialog.cb_stack_action.findData("ignore") >= 0
-    assert not any(button.text() in {"Merge Stack", "Delete Others", "Renumber Second", "Ignore Point"}
-                   for button in dialog.findChildren(QPushButton))
 
-    # Choosing an action is staged until Apply & Next, and affects only the selected stack.
-    dialog.tbl_edit_pts.selectRow(1)
-    dialog.cb_stack_action.setCurrentText("Ignore this stack")
-    assert p1.id in dialog.error_point_ids and p2.id in dialog.error_point_ids
-    dialog.btn_issue_apply.click()
-    assert dialog.current_edit_finding["ignored_pids"] == {p1.id, p2.id}
-    assert dialog.current_edit_finding["pids"] == [p3.id, p4.id, p5.id, p6.id]
-    assert p3.id in dialog.error_point_ids and p4.id in dialog.error_point_ids
-    assert p5.id in dialog.error_point_ids and p6.id in dialog.error_point_ids
-    assert p1.id not in dialog.error_point_ids and p2.id not in dialog.error_point_ids
+    assert len(dialog.stack_action_combos) == 3
+    for row in (0, 2, 4):
+        stack_cell = dialog.tbl_edit_pts.cellWidget(row, 0)
+        assert any(button.text() == "Edit Stack" for button in stack_cell.findChildren(QPushButton))
+        assert dialog.tbl_edit_pts.cellWidget(row, 6) is not None
 
-    # The same dropdown can ignore another selected stack without suppressing the flag.
-    dialog.tbl_edit_pts.selectRow(2)
-    dialog.cb_stack_action.setCurrentText("Ignore this stack")
+    stack1_key = dialog._stack_key(point_groups[0])
+    stack3_key = dialog._stack_key(point_groups[2])
+    stack1_combo = dialog.stack_action_combos[stack1_key]
+    stack3_combo = dialog.stack_action_combos[stack3_key]
+
+    # Two dropdown choices stay staged together; project data and flags do not change yet.
+    stack1_combo.setCurrentText("Ignore this stack")
+    stack3_combo.setCurrentText("Ignore this stack")
+    assert dialog.current_edit_finding["ignored_pids"] == set()
+    assert dialog.error_point_ids == set(point_ids)
+    assert p1.id in pr.points and p6.id in pr.points
+    assert dialog.btn_issue_undo.isEnabled()  # Undo can clear unapplied choices.
+    dialog.btn_issue_return.click()
+    assert dialog.stack.currentIndex() == 1
+    assert "Apply or Discard" in dialog.lbl_status.text()
+
+    # One Apply commits all staged stacks as a single history/log entry.
     dialog.btn_issue_apply.click()
     assert dialog.current_edit_finding["ignored_pids"] == {p1.id, p2.id, p5.id, p6.id}
     assert dialog.current_edit_finding["pids"] == [p3.id, p4.id]
     assert dialog.error_point_ids == {p3.id, p4.id}
+    assert dialog.tbl_edit_resolved.rowCount() == 1
 
+    # Undo unapplies the batch and restores the choices, but does not re-apply them.
     dialog._undo_issue()
-    assert dialog.current_edit_finding["ignored_pids"] == {p1.id, p2.id}
-    assert dialog.current_edit_finding["pids"] == [p3.id, p4.id, p5.id, p6.id]
+    assert dialog.current_edit_finding["ignored_pids"] == set()
+    assert dialog.error_point_ids == set(point_ids)
+    assert dialog.stack_action_combos[stack1_key].currentData() == "ignore"
+    assert dialog.stack_action_combos[stack3_key].currentData() == "ignore"
+    assert dialog.btn_issue_redo.isEnabled()
+
+    # A second Undo with no applied batch clears the restored staged dropdowns only.
+    dialog._undo_issue()
+    assert dialog.current_edit_finding["ignored_pids"] == set()
+    assert dialog.error_point_ids == set(point_ids)
+    assert all(combo.currentData() is None for combo in dialog.stack_action_combos.values())
+    assert not dialog.btn_issue_undo.isEnabled()
+    dialog._discard_and_exit()
 
 
 def test_common_conversion_dialog_orders_correct_before_ignore_and_preserves_codes(app, tmp_path):
@@ -883,7 +909,11 @@ def test_close_stack_ignore_suppresses_only_the_selected_point(win, monkeypatch)
             "line_issues": [],
         }
 
+    popup_action_snapshots = []
+
     def accept_with_second_ignored(popup):
+        if popup.initial_plan:
+            popup_action_snapshots.append([combo.currentText() for combo in popup.combos])
         popup.combos[1].setCurrentText("Ignore")
         return QDialog.Accepted
 
@@ -894,12 +924,28 @@ def test_close_stack_ignore_suppresses_only_the_selected_point(win, monkeypatch)
     dialog._open_inline_editor(finding)
     dialog._action_resolve_stack_dialog([p1.id, p2.id])
 
+    # The popup returns staged choices only; data and active findings wait for page-level Apply.
+    assert dialog.current_edit_finding["ignored_pids"] == set()
+    assert dialog.current_edit_finding["pids"] == [p1.id, p2.id]
+    assert p1.id in pr.points and p2.id in pr.points
+    dialog.btn_issue_apply.click()
+
     assert dialog.current_edit_finding["ignored_pids"] == {p2.id}
     assert dialog.current_edit_finding["pids"] == [p1.id]
     assert p1.id in dialog.error_point_ids
     assert p2.id not in dialog.error_point_ids
-    assert dialog.tbl_active.item(0, 1).text() == "PARTIAL"
 
+    dialog._undo_issue()
+    assert dialog.current_edit_finding["ignored_pids"] == set()
+    assert dialog.current_edit_finding["pids"] == [p1.id, p2.id]
+    assert dialog.stack_action_combos[dialog._stack_key([p1.id, p2.id])].currentData() == "individual"
+    assert p1.id in pr.points and p2.id in pr.points
+    dialog._action_resolve_stack_dialog([p1.id, p2.id])
+    assert popup_action_snapshots == [["Merge (Target)", "Ignore"]]
+
+    dialog._redo_issue()
+    assert dialog.current_edit_finding["ignored_pids"] == {p2.id}
+    assert dialog.tbl_active.item(0, 1).text() == "PARTIAL"
     dialog._action_ignore(dialog.current_edit_finding["key"])
     assert dialog.active_findings == []
     assert dialog.error_point_ids == set()
@@ -1172,15 +1218,20 @@ def test_initial_view_staging_and_issue_scoped_undo_redo(win, app, auto):
     assert "[Active]" in dlg.lbl_issue_status.text() or "WARN" in dlg.lbl_issue_status.text()
     assert not dlg.btn_issue_undo.isEnabled()
 
-    # Apply close points merge on Issue 1
-    dlg._action_merge_close([p1, p2], average=True)
+    # Stage a stack merge; the project remains unchanged until page-level Apply.
+    close_key = dlg._stack_key([p1.id, p2.id])
+    merge_combo = dlg.stack_action_combos[close_key]
+    merge_combo.setCurrentText("Merge all into head; average coordinates")
+    assert p2.id in pr.points
+    dlg.btn_issue_apply.click()
     assert p1.id in pr.points
     assert p2.id not in pr.points  # merged
     assert dlg.btn_issue_undo.isEnabled()
 
-    # Test Scoped Undo on Issue 1
+    # Undo restores both the point data and the merge dropdown selection, without reapplying it.
     dlg._undo_issue()
-    assert p2.id in pr.points  # restored
+    assert p2.id in pr.points
+    assert dlg.stack_action_combos[close_key].currentData() == "merge"
     assert dlg.btn_issue_redo.isEnabled()
 
     # Test Scoped Redo on Issue 1
