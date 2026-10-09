@@ -103,6 +103,32 @@ def test_two_lines_are_judged_one_at_a_time():
     assert issues == []
 
 
+def test_curve_command_order_is_checked_across_points_and_repeated_curves_are_valid():
+    out_of_order = LC.detect_line_errors(
+        rows("TOC ST", "TOC PT", "TOC PC", "TOC END"), f2f_set=F2F)
+    order_issues = [issue for issue in out_of_order if issue["issue_type"] == "Line Order"]
+    assert len(order_issues) == 1
+    assert order_issues[0]["oid"] == "2"
+    assert "across its point sequence" in order_issues[0]["detail"]
+
+    nested = LC.detect_line_errors(
+        rows("TOC ST", "TOC PC", "TOC PC", "TOC PT", "TOC END"), f2f_set=F2F)
+    assert any(issue["issue_type"] == "Line Order" for issue in nested)
+
+    # A line may carry several properly paired curves; the state machine must allow PC/PT to repeat.
+    assert LC.detect_line_errors(
+        rows("TOC ST", "TOC PC", "TOC PT", "TOC PC", "TOC PT", "TOC END"),
+        f2f_set=F2F) == []
+
+
+def test_line_order_fix_validation_checks_the_whole_sequence_after_a_fix_moves_the_error():
+    working = rows("TOC ST", "TOC PT", "TOC PC", "TOC END")
+    result = LC.validate_fix(working, "2", "TOC PC", f2f_set=F2F)
+    assert not result["ok"]
+    assert result["still"] and result["still"][0]["issue_type"] == "Line Order"
+    assert result["still"][0]["oid"] == "3"
+
+
 # ------------------------------------------------------------------ the proposal
 def test_a_proposal_is_placed_where_the_command_order_wants_it():
     assert LC.propose_fix("Missing ST", "TOC PC") == "TOC ST PC"
@@ -205,6 +231,31 @@ def test_the_project_side_reads_lines_with_the_same_reader(win, app):
     theirs = LC.detect_line_errors(FB.working_rows_from_project(pr)[0], f2f_set={"toc"})
     assert [e["issue_type"] for e in mine] == [e["issue_type"] for e in theirs]
     assert mine and all(e["issue_type"] in LC.ISSUE_TYPES for e in mine)
+
+
+def test_project_fieldwork_code_flags_ignore_deleted_points():
+    from plumbline.core.project import Project
+    from plumbline.fieldwork.bridge import check_project
+
+    project = Project("Deleted code")
+    active = project.add_point(0, 0, 0, number="1", desc="UNKNOWNCODE")
+    deleted = project.add_point(10, 0, 0, number="2", desc="UNKNOWNCODE",
+                                attrs={"qa_deleted": True})
+    report = check_project(project, f2f={"toc"})
+    unknown = next(finding for finding in report["findings"]
+                   if finding.get("flag") == "UnknownCode")
+    assert [report["ids"][i] for i in unknown["rows"]] == [active.id]
+    assert all(str(oid) != str(deleted.id) for oid in report["flags"])
+
+
+def test_empty_description_is_not_reported_as_a_fix_points_warning():
+    from plumbline.core.project import Project
+    from plumbline.fieldwork.bridge import check_project
+
+    project = Project("Blank description")
+    project.add_point(0, 0, 0, number="1", desc="")
+    report = check_project(project, f2f={"toc"})
+    assert all(finding.get("flag") != "EmptyDescription" for finding in report["findings"])
 
 
 def test_the_dock_reports_the_line_issues_and_they_select_the_points(win, app):

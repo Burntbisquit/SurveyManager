@@ -4,17 +4,18 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
                                QHeaderView, QLabel, QLineEdit, QListWidget,
                                QMessageBox, QPushButton, QSpinBox, QSplitter,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+                               QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..core.linework_editor import (JoinLinesDraft, LineEditDraft, LineworkEditError,
                                     commit_join_draft, commit_line_draft, bulge_points)
 from ..core.model import Polyline
+from .canvas import CanvasView
 from .widgets import Hint
 
 
@@ -29,6 +30,11 @@ class LinePreviewWidget(QWidget):
         self.bulges = np.empty(0, dtype=float)
         self.closed = False
         self.ghost = None
+        self.view_mode = "plan"
+
+    def set_view_mode(self, mode: str):
+        self.view_mode = "3d" if str(mode).casefold() == "3d" else "plan"
+        self.update()
 
     def set_line(self, vertices, bulges=None, closed=False, ghost=None):
         self.vertices = np.asarray(vertices, dtype=float).reshape(-1, 3) if len(vertices) else np.empty((0, 3))
@@ -59,22 +65,39 @@ class LinePreviewWidget(QWidget):
         painter.fillRect(self.rect(), self.palette().base())
         painter.setPen(QPen(self.palette().mid().color(), 1))
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
-        ghost_lines = []
+        raw_ghost_lines = []
         if self.ghost:
             raw_ghosts = self.ghost if isinstance(self.ghost, list) else [self.ghost]
-            ghost_lines = [self._sample(*line) for line in raw_ghosts]
-        preview_points = self._sample(self.vertices, self.bulges, self.closed)
-        all_points = [value for value in [*ghost_lines, preview_points] if len(value)]
-        if not all_points:
+            raw_ghost_lines = [self._sample(*line) for line in raw_ghosts]
+        raw_preview_points = self._sample(self.vertices, self.bulges, self.closed)
+        raw_all = [value for value in [*raw_ghost_lines, raw_preview_points] if len(value)]
+        if not raw_all:
             painter.setPen(self.palette().placeholderText().color())
             painter.drawText(self.rect(), Qt.AlignCenter, "Line preview")
             return
-        joined = np.vstack(all_points)
-        finite = joined[np.isfinite(joined[:, :2]).all(axis=1)]
+        if self.view_mode == "3d":
+            finite_z = np.concatenate([value[:, 2][np.isfinite(value[:, 2])] for value in raw_all])
+            z_origin = float(np.min(finite_z)) if len(finite_z) else 0.0
+
+            def project(points):
+                values = np.asarray(points, dtype=float)
+                z = np.where(np.isfinite(values[:, 2]), values[:, 2], z_origin) - z_origin
+                return np.column_stack(((values[:, 0] - values[:, 1]) / math.sqrt(2.0),
+                                        (values[:, 0] + values[:, 1]) / math.sqrt(6.0)
+                                        + z * math.sqrt(2.0 / 3.0)))
+        else:
+            def project(points):
+                return np.asarray(points, dtype=float)[:, :2]
+
+        ghost_lines = [project(points) for points in raw_ghost_lines]
+        preview_points = project(raw_preview_points)
+        vertex_points = project(self.vertices)
+        joined = np.vstack([*ghost_lines, preview_points])
+        finite = joined[np.isfinite(joined).all(axis=1)]
         if not len(finite):
             return
-        xmin, ymin = np.min(finite[:, :2], axis=0)
-        xmax, ymax = np.max(finite[:, :2], axis=0)
+        xmin, ymin = np.min(finite, axis=0)
+        xmax, ymax = np.max(finite, axis=0)
         span_x, span_y = max(float(xmax - xmin), 1e-6), max(float(ymax - ymin), 1e-6)
         margin = 28.0
         width = max(1.0, self.width() - 2.0 * margin)
@@ -89,24 +112,26 @@ class LinePreviewWidget(QWidget):
         for ghost_points in ghost_lines:
             if len(ghost_points) < 2:
                 continue
-            ghost_path = QPainterPath(mapped(ghost_points[0, :2]))
+            ghost_path = QPainterPath(mapped(ghost_points[0]))
             for point in ghost_points[1:]:
-                ghost_path.lineTo(mapped(point[:2]))
+                ghost_path.lineTo(mapped(point))
             painter.setPen(QPen(QColor(130, 140, 150, 130), 2, Qt.DashLine))
             painter.drawPath(ghost_path)
         if len(preview_points) > 1:
-            path = QPainterPath(mapped(preview_points[0, :2]))
+            path = QPainterPath(mapped(preview_points[0]))
             for point in preview_points[1:]:
-                path.lineTo(mapped(point[:2]))
+                path.lineTo(mapped(point))
             painter.setPen(QPen(QColor(55, 155, 235), 2.5))
             painter.drawPath(path)
-        for index, point in enumerate(self.vertices):
-            pos = mapped(point[:2])
+        for index, point in enumerate(vertex_points):
+            pos = mapped(point)
             painter.setPen(QPen(QColor(25, 70, 110), 1))
             painter.setBrush(QColor(245, 190, 75))
             painter.drawEllipse(pos, 4.5, 4.5)
             painter.setPen(QPen(self.palette().text().color(), 1))
             painter.drawText(pos + QPointF(5, -5), str(index + 1))
+        painter.setPen(self.palette().placeholderText().color())
+        painter.drawText(10, 18, "3D — isometric" if self.view_mode == "3d" else "Plan — Easting / Northing")
 
 
 class LineEditorDialog(QDialog):
@@ -143,8 +168,36 @@ class LineEditorDialog(QDialog):
         split = QSplitter(Qt.Horizontal)
         left = QWidget()
         left_lay = QVBoxLayout(left)
+        view_row = QHBoxLayout()
+        view_row.addWidget(QLabel("View:"))
+        self.cmb_view = QComboBox()
+        self.cmb_view.addItem("Plan", "plan")
+        self.cmb_view.addItem("3D", "3d")
+        self.cmb_view.addItem("Image", "image")
+        self.cmb_view.addItem("All data", "all_data")
+        self.cmb_view.currentIndexChanged.connect(self._change_view)
+        view_row.addWidget(self.cmb_view)
+        view_row.addStretch(1)
+        left_lay.addLayout(view_row)
+
+        self.view_stack = QStackedWidget()
         self.preview = LinePreviewWidget()
-        left_lay.addWidget(self.preview, 1)
+        self.view_stack.addWidget(self.preview)
+        self.context_canvas = CanvasView(state)
+        self.context_canvas._fit_pending = False
+        self.context_canvas.opts.show_grid = False
+        self.context_canvas.opts.show_imagery = True
+        self.context_canvas.opts.show_points = False
+        self.context_canvas.opts.show_lines = False
+        self.context_canvas.opts.show_text = False
+        self.context_canvas.extra_overlay = self._paint_draft_overlay
+        self.view_stack.addWidget(self.context_canvas)
+        left_lay.addWidget(self.view_stack, 2)
+        self.lbl_view_hint = QLabel("Staged line geometry preview.")
+        self.lbl_view_hint.setWordWrap(True)
+        self.lbl_view_hint.setProperty("hint", "true")
+        left_lay.addWidget(self.lbl_view_hint)
+
         self.tbl_vertices = QTableWidget(0, 6)
         self.tbl_vertices.setHorizontalHeaderLabels(["Vertex", "Point #", "Easting", "Northing", "Elevation", "Outgoing curve °"])
         self.tbl_vertices.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -183,6 +236,46 @@ class LineEditorDialog(QDialog):
         self.btn_move = QPushButton("Move selected vertex")
         self.btn_move.clicked.connect(self._move_vertex)
         coords.addRow(self.btn_move)
+
+        interpolation_row = QHBoxLayout()
+        self.sp_interpolation = QDoubleSpinBox()
+        self.sp_interpolation.setRange(0.0, 100.0)
+        self.sp_interpolation.setDecimals(1)
+        self.sp_interpolation.setSuffix("%")
+        self.sp_interpolation.setValue(50.0)
+        self.sp_interpolation.setToolTip("0% uses the previous neighbor; 100% uses the following neighbor.")
+        self.btn_interpolate = QPushButton("Set interpolated position")
+        self.btn_interpolate.setToolTip("Place an interior vertex between its previous and next neighbors, including elevation.")
+        self.btn_interpolate.clicked.connect(self._interpolate_vertex)
+        interpolation_row.addWidget(self.sp_interpolation)
+        interpolation_row.addWidget(self.btn_interpolate)
+        coords.addRow("Interpolate:", interpolation_row)
+
+        nudge_row = QHBoxLayout()
+        nudge_row.addWidget(QLabel("Nudge distance:"))
+        self.sp_nudge = QDoubleSpinBox()
+        self.sp_nudge.setRange(0.0001, 1000000.0)
+        self.sp_nudge.setDecimals(4)
+        self.sp_nudge.setSingleStep(0.1)
+        self.sp_nudge.setValue(0.1)
+        self.sp_nudge.setToolTip("Distance in the project's coordinate units.")
+        nudge_row.addWidget(self.sp_nudge)
+        nudge_row.addStretch(1)
+        coords.addRow(nudge_row)
+
+        nudge_buttons = QHBoxLayout()
+        self.btn_nudge_west = QPushButton("← West")
+        self.btn_nudge_east = QPushButton("East →")
+        self.btn_nudge_south = QPushButton("↓ South")
+        self.btn_nudge_north = QPushButton("↑ North")
+        for button, dx, dy in (
+            (self.btn_nudge_west, -1.0, 0.0), (self.btn_nudge_east, 1.0, 0.0),
+            (self.btn_nudge_south, 0.0, -1.0), (self.btn_nudge_north, 0.0, 1.0),
+        ):
+            button.setToolTip("Nudge the selected line vertex; in point-edit mode its linked survey point moves on Apply.")
+            button.clicked.connect(lambda _checked=False, x=dx, y=dy: self._nudge_vertex(x, y))
+            nudge_buttons.addWidget(button)
+        coords.addRow("Nudge point:", nudge_buttons)
         op_lay.addLayout(coords)
 
         add_row = QHBoxLayout()
@@ -266,6 +359,86 @@ class LineEditorDialog(QDialog):
             return None
         return row
 
+    def _change_view(self, _index):
+        mode = self.cmb_view.currentData()
+        if mode in ("plan", "3d"):
+            self.preview.set_view_mode(mode)
+            self.view_stack.setCurrentWidget(self.preview)
+            self.lbl_view_hint.setText(
+                "2D plan view of the staged line." if mode == "plan" else
+                "Isometric 3D view of the staged line; elevations are shown relative to its lowest vertex.")
+            return
+
+        self.view_stack.setCurrentWidget(self.context_canvas)
+        self.context_canvas.opts.show_imagery = True
+        if mode == "image":
+            self.context_canvas.opts.show_points = False
+            self.context_canvas.opts.show_lines = False
+            self.context_canvas.opts.show_text = False
+            self.context_canvas.opts.show_surfaces = False
+            visible_images = any(layer.visible for layer in self.state.project.imagery.values())
+            self.lbl_view_hint.setText(
+                "Georeferenced imagery with the staged line overlaid. Project points and other lines are hidden."
+                if visible_images else
+                "No visible imagery layer is loaded. Add imagery from the main window; the staged line remains visible here.")
+        else:
+            self.context_canvas.opts.show_points = True
+            self.context_canvas.opts.show_lines = True
+            self.context_canvas.opts.show_text = True
+            self.context_canvas.opts.show_surfaces = True
+            self.context_canvas.opts.show_numbers = True
+            self.context_canvas.opts.show_desc = True
+            self.lbl_view_hint.setText(
+                "All project points, linework, labels and visible imagery, with this line's staged geometry highlighted.")
+        self.context_canvas.invalidate()
+        QTimer.singleShot(0, self._fit_context_view)
+
+    def _fit_context_view(self):
+        if self.cmb_view.currentData() == "all_data":
+            self.context_canvas.zoom_extents()
+            return
+        vertices = self.draft.vertices
+        if not vertices:
+            self.context_canvas.zoom_extents()
+            return
+        xmin = min(vertex.x for vertex in vertices)
+        xmax = max(vertex.x for vertex in vertices)
+        ymin = min(vertex.y for vertex in vertices)
+        ymax = max(vertex.y for vertex in vertices)
+        span = max(xmax - xmin, ymax - ymin, 10.0)
+        padding = span * 0.12
+        self.context_canvas.zoom_bbox(
+            (xmin - padding, ymin - padding, xmax + padding, ymax + padding), margin=0.02)
+
+    def _paint_draft_overlay(self, painter, view):
+        vertices = np.asarray([vertex.xyz() for vertex in self.draft.vertices], dtype=float)
+        original = self.draft.base_entity
+        ghost = LinePreviewWidget._sample(
+            original["verts"], original["bulges"] if original["bulges"] is not None
+            else np.zeros(len(original["verts"])), original["closed"])
+        staged = LinePreviewWidget._sample(vertices, self.draft.bulges, self.draft.closed)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        if len(ghost) > 1:
+            path = QPainterPath(QPointF(*view.to_screen(float(ghost[0, 0]), float(ghost[0, 1]))))
+            for point in ghost[1:]:
+                path.lineTo(QPointF(*view.to_screen(float(point[0]), float(point[1]))))
+            painter.setPen(QPen(QColor(130, 140, 150, 180), 2, Qt.DashLine))
+            painter.drawPath(path)
+        if len(staged) > 1:
+            path = QPainterPath(QPointF(*view.to_screen(float(staged[0, 0]), float(staged[0, 1]))))
+            for point in staged[1:]:
+                path.lineTo(QPointF(*view.to_screen(float(point[0]), float(point[1]))))
+            painter.setPen(QPen(QColor(35, 145, 235), 3))
+            painter.drawPath(path)
+        painter.setPen(QPen(QColor(25, 70, 110), 1))
+        painter.setBrush(QColor(245, 190, 75))
+        for index, vertex in enumerate(self.draft.vertices):
+            sx, sy = view.to_screen(vertex.x, vertex.y)
+            painter.drawEllipse(QPointF(sx, sy), 5.0, 5.0)
+            painter.drawText(QPointF(sx + 6, sy - 5), str(index + 1))
+        painter.restore()
+
     def _change_mode(self, _index):
         mode = self.cmb_mode.currentData()
         if mode is None:
@@ -343,6 +516,24 @@ class LineEditorDialog(QDialog):
         if z is None:
             z = float("nan")
         self._run_draft(lambda: self.draft.move_vertex(index, x, y, z))
+        self.tbl_vertices.selectRow(index)
+
+    def _interpolate_vertex(self):
+        index = self._selected_vertex()
+        if index is None:
+            self._report_error("Interpolate Point", "Select a vertex to interpolate first.")
+            return
+        fraction = self.sp_interpolation.value() / 100.0
+        self._run_draft(lambda: self.draft.interpolate_vertex(index, fraction))
+        self.tbl_vertices.selectRow(index)
+
+    def _nudge_vertex(self, dx, dy):
+        index = self._selected_vertex()
+        if index is None:
+            self._report_error("Nudge Point", "Select a vertex to nudge first.")
+            return
+        distance = self.sp_nudge.value()
+        self._run_draft(lambda: self.draft.nudge_vertex(index, dx * distance, dy * distance))
         self.tbl_vertices.selectRow(index)
 
     def _insert_end(self, at_start):
@@ -486,6 +677,12 @@ class LineEditorDialog(QDialog):
         self.btn_swap.setEnabled(vertex is not None and vertex > 0)
         self.btn_curve.setEnabled(segment is not None)
         self.btn_straight.setEnabled(segment is not None and abs(self.draft.bulges[segment]) > 1e-12)
+        can_interpolate = (vertex is not None and
+                           (self.draft.closed or vertex not in (0, len(self.draft.vertices) - 1)))
+        self.btn_interpolate.setEnabled(can_interpolate)
+        for button in (self.btn_nudge_west, self.btn_nudge_east,
+                       self.btn_nudge_south, self.btn_nudge_north):
+            button.setEnabled(vertex is not None)
         self.btn_end.setEnabled(not self.draft.closed)
         self.btn_start.setEnabled(not self.draft.closed)
         self.btn_close.setText("Open line" if self.draft.closed else "Close line")
@@ -520,6 +717,7 @@ class LineEditorDialog(QDialog):
                               else np.zeros(len(self.draft.base_entity["verts"])),
                               self.draft.base_entity["closed"])
         self.preview.update()
+        self.context_canvas.update()
         self.lst_actions.clear()
         self.lst_actions.addItems(self.draft.actions)
         if self.draft.point_mode_ready:

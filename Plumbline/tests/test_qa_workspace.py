@@ -109,6 +109,18 @@ def test_merge_point_descriptions():
     d3 = merge_point_descriptions(["EP1 ST", "TC1 ST"])
     assert d3 == "EP1 ST - TC1 ST"
 
+    # Identical code/description groups collapse to one code instead of making CODE - CODE.
+    assert merge_point_descriptions(["EP1", "EP1"]) == "EP1"
+    assert merge_point_descriptions(["EP1 ST", "EP1 ST"]) == "EP1 ST"
+    assert merge_point_descriptions(["EP1 - TC1 / asphalt", "EP1 - TC1 / asphalt"]) == \
+        "EP1 - TC1 / asphalt"
+
+    # Distinct descriptions continue to use the active Field Book separators and notes.
+    commands = {"multicode": "PLUS", "description": "NOTE"}
+    assert merge_point_descriptions(
+        ["EP1 NOTE asphalt", "TC1 NOTE concrete"], commands=commands
+    ) == "EP1 PLUS TC1 NOTE asphalt concrete"
+
 
 def test_keep_and_ignore_stack_choices_do_not_submit_a_merge_description(win, app):
     from plumbline.ui.qa_workspace import ClosePointsResolveDialog
@@ -132,6 +144,79 @@ def test_keep_and_ignore_stack_choices_do_not_submit_a_merge_description(win, ap
     assert result["ignore_points"] == [p2]
     assert result["merged_desc"] == ""
     assert not result["average_coords"]
+
+
+def test_blank_stack_cells_are_locked_and_tab_moves_between_action_combos(win, app, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QAbstractItemView
+    from plumbline.fieldwork import bridge as FB
+    from plumbline.ui.qa_workspace import ClosePointsResolveDialog, FixPointErrorsDialog
+
+    project = win.state.project
+    p1 = project.add_point(100, 200, 10, number="8701", desc="EP ST")
+    p2 = project.add_point(100.01, 200.01, 10, number="8702", desc="")
+    p3 = project.add_point(300, 400, 10, number="8703", desc="TC ST")
+    p4 = project.add_point(300.01, 400.01, 10, number="8704", desc="TC")
+    point_groups = [[p1.id, p2.id], [p3.id, p4.id]]
+
+    def fake_check_project(pr, **_kwargs):
+        ids = list(pr.points)
+        row_by_pid = {pid: row for row, pid in enumerate(ids)}
+        return {
+            "findings": [{
+                "check": "look-alike numbers",
+                "flag": "SimilarPointNumbers",
+                "level": "warn",
+                "detail": "Two look-alike number stacks.",
+                "pids": [pid for group in point_groups for pid in group],
+                "rows": [row_by_pid[pid] for group in point_groups for pid in group],
+                "groups": [[row_by_pid[pid] for pid in group] for group in point_groups],
+                "key": "locked-stack-cells-regression",
+            }],
+            "ids": ids, "rows": [], "stats": {}, "flags": {}, "line_issues": [],
+        }
+
+    monkeypatch.setattr(FB, "check_project", fake_check_project)
+    dialog = FixPointErrorsDialog(win.state, win)
+    finding = next(item for item in dialog.active_findings
+                   if item["key"] == "locked-stack-cells-regression")
+    dialog._open_inline_editor(finding)
+    dialog.show()
+    app.processEvents()
+
+    table = dialog.tbl_edit_pts
+    blank_stack = table.item(1, 0)
+    blank_action = table.item(1, 6)
+    assert blank_stack is not None and not blank_stack.flags() & Qt.ItemIsSelectable
+    assert not blank_stack.flags() & Qt.ItemIsEditable
+    assert blank_action is not None and not blank_action.flags() & Qt.ItemIsSelectable
+    assert not blank_action.flags() & Qt.ItemIsEditable
+    assert table.item(1, 5) is not None and not table.item(1, 5).flags() & Qt.ItemIsSelectable
+    assert table.editTriggers() == QAbstractItemView.NoEditTriggers
+
+    first_action = table.cellWidget(0, 6)
+    next_action = table.cellWidget(2, 6)
+    table.setCurrentCell(0, 6)
+    first_action.setFocus(Qt.OtherFocusReason)
+    QTest.keyClick(first_action, Qt.Key_Tab)
+    app.processEvents()
+    assert table.currentRow() == 2
+    assert app.focusWidget() is next_action
+
+    # The per-point dialog also has a read-only point listing and one Tab per action row.
+    popup = ClosePointsResolveDialog(win.state, [p1, p2], is_duplicate=True, parent=win)
+    popup.show()
+    app.processEvents()
+    assert popup.tbl.editTriggers() == QAbstractItemView.NoEditTriggers
+    assert not popup.tbl.item(0, 0).flags() & Qt.ItemIsEditable
+    popup.combos[0].setFocus(Qt.OtherFocusReason)
+    QTest.keyClick(popup.combos[0], Qt.Key_Tab)
+    app.processEvents()
+    assert popup.tbl.currentRow() == 1
+    assert app.focusWidget() is popup.combos[1]
+    popup.close()
+    dialog.close()
 
 
 def test_merge_close_keeps_known_elevation_when_other_is_missing(win):
@@ -1071,7 +1156,7 @@ def test_issue_page_hides_exit_controls_and_deleted_separator_widgets_are_safe(w
 
 # ------------------------------------------------------------------ Fix Unknown Code & Fieldbook Lookup
 def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
+    from PySide6.QtWidgets import QLabel, QMessageBox, QPushButton
     from plumbline.fieldwork import clean as clean_module
     from plumbline.ui.qa_workspace import FixPointErrorsDialog
 
@@ -1101,6 +1186,16 @@ def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkey
     dlg._open_inline_editor(unk_finding)
     assert dlg.stack.currentIndex() == 1
     assert p_unk.id in dlg.autofix_buttons and p_unk2.id in dlg.autofix_buttons
+    assert not any(button.text() == "Select All Correct" for button in dlg.findChildren(QPushButton))
+    suggestion = next(label for label in dlg.findChildren(QLabel)
+                      if label.text().startswith("Autofix suggestion:"))
+    assert suggestion.text() == "Autofix suggestion: RCP ST"
+    original_label = next(label for label in dlg.findChildren(QLabel)
+                          if f"plumbline-point:{p_unk.id}" in label.text())
+    focused = []
+    monkeypatch.setattr(dlg, "_select_and_focus_points", lambda pids: focused.extend(pids))
+    original_label.linkActivated.emit(f"plumbline-point:{p_unk.id}")
+    assert focused == [p_unk.id]
     auto_fix_button = dlg.autofix_buttons[p_unk.id]
     second_auto_fix_button = dlg.autofix_buttons[p_unk2.id]
     assert auto_fix_button.isEnabled() and second_auto_fix_button.isEnabled()
@@ -1175,6 +1270,59 @@ def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkey
     dlg._save_and_exit()
 
 
+def test_changed_points_report_lists_every_point_in_a_merge_stack(win):
+    from plumbline.fieldwork import bridge as FB
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog, QAReportDialog
+
+    project = win.state.project
+    head = project.add_point(500.0, 600.0, 50.0, number="95001", desc="EP")
+    duplicate = project.add_point(500.01, 600.01, 50.0, number="95002", desc="EP")
+    stack_ids = [head.id, duplicate.id]
+
+    def fake_check_project(pr, **_kwargs):
+        ids = list(pr.points)
+        active_stack = [pid for pid in stack_ids if pid in pr.points]
+        findings = []
+        if len(active_stack) > 1:
+            row_by_pid = {pid: row for row, pid in enumerate(ids)}
+            findings.append({
+                "check": "Close Points", "flag": "ClosePointCollision", "level": "warn",
+                "detail": "Two points occupy the same location.", "pids": active_stack,
+                "rows": [row_by_pid[pid] for pid in active_stack],
+                "groups": [[row_by_pid[pid] for pid in active_stack]],
+                "key": "full-stack-audit-regression",
+            })
+        return {"findings": findings, "ids": ids, "rows": [], "stats": {},
+                "flags": {}, "line_issues": []}
+
+    monkeypatch.setattr(FB, "check_project", fake_check_project)
+    dialog = FixPointErrorsDialog(win.state, win)
+    finding = next(item for item in dialog.active_findings
+                   if item["key"] == "full-stack-audit-regression")
+    dialog._open_inline_editor(finding)
+    key = dialog._stack_key(stack_ids)
+    combo = dialog.stack_action_combos[key]
+    combo.setCurrentIndex(combo.findData("merge_keep_coords"))
+    assert dialog._action_apply_staged_stack_actions()
+
+    audit = project.settings["qa_resolution_audit"]
+    assert [item["point_id"] for item in audit] == stack_ids
+    assert audit[0]["before"] == audit[0]["after"]
+    assert audit[0]["changed_fields"] == []
+    assert audit[1]["before"]["number"] == "95002"
+    assert audit[1]["after"] is None
+    assert audit[1]["changed_fields"] == ["removed"]
+
+    report = QAReportDialog(dialog._report_check_rows(), audit, win)
+    assert report.tbl_point_audit.rowCount() == 2
+    assert "#95001" in report.tbl_point_audit.item(0, 2).text()
+    assert "#95002" in report.tbl_point_audit.item(1, 2).text()
+    assert "No field values changed" in report.tbl_point_audit.item(0, 3).text()
+    assert "Point removed" in report.tbl_point_audit.item(1, 3).text()
+    report.close()
+    dialog.close()
+
+
 def test_qa_report_includes_zero_checks_persistent_point_audit_and_export(tmp_path, win, monkeypatch):
     from plumbline.fieldwork import bridge as FB
     from plumbline.ui.qa_workspace import (
@@ -1242,12 +1390,15 @@ def test_qa_report_includes_zero_checks_persistent_point_audit_and_export(tmp_pa
     report = QAReportDialog(dialog._report_check_rows(), audit, win)
     assert report.tabs.count() == 2
     assert report.tbl_point_audit.rowCount() == 1
+    assert "Description: “BADCODE ST” → “EP ST”" in report.tbl_point_audit.item(0, 3).text()
     assert report.btn_export.text().startswith("Export")
     report_path = tmp_path / "qa_report.csv"
     _write_qa_report_csv(report_path, dialog._report_check_rows(), audit)
     exported = report_path.read_text(encoding="utf-8")
     assert "CHECK SUMMARY" in exported and "RESOLVED POINT AUDIT" in exported
     assert "Close points,CLEAR,0,0" in exported
+    assert "Specific Before → After Changes" in exported
+    assert "Description: “BADCODE ST” → “EP ST”" in exported
     assert "BADCODE ST" in exported and "EP ST" in exported
     report.close()
 

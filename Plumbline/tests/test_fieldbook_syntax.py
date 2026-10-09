@@ -96,10 +96,22 @@ def test_common_conversion_rule_flags_and_preserves_a_valid_multi_code_descripti
     assert "collapse 2 valid Field Book codes into one" in parsed["flag_detail"]
     assert _autocorrect_desc("EA PLUS SW", {"ea", "sw"}, fieldbook_path=book) is None
 
+    # The same destructive conversion must be caught when free-text follows NOTE.
+    with_note = parse_desc_field("EA PLUS SW NOTE sidewalk", {"ea", "sw"}, fieldbook_path=book)
+    assert with_note["raw"] == "EA PLUS SW NOTE sidewalk"
+    assert "CommonConversionError" in with_note["flags"]
+    assert [item["base"] for item in with_note["code_classified"]
+            if item.get("status") in ("exact", "line_instance")] == ["ea", "sw"]
+
+    # A correction rule must not rewrite a token that occurs only in free text.
+    note_only = parse_desc_field("EA NOTE SIDEWALK", {"ea"}, commands=commands,
+                                 rules=[["SIDEWALK", "SW"]])
+    assert note_only["raw"] == "EA NOTE SIDEWALK"
+
     project = Project("Conversion QA")
     project.settings["fieldbook_file"] = str(book)
     project.codes, _stats = f2f.convert(f2f.read(book))
-    project.add_point(100, 200, 5, number="5101", desc="EA PLUS SW")
+    project.add_point(100, 200, 5, number="5101", desc="EA PLUS SW NOTE roadway")
     report = check_project(project, f2f={"ea", "sw"}, fieldbook_path=str(book))
     finding = next(f for f in report["findings"] if f.get("flag") == "CommonConversionError")
     assert finding["check"] == "Common conversion error"

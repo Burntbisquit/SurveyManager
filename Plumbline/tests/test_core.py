@@ -1,7 +1,9 @@
 import http.server
+import json
 import math
 import socketserver
 import threading
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -513,6 +515,20 @@ def test_qa_finds_bust_duplicate_and_wrong_crs():
     assert [i.kind for i in run_checks(clean) if i.severity != "info"] == []
 
 
+def test_qa_unknown_code_check_skips_deleted_points_and_blank_descriptions():
+    project = Project("Deleted description")
+    project.codes = default_codes()
+    active = project.add_point(0, 0, 1, number="1", desc="UNKNOWNCODE")
+    project.add_point(10, 0, 1, number="2", desc="UNKNOWNCODE",
+                      attrs={"qa_deleted": True})
+    project.add_point(20, 0, 1, number="3", desc="")
+
+    issues = run_checks(project)
+    unknown = next(issue for issue in issues if issue.kind == "unknown-code")
+    assert unknown.point_ids == [active.id]
+    assert all(issue.kind != "empty-description" for issue in issues)
+
+
 # ============================================================ tile store
 class _H(http.server.BaseHTTPRequestHandler):
     hits = 0
@@ -724,6 +740,40 @@ def test_edit_discards_a_noop_but_keeps_a_rename():
     assert len(st.undo_stack) == 1, "a rename inside an edit must be undoable"
     st.undo()
     assert st.project.name == "Script target"
+
+
+def test_untitled_project_edit_rolls_back_on_cancel_and_saves_before_mutation(tmp_path):
+    pytest.importorskip("PySide6")
+    from plumbline.ui.app_state import AppState
+    from plumbline.core.project_package import create_project_package
+
+    state = AppState(Project("Untitled"))
+    calls = []
+    state._save_untitled_before_edit = lambda: calls.append("cancel") or False
+    with state.edit("Add point"):
+        state.project.add_point(1, 2, 3, desc="TOC")
+    assert not state.project.points and not state.dirty and calls == ["cancel"]
+
+    def save_package():
+        package = create_project_package(state.project, tmp_path, "Saved Before Edit")
+        state.project.restore(package.snapshot())
+        state.project.path = package.path
+        state.project._portable_paths = package._portable_paths
+        state.set_dirty(False)
+        calls.append("saved")
+        return True
+
+    state._save_untitled_before_edit = save_package
+    with state.edit("Add point"):
+        state.project.add_point(1, 2, 3, desc="TOC")
+    assert calls == ["cancel", "saved"]
+    assert len(state.project.points) == 1 and state.dirty
+    assert Path(state.project.path).is_file()
+    state.undo()
+    assert not state.project.points and state.project.path
+    state.project.save()
+    saved = json.loads(Path(state.project.path).read_text(encoding="utf-8"))
+    assert saved["package"]["relative_asset_paths"] is True
 
 
 def test_tile_cache_key_is_stable_and_filesystem_safe():

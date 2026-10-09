@@ -1,6 +1,7 @@
 """The Project: everything in one drawing/job, plus (de)serialisation and undo snapshots."""
 from __future__ import annotations
 
+import copy
 import json
 import math
 import os
@@ -35,6 +36,34 @@ DEFAULT_SETTINGS = {
     "f2f_path": "",              # the office's field-to-finish code table last converted from
 }
 
+
+def _package_relative_path(root: Path, value) -> str:
+    """Store an asset under a package root relative to the project file."""
+    text = str(value or "")
+    if not text or "://" in text:
+        return text
+    try:
+        path = Path(text).expanduser()
+        candidate = path if path.is_absolute() else root / path
+        return candidate.resolve().relative_to(root.resolve()).as_posix()
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return text
+
+
+def _package_absolute_path(root: Path, value) -> str:
+    """Resolve an internal relative package reference for the live application session."""
+    text = str(value or "")
+    if not text or "://" in text:
+        return text
+    try:
+        path = Path(text).expanduser()
+        if path.is_absolute():
+            return text
+        return str((root / path).resolve())
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return text
+
+
 # Everything an edit can change, and therefore everything undo/redo must carry.  `name` is in
 # here so undo can restore a rename (and so AppState.edit(discard_if_unchanged=True) notices
 # one); `path` deliberately is not - undoing an edit should never change which file you are
@@ -47,6 +76,7 @@ class Project:
     def __init__(self, name: str = "Untitled", crs: ProjectCRS | None = None):
         self.name = name
         self.path: str | None = None
+        self._portable_paths = False
         # No silent geodetic assumption: a project without a CRS uses plain local coordinates (US survey feet)
         self.crs: ProjectCRS = crs or ProjectCRS.local("ftUS")
         self.settings: dict = dict(DEFAULT_SETTINGS)
@@ -508,7 +538,7 @@ class Project:
 
     # ------------------------------------------------------------------ persistence
     def to_dict(self) -> dict:
-        return {
+        data = {
             "format": FORMAT, "version": VERSION, "name": self.name, "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
             "crs": self.crs.to_dict(), "settings": self.settings, "notes": self.notes,
             "layers": [l.to_dict() for l in self.layers.values()],
@@ -520,15 +550,47 @@ class Project:
             "codes": self.codes.to_list(), "next_id": self._next_id,
             "groups": self.groups.to_list(),
         }
+        if self._portable_paths:
+            data["package"] = {"relative_asset_paths": True}
+            if self.path:
+                root = Path(self.path).expanduser().resolve().parent
+                data["settings"] = copy.deepcopy(self.settings)
+                for key in ("fieldbook_file", "f2f_path", "data_folder"):
+                    value = data["settings"].get(key)
+                    if value:
+                        data["settings"][key] = _package_relative_path(root, value)
+                data["imagery"] = copy.deepcopy(data["imagery"])
+                for layer in data["imagery"]:
+                    source = layer.get("source")
+                    if isinstance(source, dict) and source.get("path"):
+                        source["path"] = _package_relative_path(root, source["path"])
+                data["points"] = copy.deepcopy(data["points"])
+                for point in data["points"]:
+                    attrs = point[7] if len(point) > 7 else None
+                    if not isinstance(attrs, dict):
+                        continue
+                    for key in ("fieldwork_source", "fieldwork_folder"):
+                        if attrs.get(key):
+                            attrs[key] = _package_relative_path(root, attrs[key])
+                    imported = attrs.get("import")
+                    if isinstance(imported, dict) and imported.get("folder"):
+                        imported["folder"] = _package_relative_path(root, imported["folder"])
+        return data
 
     def save(self, path: str | os.PathLike | None = None):
         path = Path(path or self.path or "")
         if not str(path):
             raise ValueError("no path")
+        previous_path = self.path
+        self.path = str(path)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, separators=(",", ":"))
-        os.replace(tmp, path)
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.to_dict(), f, separators=(",", ":"))
+            os.replace(tmp, path)
+        except Exception:
+            self.path = previous_path
+            raise
         self.path = str(path)
 
     @classmethod
@@ -536,6 +598,9 @@ class Project:
         if d.get("format") != FORMAT:
             raise ValueError("Not a Plumbline project file")
         p = cls(d.get("name", "Untitled"), ProjectCRS.from_dict(d["crs"]))
+        package_meta = d.get("package") or {}
+        p._portable_paths = bool(
+            isinstance(package_meta, dict) and package_meta.get("relative_asset_paths"))
         p.settings = {**DEFAULT_SETTINGS, **d.get("settings", {})}
         p.notes = d.get("notes", "")
         p.layers = {l["name"]: Layer.from_dict(l) for l in d.get("layers", [])}
@@ -571,6 +636,16 @@ class Project:
             d = json.load(f)
         p = cls.from_dict(d)
         p.path = str(path)
+        if p._portable_paths:
+            root = Path(path).expanduser().resolve().parent
+            for key in ("fieldbook_file", "f2f_path", "data_folder"):
+                value = p.settings.get(key)
+                if value:
+                    p.settings[key] = _package_absolute_path(root, value)
+            for layer in p.imagery.values():
+                source = getattr(layer, "source", None)
+                if isinstance(source, dict) and source.get("path"):
+                    source["path"] = _package_absolute_path(root, source["path"])
         return p
 
     # ------------------------------------------------------------------ transforms

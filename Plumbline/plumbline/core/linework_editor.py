@@ -548,6 +548,52 @@ class LineEditDraft:
 
         self._mutate("Move vertex", operation)
 
+    def interpolate_vertex(self, index: int, fraction: float = 0.5):
+        """Place an existing interior vertex between its two neighbors, interpolating X/Y/Z."""
+        index = int(index)
+        t = float(fraction)
+
+        def operation():
+            if index < 0 or index >= len(self.vertices):
+                raise LineworkEditError("Select a valid vertex to interpolate.")
+            if not math.isfinite(t) or not 0.0 <= t <= 1.0:
+                raise LineworkEditError("Interpolation fraction must be between 0 and 1.")
+            if not self.closed and index in (0, len(self.vertices) - 1):
+                raise LineworkEditError("Interpolate an interior point; an open-line endpoint has only one neighbor.")
+            previous = self.vertices[(index - 1) % len(self.vertices)]
+            following = self.vertices[(index + 1) % len(self.vertices)]
+            vertex = self.vertices[index]
+            vertex.x = previous.x + (following.x - previous.x) * t
+            vertex.y = previous.y + (following.y - previous.y) * t
+            if math.isfinite(previous.z) and math.isfinite(following.z):
+                vertex.z = previous.z + (following.z - previous.z) * t
+            elif math.isfinite(previous.z):
+                vertex.z = previous.z
+            elif math.isfinite(following.z):
+                vertex.z = following.z
+            else:
+                vertex.z = NAN
+
+        self._mutate("Interpolate vertex position", operation)
+
+    def nudge_vertex(self, index: int, dx: float, dy: float, dz: float = 0.0):
+        """Move a vertex by a small finite offset; point-mode commit follows its linked point."""
+        index = int(index)
+        offsets = tuple(float(value) for value in (dx, dy, dz))
+
+        def operation():
+            if index < 0 or index >= len(self.vertices):
+                raise LineworkEditError("Select a valid vertex to nudge.")
+            if not all(math.isfinite(value) for value in offsets):
+                raise LineworkEditError("Nudge offsets must be finite numbers.")
+            vertex = self.vertices[index]
+            vertex.x += offsets[0]
+            vertex.y += offsets[1]
+            if math.isfinite(vertex.z):
+                vertex.z += offsets[2]
+
+        self._mutate("Nudge point", operation)
+
     def swap_vertices(self, first_index: int, second_index: int):
         first, second = int(first_index), int(second_index)
 

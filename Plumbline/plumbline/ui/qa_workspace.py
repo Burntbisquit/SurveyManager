@@ -52,18 +52,27 @@ from .widgets import Banner, Hint
 
 
 class DownTabTableWidget(QTableWidget):
-    """Move Tab vertically through a list/table and stop at its ends instead of wrapping."""
+    """Move Tab through populated rows, skipping locked blanks and stopping at the ends."""
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Tab, Qt.Key_Backtab):
             step = -1 if event.key() == Qt.Key_Backtab or event.modifiers() & Qt.ShiftModifier else 1
             row, column = self.currentRow(), max(0, self.currentColumn())
-            target_row = (0 if row < 0 else row + step)
-            if 0 <= target_row < self.rowCount() and self.columnCount():
-                self.setCurrentCell(target_row, column)
+            target_row = 0 if row < 0 and step > 0 else row + step
+            while 0 <= target_row < self.rowCount() and self.columnCount():
                 target = self.cellWidget(target_row, column)
+                item = self.item(target_row, column)
                 if target is not None:
+                    self.setCurrentCell(target_row, column)
                     target.setFocus(Qt.TabFocusReason)
+                    event.accept()
+                    return
+                if item is not None and item.flags() & Qt.ItemIsSelectable:
+                    self.setCurrentCell(target_row, column)
+                    event.accept()
+                    return
+                target_row += step
+            # Stop at the table boundary instead of wrapping onto another stack.
             event.accept()
             return
         super().keyPressEvent(event)
@@ -80,6 +89,20 @@ class DownTabTableWidget(QTableWidget):
                 return self.model().index(row, column)
             return self.model().index(0, 0) if self.rowCount() and self.columnCount() else self.currentIndex()
         return super().moveCursor(cursorAction, modifiers)
+
+
+def _display_item(text, *, data=None, background=None) -> QTableWidgetItem:
+    """Create a non-editable display cell; empty values cannot steal focus or selection."""
+    item = QTableWidgetItem(str(text))
+    flags = Qt.ItemIsEnabled
+    if str(text).strip():
+        flags |= Qt.ItemIsSelectable
+    item.setFlags(flags)
+    if data is not None:
+        item.setData(Qt.UserRole, data)
+    if background is not None:
+        item.setBackground(background)
+    return item
 
 
 class _DownTabComboBox(QComboBox):
@@ -238,6 +261,38 @@ def _point_audit_state_text(state: dict | None) -> str:
     )
 
 
+def _point_audit_changes_text(item: dict) -> str:
+    """Readable field-by-field deltas for one Changed Points row."""
+    before, after = item.get("before"), item.get("after")
+    if before is None:
+        return "Point added"
+    if after is None:
+        return "Point removed"
+
+    value_fields = (
+        ("point number", "Point #", "number"),
+        ("northing", "Northing", "y"),
+        ("easting", "Easting", "x"),
+        ("elevation", "Elevation", "z"),
+        ("description", "Description", "description"),
+    )
+    changed = set(item.get("changed_fields") or _point_audit_changed_fields(before, after))
+    lines = []
+    for field, label, key in value_fields:
+        if field not in changed:
+            continue
+        left, right = before.get(key), after.get(key)
+        if key in ("x", "y", "z"):
+            left = "—" if left is None else f"{float(left):,.3f}"
+            right = "—" if right is None else f"{float(right):,.3f}"
+        elif key == "description":
+            left, right = f"“{left or ''}”", f"“{right or ''}”"
+        else:
+            left, right = str(left or "—"), str(right or "—")
+        lines.append(f"{label}: {left} → {right}")
+    return "\n".join(lines) if lines else "No field values changed"
+
+
 def _write_qa_report_csv(path, check_rows: Sequence[dict], point_audit: Sequence[dict]):
     """Write both the check summary and changed-point audit to one reviewable CSV."""
     with open(path, "w", newline="", encoding="utf-8") as stream:
@@ -253,9 +308,9 @@ def _write_qa_report_csv(path, check_rows: Sequence[dict], point_audit: Sequence
         writer.writerow(["RESOLVED POINT AUDIT"])
         writer.writerow([
             "When", "Check", "Resolution", "Point ID", "Changed Fields",
-            "Before Number", "Before Northing", "Before Easting", "Before Elevation",
-            "Before Description", "After Number", "After Northing", "After Easting",
-            "After Elevation", "After Description",
+            "Specific Before → After Changes", "Before Number", "Before Northing",
+            "Before Easting", "Before Elevation", "Before Description", "After Number",
+            "After Northing", "After Easting", "After Elevation", "After Description",
         ])
         for item in point_audit:
             before = item.get("before") or {}
@@ -263,7 +318,7 @@ def _write_qa_report_csv(path, check_rows: Sequence[dict], point_audit: Sequence
             changed = item.get("changed_fields", [])
             writer.writerow([
                 item.get("when", ""), item.get("check", ""), item.get("resolution", ""),
-                item.get("point_id", ""), ", ".join(changed),
+                item.get("point_id", ""), ", ".join(changed), _point_audit_changes_text(item),
                 before.get("number", ""), before.get("y", ""), before.get("x", ""),
                 before.get("z", ""), before.get("description", ""),
                 after.get("number", ""), after.get("y", ""), after.get("x", ""),
@@ -283,7 +338,7 @@ class QAReportDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(Hint(
             "All available checks are listed, including checks with zero findings. "
-            "The point audit lists only points changed by a QA resolution."))
+            "The point audit lists each affected point with its original and current after-state."))
 
         self.tabs = QTabWidget(self)
         self.tbl_checks = QTableWidget(len(self.check_rows), 5)
@@ -312,6 +367,7 @@ class QAReportDialog(QDialog):
             ["When", "Check", "Point", "Change", "Before", "After", "Resolution"])
         self.tbl_point_audit.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl_point_audit.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl_point_audit.setWordWrap(True)
         self.tbl_point_audit.setAlternatingRowColors(True)
         self.tbl_point_audit.verticalHeader().setVisible(False)
         for row, item in enumerate(self.point_audit):
@@ -320,12 +376,7 @@ class QAReportDialog(QDialog):
             before = before_state or {}
             after = after_state or {}
             number = after.get("number") if after_state else before.get("number", "")
-            if before_state is None:
-                change = "Added"
-            elif after_state is None:
-                change = "Removed"
-            else:
-                change = ", ".join(item.get("changed_fields", [])) or "Changed"
+            change = _point_audit_changes_text(item)
             values = (
                 item.get("when", ""), item.get("check", ""),
                 f"#{number} (ID {item.get('point_id', '')})", change,
@@ -344,6 +395,7 @@ class QAReportDialog(QDialog):
         audit_header.setSectionResizeMode(4, QHeaderView.Stretch)
         audit_header.setSectionResizeMode(5, QHeaderView.Stretch)
         audit_header.setSectionResizeMode(6, QHeaderView.Stretch)
+        self.tbl_point_audit.resizeRowsToContents()
         self.tabs.addTab(self.tbl_point_audit, "Changed Points")
         layout.addWidget(self.tabs, 1)
 
@@ -416,6 +468,7 @@ class ClosePointsResolveDialog(QDialog):
         self.tbl.setHorizontalHeaderLabels(["Pt #", "Northing", "Easting", "Elevation", "Description", "Action"])
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl.verticalHeader().setVisible(False)
         self.tbl.setAlternatingRowColors(True)
         hh = self.tbl.horizontalHeader()
@@ -436,13 +489,13 @@ class ClosePointsResolveDialog(QDialog):
 
         self.combos: list[QComboBox] = []
         for r, p in enumerate(self.points):
-            self.tbl.setItem(r, 0, QTableWidgetItem(str(p.number)))
-            self.tbl.setItem(r, 1, QTableWidgetItem(f"{p.y:,.3f}"))
-            self.tbl.setItem(r, 2, QTableWidgetItem(f"{p.x:,.3f}"))
-            self.tbl.setItem(r, 3, QTableWidgetItem(f"{p.z:,.3f}"))
-            self.tbl.setItem(r, 4, QTableWidgetItem(str(p.desc or "")))
+            self.tbl.setItem(r, 0, _display_item(p.number))
+            self.tbl.setItem(r, 1, _display_item(f"{p.y:,.3f}"))
+            self.tbl.setItem(r, 2, _display_item(f"{p.x:,.3f}"))
+            self.tbl.setItem(r, 3, _display_item(f"{p.z:,.3f}"))
+            self.tbl.setItem(r, 4, _display_item(p.desc or ""))
 
-            cmb = QComboBox()
+            cmb = _DownTabComboBox(self.tbl, r, 5)
             actions = ["Merge (Target)", "Merge (Into Target)", "Delete Point", "Keep Point", "Ignore"]
             if self.is_duplicate:
                 actions.insert(2, "Renumber Point")
@@ -962,6 +1015,7 @@ class BaseQAWorkbenchWindow(QMainWindow):
                 ["Stack", "Pt #", "Northing", "Easting", "Elevation", "Description"])
         self.tbl_edit_pts.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_edit_pts.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tbl_edit_pts.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl_edit_pts.verticalHeader().setVisible(False)
         hh_e = self.tbl_edit_pts.horizontalHeader()
         hh_e.setSectionResizeMode(QHeaderView.Interactive)
@@ -1178,6 +1232,11 @@ class BaseQAWorkbenchWindow(QMainWindow):
         pass
 
     def _on_edit_pts_double_clicked(self, row: int, col: int):
+        clicked_widget = self.tbl_edit_pts.cellWidget(row, col)
+        clicked_item = self.tbl_edit_pts.item(row, col)
+        if (clicked_widget is None
+                and (clicked_item is None or not clicked_item.flags() & Qt.ItemIsSelectable)):
+            return
         data = None
         for column in range(self.tbl_edit_pts.columnCount()):
             item = self.tbl_edit_pts.item(row, column)
@@ -1797,25 +1856,11 @@ class BaseQAWorkbenchWindow(QMainWindow):
                 r = self.tbl_edit_pts.rowCount()
                 self.tbl_edit_pts.insertRow(r)
 
-                it_num = QTableWidgetItem(str(p.number))
-                it_num.setData(Qt.UserRole, pid)
-                self.tbl_edit_pts.setItem(r, 0, it_num)
-
-                it_y = QTableWidgetItem(f"{p.y:,.3f}")
-                it_y.setData(Qt.UserRole, pid)
-                self.tbl_edit_pts.setItem(r, 1, it_y)
-
-                it_x = QTableWidgetItem(f"{p.x:,.3f}")
-                it_x.setData(Qt.UserRole, pid)
-                self.tbl_edit_pts.setItem(r, 2, it_x)
-
-                it_z = QTableWidgetItem(f"{p.z:,.3f}")
-                it_z.setData(Qt.UserRole, pid)
-                self.tbl_edit_pts.setItem(r, 3, it_z)
-
-                it_desc = QTableWidgetItem(str(p.desc or ""))
-                it_desc.setData(Qt.UserRole, pid)
-                self.tbl_edit_pts.setItem(r, 4, it_desc)
+                self.tbl_edit_pts.setItem(r, 0, _display_item(p.number, data=pid))
+                self.tbl_edit_pts.setItem(r, 1, _display_item(f"{p.y:,.3f}", data=pid))
+                self.tbl_edit_pts.setItem(r, 2, _display_item(f"{p.x:,.3f}", data=pid))
+                self.tbl_edit_pts.setItem(r, 3, _display_item(f"{p.z:,.3f}", data=pid))
+                self.tbl_edit_pts.setItem(r, 4, _display_item(p.desc or "", data=pid))
         elif self.enable_flag_navigation:
             self.tbl_edit_pts.setRowCount(0)
             self.tbl_edit_pts.setColumnCount(7)
@@ -1902,7 +1947,12 @@ class BaseQAWorkbenchWindow(QMainWindow):
                         it_stack = QTableWidgetItem("")
                         it_stack.setData(Qt.UserRole, row_data)
                         it_stack.setBackground(bg)
+                        it_stack.setFlags(Qt.NoItemFlags)
                         self.tbl_edit_pts.setItem(r, 0, it_stack)
+                        empty_action = QTableWidgetItem("")
+                        empty_action.setBackground(bg)
+                        empty_action.setFlags(Qt.NoItemFlags)
+                        self.tbl_edit_pts.setItem(r, 6, empty_action)
 
                     for column, text in (
                         (1, str(p.number)),
@@ -1911,10 +1961,8 @@ class BaseQAWorkbenchWindow(QMainWindow):
                         (4, f"{p.z:,.3f}"),
                         (5, str(p.desc or "")),
                     ):
-                        item = QTableWidgetItem(text)
-                        item.setData(Qt.UserRole, row_data)
-                        item.setBackground(bg)
-                        self.tbl_edit_pts.setItem(r, column, item)
+                        self.tbl_edit_pts.setItem(
+                            r, column, _display_item(text, data=row_data, background=bg))
         else:
             # Preserve the linework workbench's original grouped-point table.
             self.tbl_edit_pts.setRowCount(0)
@@ -1947,10 +1995,8 @@ class BaseQAWorkbenchWindow(QMainWindow):
                         str(point.desc or ""),
                     )
                     for column, text in enumerate(values):
-                        item = QTableWidgetItem(text)
-                        item.setData(Qt.UserRole, row_data)
-                        item.setBackground(bg)
-                        self.tbl_edit_pts.setItem(row, column, item)
+                        self.tbl_edit_pts.setItem(
+                            row, column, _display_item(text, data=row_data, background=bg))
 
         self.cb_stack_action = next(iter(self.stack_action_combos.values()), None)
 
@@ -2536,6 +2582,7 @@ class BaseQAWorkbenchWindow(QMainWindow):
         stay_on_edit_page: bool = True,
         ignored_points: list[int] | None = None,
         project_changed: bool = True,
+        include_unchanged_points: set[int] | None = None,
     ):
         pr = self.state.project
         cur_finding = self.current_edit_finding
@@ -2563,10 +2610,14 @@ class BaseQAWorkbenchWindow(QMainWindow):
         resolution_id = uuid.uuid4().hex
         timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
         point_audit_rows = []
+        ignored_audit_ids = set(ignored_pids)
+        unchanged_audit_ids = set(include_unchanged_points or ())
         for pid, before in before_by_id.items():
+            if pid in ignored_audit_ids:
+                continue
             after = _point_audit_state(pr.points.get(pid))
             changed_fields = _point_audit_changed_fields(before, after)
-            if not changed_fields:
+            if not changed_fields and pid not in unchanged_audit_ids:
                 continue
             point_audit_rows.append({
                 "resolution_id": resolution_id,
@@ -2777,6 +2828,10 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
     def _filter_finding(self, finding: dict) -> bool:
         chk = finding.get("check", "").lower()
         flag = str(finding.get("flag", ""))
+        # Blank descriptions are not an actionable Fix Points warning. Fieldwork Manager
+        # retains its separate EmptyDescription clean-up workflow.
+        if flag == "EmptyDescription" or "no description" in chk:
+            return False
         # Filter out line issues (they belong in Fix Linework)
         if "line:" in chk or flag.startswith("Missing") or any(w in chk for w in ("line", "curve", "string", "closed")):
             return False
@@ -2964,16 +3019,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
             lay_g.addWidget(Hint(hint_text))
             lay_g.addWidget(self.tbl_corrections)
 
-            # Row actions stay staged until the page-level Apply or Save action.
-            if not is_spacing:
-                row_btns = QHBoxLayout()
-                row_btns.setSpacing(8)
-                btn_correct_all = QPushButton("Select All Correct")
-                btn_correct_all.setToolTip("Set every row to Correct; Apply or Save applies the staged selections.")
-                btn_correct_all.clicked.connect(self._action_correct_all_separator_corrections)
-                row_btns.addWidget(btn_correct_all)
-                row_btns.addStretch(1)
-                lay_g.addLayout(row_btns)
+            # Corrections remain point-by-point and staged until the page-level Apply or Save.
             self.lay_edit_tools.addWidget(grp)
 
         elif is_close or is_exact_dup or is_lookalike:
@@ -3030,8 +3076,14 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
                 lbl_pt_num = QLabel(f"<b>Pt #{p.number}</b>")
                 row_h.addWidget(lbl_pt_num)
 
-                lbl_orig = QLabel(f"<b>Original:</b> {self._highlight_unknown_tokens(p.desc)}")
+                lbl_orig = QLabel(f"<b>Original:</b> {self._highlight_unknown_tokens(p.desc, p.id)}")
                 lbl_orig.setTextFormat(Qt.RichText)
+                lbl_orig.setWordWrap(True)
+                lbl_orig.setTextInteractionFlags(Qt.TextBrowserInteraction)
+                lbl_orig.setOpenExternalLinks(False)
+                lbl_orig.linkActivated.connect(
+                    lambda _href, point_id=p.id: self._select_and_focus_points([point_id]))
+                lbl_orig.setToolTip("Click a red-underlined unknown code to zoom to this point on the map.")
                 row_h.addWidget(lbl_orig, 1)
                 lay_p.addLayout(row_h)
 
@@ -3059,6 +3111,16 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
                     self.autofix_buttons[p.id] = btn_autofix
                     row_ed.addWidget(btn_autofix)
                 lay_p.addLayout(row_ed)
+
+                if is_unknown:
+                    lbl_suggestion = QLabel(
+                        f"Autofix suggestion: {autofix_guess}"
+                        if autofix_guess else
+                        "Autofix suggestion: No safe suggestion; enter the corrected code manually.")
+                    lbl_suggestion.setTextFormat(Qt.PlainText)
+                    lbl_suggestion.setWordWrap(True)
+                    lbl_suggestion.setStyleSheet("color: #5f6b76; font-size: 11px;")
+                    lay_p.addWidget(lbl_suggestion)
 
                 lbl_status = QLabel("")
                 lbl_status.setTextFormat(Qt.RichText)
@@ -3170,8 +3232,8 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
             self.lay_edit_tools.addWidget(sp_desc)
 
     # ------------------------------------------------------------------ Fieldbook & Validation Helpers
-    def _highlight_unknown_tokens(self, orig_desc: str | None) -> str:
-        """Format original description with unrecognized code tokens underlined and colored in red."""
+    def _highlight_unknown_tokens(self, orig_desc: str | None, point_id: int | None = None) -> str:
+        """Mark unknown codes in red; make them point-focus links when an ID is available."""
         import html
         from ..fieldwork.parse import parse_desc_field
         if not orig_desc or not str(orig_desc).strip():
@@ -3193,7 +3255,13 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
                 continue
             tok_esc = html.escape(tok)
             pat = re.compile(rf"\b{re.escape(tok_esc)}\b", re.IGNORECASE)
-            escaped = pat.sub(f"<span style='color: #e74c3c; text-decoration: underline; font-weight: bold;'>{tok_esc}</span>", escaped)
+            if point_id is None:
+                marked = f"<span style='color: #e74c3c; text-decoration: underline; font-weight: bold;'>{tok_esc}</span>"
+            else:
+                marked = (f"<a href='plumbline-point:{int(point_id)}' "
+                          "style='color: #e74c3c; text-decoration: underline; font-weight: bold;'>"
+                          f"{tok_esc}</a>")
+            escaped = pat.sub(marked, escaped)
         return escaped
 
     def _autofix_guess_for_description(self, description: str | None) -> tuple[bool, str | None]:
@@ -3589,25 +3657,40 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
                 "delete_ids": delete_point_ids,
                 "average_coords": average_coords,
                 "merged_desc": merged_desc,
+                "stack_ids": [point.id for point in points],
+                "ignored_ids": list(ignored_point_ids),
             })
 
         if not resolved_ids:
             self.lbl_status.setText("No available points remain in the staged stacks.")
             return False
 
-        project_changed = bool(remove_ids or renumber_assignments)
+        project_changed = False
+        audit_unchanged_ids: set[int] = set()
         for operation in operations:
             target = pr.points.get(operation["target_id"])
             merge_points = [pr.points[pid] for pid in operation["merge_ids"] if pid in pr.points]
-            if target is None:
-                continue
-            if operation["average_coords"] and len(merge_points) > 1:
+            operation_changed = any(
+                pid in pr.points
+                for pid in ([pid for pid in operation["merge_ids"]
+                             if pid != operation["target_id"]] + operation["delete_ids"])
+            )
+            operation_stack_ids = set(operation["stack_ids"])
+            operation_changed |= any(
+                pid in operation_stack_ids and pid in pr.points and pr.points[pid].number != number
+                for pid, number in renumber_assignments
+            )
+            if target is not None and operation["average_coords"] and len(merge_points) > 1:
                 average_x = sum(point.x for point in merge_points) / len(merge_points)
                 average_y = sum(point.y for point in merge_points) / len(merge_points)
                 average_z = _average_finite([point.z for point in merge_points])
-                project_changed |= (target.x, target.y, target.z) != (average_x, average_y, average_z)
-            if len(merge_points) > 1 and operation["merged_desc"]:
-                project_changed |= target.desc != operation["merged_desc"]
+                operation_changed |= (target.x, target.y, target.z) != (average_x, average_y, average_z)
+            if target is not None and len(merge_points) > 1 and operation["merged_desc"]:
+                operation_changed |= target.desc != operation["merged_desc"]
+            project_changed |= operation_changed
+            if operation_changed:
+                audit_unchanged_ids.update(
+                    pid for pid in operation_stack_ids if pid not in operation["ignored_ids"])
 
         def do_it():
             for operation in operations:
@@ -3636,6 +3719,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
             stay_on_edit_page=True,
             ignored_points=list(dict.fromkeys(ignored_ids)),
             project_changed=project_changed,
+            include_unchanged_points=audit_unchanged_ids,
         )
         return True
 
@@ -3759,7 +3843,8 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
                 self.state.project.remove_points([p.id for p in pts_del if p.id in self.state.project.points])
 
         self._apply_fix(f"Merged {len(pts)} close points into Pt #{p_primary.number} ({merged_desc})", do_it,
-                        resolved_points=stack_pids, stay_on_edit_page=True)
+                        resolved_points=stack_pids, stay_on_edit_page=True,
+                        include_unchanged_points=set(stack_pids) if len(stack_pids) > 1 else set())
 
     def _action_delete_close_others(self, pts: list[SurveyPoint]):
         if not pts:
@@ -3773,7 +3858,8 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
                 self.state.project.remove_points([p.id for p in pts_del if p.id in self.state.project.points])
 
         self._apply_fix(f"Kept Pt #{p_primary.number}, deleted {len(pts_del)} other point(s)", do_it,
-                        resolved_points=stack_pids, stay_on_edit_page=True)
+                        resolved_points=stack_pids, stay_on_edit_page=True,
+                        include_unchanged_points=set(stack_pids) if len(stack_pids) > 1 else set())
 
     def _action_renumber(self, pts: list[SurveyPoint]):
         if len(pts) < 2:
@@ -3790,7 +3876,8 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
             p_target.number = new_num
 
         self._apply_fix(f"Renumbered point {p_target.id} to {new_num}", do_it,
-                        resolved_points=stack_pids, stay_on_edit_page=True)
+                        resolved_points=stack_pids, stay_on_edit_page=True,
+                        include_unchanged_points=set(stack_pids))
 
     def _action_average(self, pts: list[SurveyPoint]):
         if len(pts) < 2:
@@ -3807,7 +3894,8 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
                 self.state.project.remove_points([p.id for p in pts_del if p.id in self.state.project.points])
 
         self._apply_fix(f"Averaged {len(pts)} points onto Pt #{p_keep.number}", do_it,
-                        resolved_points=stack_pids, stay_on_edit_page=True)
+                        resolved_points=stack_pids, stay_on_edit_page=True,
+                        include_unchanged_points=set(stack_pids))
 
     def _action_keep_first(self, pts: list[SurveyPoint]):
         if len(pts) < 2:
@@ -3821,7 +3909,8 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
                 self.state.project.remove_points([p.id for p in pts_del if p.id in self.state.project.points])
 
         self._apply_fix(f"Kept Pt #{p_keep.number}, removed {len(pts_del)} duplicate(s)", do_it,
-                        resolved_points=stack_pids, stay_on_edit_page=True)
+                        resolved_points=stack_pids, stay_on_edit_page=True,
+                        include_unchanged_points=set(stack_pids))
 
     def _action_apply_descriptions(self, *, return_to_summary: bool = False) -> bool:
         if not hasattr(self, "desc_edits") or not self.desc_edits:

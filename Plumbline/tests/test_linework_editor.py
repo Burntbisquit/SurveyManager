@@ -115,6 +115,24 @@ def test_point_edit_apply_keeps_linked_point_geometry_and_linework_override_cons
     assert [e.id for e in project.polylines() if e.derived == "manual-linework"] == [line.id]
 
 
+def test_existing_vertex_can_be_interpolated_and_nudged_with_local_undo():
+    project, _points, line = _coded_project()
+    draft = LineEditDraft(project, line)
+    draft.set_mode("points")
+
+    draft.interpolate_vertex(1, 0.25)
+    assert draft.vertices[1].xyz() == pytest.approx([5.0, 0.0, 10.5])
+    draft.nudge_vertex(1, 0.25, -0.5)
+    assert draft.vertices[1].xyz() == pytest.approx([5.25, -0.5, 10.5])
+    assert draft.undo_last() == "Nudge point"
+    assert draft.vertices[1].xyz() == pytest.approx([5.0, 0.0, 10.5])
+    assert draft.undo_last() == "Interpolate vertex position"
+    assert draft.vertices[1].xyz() == pytest.approx([10.0, 0.0, 11.0])
+
+    with pytest.raises(LineworkEditError, match="endpoint"):
+        draft.interpolate_vertex(0, 0.5)
+
+
 def test_manual_override_suppresses_only_the_edited_point_sequence_for_shared_code_string():
     project, _points, edited_line = _coded_project()
     other_points = [
@@ -265,21 +283,35 @@ def test_delete_rejects_curve_loss_and_preview_join_averages_before_acceptance()
 def test_editor_dialog_stages_actions_and_exposes_project_actions():
     pytest.importorskip("PySide6")
     from PySide6.QtWidgets import QApplication
+    from plumbline.ui.app_state import AppState
     from plumbline.ui.linework_editor_dialog import LineEditorDialog
 
     app = QApplication.instance() or QApplication([])
     project, _points, line = _coded_project()
-    dialog = LineEditorDialog(_State(project), line)
+    dialog = LineEditorDialog(AppState(project), line)
     try:
         assert [dialog.btn_apply.text(), dialog.btn_save.text(),
                 dialog.btn_discard.text(), dialog.btn_return.text()] == [
                     "Apply", "Save", "Discard", "Return"]
+        assert [dialog.cmb_view.itemData(i) for i in range(dialog.cmb_view.count())] == [
+            "plan", "3d", "image", "all_data"]
+        dialog.cmb_view.setCurrentIndex(1)
+        assert dialog.preview.view_mode == "3d"
+        dialog.cmb_view.setCurrentIndex(2)
+        assert dialog.context_canvas.opts.show_imagery
+        dialog.cmb_view.setCurrentIndex(3)
+        assert dialog.context_canvas.opts.show_points and dialog.context_canvas.opts.show_lines
+
         dialog.cmb_mode.setCurrentIndex(1)
-        dialog.tbl_vertices.selectRow(0)
-        dialog.btn_insert.click()
-        assert dialog.draft.has_pending_actions
+        dialog.tbl_vertices.selectRow(1)
+        dialog.btn_interpolate.click()
+        assert dialog.draft.vertices[1].x == pytest.approx(10.0)  # symmetric midpoint
+        dialog.btn_nudge_north.click()
+        assert dialog.draft.vertices[1].y == pytest.approx(0.1)
         assert len(project.points) == 3  # preview edits do not mutate the live project
         assert dialog.btn_undo.isEnabled()
+        dialog.btn_undo.click()
+        assert dialog.draft.vertices[1].y == pytest.approx(0.0)
         dialog.btn_undo.click()
         assert not dialog.draft.has_pending_actions
         assert len(dialog.draft.vertices) == 3

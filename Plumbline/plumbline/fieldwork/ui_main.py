@@ -31,6 +31,12 @@ from .linecheck import (detect_line_errors as detect_line_issues,
                         statuses_from_rows as line_statuses_from_rows,
                         report_rows as line_report_rows)
 
+
+def _working_row_sequence_key(row):
+    oid = str(row[0]).strip() if row else ""
+    return (0, int(oid)) if oid.isdigit() else (1, natural_key(oid, letters_first=False))
+
+
 def _widen_saf(widget, characters: int = 18):
     """Give a SAF box room for *characters* characters.
 
@@ -3497,7 +3503,7 @@ class MainWindow(QMainWindow):
         title.setWordWrap(True)
         title.setStyleSheet("font-weight: bold; font-size: 12px;")
         layout.addWidget(title)
-        hint = QLabel("Detects missing Start Line, End Line or Close, and unmatched Start Curve/End Curve commands. Command meanings and tokens come from the active Field Book. Allows string reuse after a segment ends; fixes are proposed and validated against the complete line.")
+        hint = QLabel("Detects missing Start Line, End Line or Close, unmatched Start Curve/End Curve commands, and curve commands out of order across a point sequence. Command meanings and tokens come from the active Field Book. Allows string reuse after a segment ends; fixes are validated against the complete line.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#555; font-size:11px;")
         layout.addWidget(hint)
@@ -3532,7 +3538,7 @@ class MainWindow(QMainWindow):
                                   ("Missing END", "Missing End Line"),
                                   ("Missing PC", "Missing Start Curve"),
                                   ("Missing PT", "Missing End Curve"),
-                                  ("LineOrder", "Line Command Order")):
+                                  ("Line Order", "Line Command Order")):
             self.line_filter_combo.addItem(label, issue_type)
         self.line_filter_combo.currentIndexChanged.connect(self._apply_line_filter)
         top.addWidget(self.line_refresh_btn)
@@ -3579,8 +3585,7 @@ class MainWindow(QMainWindow):
         working_rows=None
         if self.edit_table is not None and self.edit_table.rowCount()>0:
             working_rows=[self._row_texts(self.edit_table, r) for r in range(self.edit_table.rowCount())]
-            try: working_rows.sort(key=lambda r: int(r[0]) if str(r[0]).isdigit() else r[0])
-            except: pass
+            working_rows.sort(key=_working_row_sequence_key)
         elif self.edit_file_path and Path(self.edit_file_path).exists():
             working_rows=self._read_working_file(self.edit_file_path)
         else:
@@ -3643,7 +3648,7 @@ class MainWindow(QMainWindow):
                 "Missing END": "Missing End Line",
                 "Missing PC": "Missing Start Curve",
                 "Missing PT": "Missing End Curve",
-                "LineOrder": "Line Command Order",
+                "Line Order": "Line Command Order",
             }.get(issue, issue)
             issue_item = QTableWidgetItem(display_issue)
             issue_item.setData(Qt.UserRole, issue)
@@ -3660,10 +3665,10 @@ class MainWindow(QMainWindow):
                 for c in range(8):
                     it=self.line_table.item(r,c)
                     if it: it.setBackground(QBrush(QColor("#FFEBEE")))
-            elif issue=="Missing END":
+            elif issue=="Line Order":
                 for c in range(8):
                     it=self.line_table.item(r,c)
-                    if it: it.setBackground(QBrush(QColor("#FFF3E0")))
+                    if it: it.setBackground(QBrush(QColor("#FFF8E1")))
         self.line_table.resizeColumnsToContents()
         self.line_table.setSortingEnabled(True)
         self.line_table.blockSignals(False)
@@ -3684,10 +3689,7 @@ class MainWindow(QMainWindow):
         """The working rows the line tools read and validate against (same source as detection)."""
         if self.edit_table is not None and self.edit_table.rowCount() > 0:
             rows = [self._row_texts(self.edit_table, r) for r in range(self.edit_table.rowCount())]
-            try:
-                rows.sort(key=lambda r: int(r[0]) if str(r[0]).isdigit() else r[0])
-            except Exception:
-                pass
+            rows.sort(key=_working_row_sequence_key)
             return rows
         if self.edit_file_path and Path(self.edit_file_path).exists():
             return self._read_working_file(self.edit_file_path)

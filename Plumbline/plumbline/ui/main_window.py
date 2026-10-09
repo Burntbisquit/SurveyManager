@@ -23,6 +23,7 @@ from ..core import reference as REF
 from ..core import units as U
 from ..core.model import ImageryLayer, Polyline, Surface
 from ..core.project import Project
+from ..core.project_package import create_project_package
 from ..core.qa import run_checks
 from ..core.settings import settings, user_dir
 from ..core.surface import (apply_contours, build_tin, compute_contour_data, gather_surface_inputs, surface_signature)
@@ -42,6 +43,7 @@ from .import_export import (IMPORT_FILTER, POINTS_FILTER, ImportPlan, Importer, 
                             apply_import, describe_folder_import)
 from .imagery_ui import AddImageryDialog, ImageryDock, _acc_text
 from .new_project import NewProjectDialog
+from .project_package_dialog import ProjectPackageDialog
 from .surface_dialogs import ContourDialog, ProfileDialog, SurfaceDialog, VolumeDialog, build_report_text
 from .tools import (ArcTool, DepthLineTool, DrawPolylineTool, ImageryNudgeTool, MeasureTool, MoveTool,
                     PanTool, PointTool, SelectTool, TextTool, ZoomWindowTool, parse_coordinate)
@@ -168,6 +170,7 @@ class MainWindow(QMainWindow):
     def __init__(self, project: Project | AppState | None = None, open_path: str | None = None, welcome: bool = False):
         super().__init__()
         self.state = project if isinstance(project, AppState) else AppState(project)
+        self.state._save_untitled_before_edit = self.save_as
         self.setWindowIcon(icons.app_icon())
         self.resize(1480, 920)
         self._icon_actions: list = []
@@ -926,8 +929,21 @@ class MainWindow(QMainWindow):
             self._open(str(creation.paths.project_file))
             self.state.log(f"Created job folder {creation.paths.root} - {creation.summary}", "ok")
             return
-        self.state.new_project(name, dlg.crs)
-        self.state.log(f"New project '{name}' - {dlg.crs.label}", "ok")
+        # Even the lightweight New Project choice gets its own package folder.  It is
+        # saved before the drawing is opened so the generic Untitled workspace can
+        # never collect unbacked edits.
+        from ..core import jobtemplate as JT
+        template = JT.MINIMAL_TEMPLATE
+        parent_folder = dlg.setup_parent_folder or str(Path.cwd())
+        try:
+            package = create_project_package(Project(name, dlg.crs), parent_folder, name,
+                                             template=template)
+        except Exception as ex:
+            error_box(self, "New Project Package", str(ex), traceback.format_exc())
+            return
+        self._job_root_choice = None
+        self.state.set_project(package)
+        self.state.log(f"Created project package {package.path} ({dlg.crs.label})", "ok")
 
     # ------------------------------------------------------------------ field data / job folder
     def open_fieldwork(self):
@@ -1248,20 +1264,39 @@ class MainWindow(QMainWindow):
 
     def save_as(self) -> bool:
         pr = self.state.project
-        start = pr.path or f"{pr.name}.plb"
-        p, _ = QFileDialog.getSaveFileName(self, "Save project as", start, "Plumbline project (*.plb)")
-        if not p:
+        if pr.path:
+            current_root = Path(pr.path).expanduser().parent
+            parent_start = current_root.parent
+            suggested_name = f"{pr.name or 'Project'} Copy"
+        else:
+            parent_start = Path.cwd()
+            data_folder = (pr.settings or {}).get("data_folder")
+            if data_folder and Path(str(data_folder)).expanduser().exists():
+                parent_start = Path(str(data_folder)).expanduser().parent
+            suggested_name = ("Untitled Project" if str(pr.name or "").strip().casefold() in {"", "untitled"}
+                              else str(pr.name))
+        dlg = ProjectPackageDialog(self, name=suggested_name, parent_folder=str(parent_start))
+        if not dlg.exec():
             return False
-        if not p.lower().endswith(".plb"):
-            p += ".plb"
         try:
-            if pr.name in ("Untitled", ""):
-                pr.name = Path(p).stem
-            self.state.save_project(p)
+            package = create_project_package(
+                pr, dlg.parent_folder, dlg.project_name)
         except Exception as ex:
-            error_box(self, "Save", str(ex), traceback.format_exc())
+            error_box(self, "Save Project Package", str(ex), traceback.format_exc())
             return False
-        self.state.log(f"Saved {p}", "ok")
+
+        # Adopt the package's rebased settings/assets without replacing AppState or
+        # discarding the current selection and undo stack.
+        pr.restore(package.snapshot())
+        pr.path = package.path
+        pr._portable_paths = True
+        self._job_root_choice = None
+        self.state._prune_selection()
+        self.state.set_dirty(False)
+        self.state._after_change({"all"})
+        self.state.undo_changed.emit()
+        settings().add_recent(str(pr.path))
+        self.state.log(f"Saved project package {pr.path}", "ok")
         self.update_title()
         return True
 

@@ -155,7 +155,19 @@ def parse_desc_field(raw_desc: str, f2f_set, fieldbook_path=None, command_set=No
         raw_desc = ""
     raw = str(raw_desc)
     common_conversion_warning = None
-    # Apply correction rules if provided (or load from fieldbook)
+    # Resolve the Field Book's description boundary before checking conversion rules, so
+    # a rule that affects valid codes is still found when free-text notes follow them.
+    try:
+        semantic_commands = get_command_map(fieldbook_path, commands)
+    except Exception:
+        semantic_commands = get_command_map(commands=commands)
+    description_token = semantic_commands.get("description", "")
+    multicode_token = semantic_commands.get("multicode", "")
+
+    # Apply correction rules if provided (or load from fieldbook). Match complete tokens
+    # case-insensitively with whitespace/punctuation-tolerant separators; this catches the
+    # rule inside a full description such as "EA PLUS SW NOTE roadway" without scanning
+    # the free-text portion after NOTE.
     if rules is None and fieldbook_path:
         try:
             from .config import get_correction_rules
@@ -163,9 +175,9 @@ def parse_desc_field(raw_desc: str, f2f_set, fieldbook_path=None, command_set=No
         except Exception:
             rules = None
     if rules:
-        # Rules: list of [common_error, fix] — exact match case-insensitive, or substring?
-        # We do exact match on whole raw stripped, and also token-level
-        raw_stripped = raw.strip()
+        boundary = find_separator(raw, description_token)
+        code_end = boundary if boundary >= 0 else len(raw)
+        code_part_for_rules = raw[:code_end]
         for rule in rules:
             try:
                 err, fix = rule[0], rule[1]
@@ -174,28 +186,31 @@ def parse_desc_field(raw_desc: str, f2f_set, fieldbook_path=None, command_set=No
             err, fix = str(err or "").strip(), str(fix or "").strip()
             if not err or not fix:
                 continue
-            if raw_stripped.casefold() == err.casefold():
-                common_conversion_warning = common_conversion_rule_warning(
-                    err, fix, f2f_set, fieldbook_path=fieldbook_path,
-                    command_set=command_set, commands=commands)
-                # A destructive conversion is a finding, not an automatic rewrite.
-                if common_conversion_warning is None:
-                    raw = fix
-                break
-            # Also handle dash/space tolerant: compare normalized tokens
-            # If raw contains err as token, replace that token
-    # Resolve both command membership and semantic separator meanings from the same Field Book.
-    try:
-        semantic_commands = get_command_map(fieldbook_path, commands)
-    except Exception:
-        semantic_commands = get_command_map(commands=commands)
+            tokens = re.findall(r"[A-Za-z0-9]+", err)
+            if not tokens:
+                continue
+            separator = r"[\W_]+"
+            pattern = re.compile(
+                r"(?<![A-Za-z0-9_])" + separator.join(re.escape(token) for token in tokens)
+                + r"(?![A-Za-z0-9_])", re.IGNORECASE,
+            )
+            match = pattern.search(code_part_for_rules)
+            if match is None:
+                continue
+            common_conversion_warning = common_conversion_rule_warning(
+                err, fix, f2f_set, fieldbook_path=fieldbook_path,
+                command_set=command_set, commands=semantic_commands)
+            # A destructive conversion is a finding, not an automatic rewrite. Safe rules
+            # replace only their matched code tokens and retain commands and note text.
+            if common_conversion_warning is None:
+                raw = raw[:match.start()] + fix + raw[match.end():]
+            break
+
     if command_set is None:
         try:
             command_set = get_command_set(fieldbook_path, commands)
         except Exception:
             command_set = COMMAND_SET
-    description_token = semantic_commands.get("description", "")
-    multicode_token = semantic_commands.get("multicode", "")
     # Empty description — flag as EmptyDescription
     if not raw.strip():
         return {

@@ -362,11 +362,33 @@ def run_checks(rows, ne_tol: float | None = None, elev_tol: float | None = None)
             "report_rows": IC.build_check_report_rows(rows, exact, similar, close)}
 
 
+def _row_is_removed(row) -> bool:
+    """A removed row stays in a working/report file for audit, but is not an active code check."""
+    if not row:
+        return False
+    # Consolidated .fwk metadata: Corr_Status is column 10 (0-based).
+    if len(row) > 10 and str(row[10]).strip().casefold() in {"removed", "deleted"}:
+        return True
+    # Unified .fwc Description rows: DisplayTab, ... , Status, Comments.
+    return (len(row) == 9 and str(row[1]).strip().casefold() == "description"
+            and str(row[7]).strip().casefold() in {"removed", "deleted"})
+
+
+def _point_is_deleted(point) -> bool:
+    attrs = getattr(point, "attrs", None) or {}
+    if not isinstance(attrs, dict):
+        return False
+    if any(attrs.get(key) is True for key in ("deleted", "is_deleted", "qa_deleted")):
+        return True
+    return any(str(attrs.get(key, "")).strip().casefold() in {"deleted", "removed"}
+               for key in ("status", "fieldwork_status", "qa_status"))
+
+
 def describe_flags(rows, f2f=None, fieldbook_path=None) -> dict[int, dict]:
-    """Parse every description and report the ones with flags, keyed by row OID."""
+    """Parse active descriptions and report the ones with flags, keyed by row OID."""
     out = {}
     for r in rows:
-        if not row_is_usable(r):
+        if not row_is_usable(r) or _row_is_removed(r):
             continue
         parsed = P.parse_desc_field(r[DESC], f2f or set(), fieldbook_path=fieldbook_path)
         if parsed.get("flags"):
@@ -786,6 +808,14 @@ def check_project(project, f2f=None, fieldbook_path=None, ne_tol: float | None =
     finding index into "rows"; ``ids[i]`` is the project point the i-th row came from.
     """
     rows, ids = working_rows_from_project(project)
+    # A caller may know the Field Book path but omit its decoded code set. Load the
+    # vocabulary here so common-conversion rules and unknown codes still get checked.
+    if not f2f and fieldbook_path:
+        try:
+            f2f = P.build_f2f_set_from_fieldbook(fieldbook_path)
+        except Exception:
+            f2f = set()
+    f2f = set(f2f or ())
     out = {"rows": rows, "ids": ids, "findings": [], "stats": summarise(rows) if rows else {},
            "flags": {}, "code_checks": bool(f2f)}
     if not rows:
@@ -794,6 +824,14 @@ def check_project(project, f2f=None, fieldbook_path=None, ne_tol: float | None =
         return out
     found = run_checks(rows, ne_tol=ne_tol, elev_tol=elev_tol)
     flags = describe_flags(rows, f2f, fieldbook_path=fieldbook_path) if f2f else {}
+    deleted_oids = set()
+    for pid, point in project.points.items():
+        if _point_is_deleted(point):
+            attrs = point.attrs or {}
+            deleted_oids.add(str(attrs.get("fieldwork_oid") or pid))
+    for oid in list(flags):
+        if str(oid) in deleted_oids:
+            flags.pop(oid, None)
     oid_to_row = {str(r[OID]): i for i, r in enumerate(rows)}
 
     def rows_of(groups):
@@ -821,6 +859,10 @@ def check_project(project, f2f=None, fieldbook_path=None, ne_tol: float | None =
             i = oid_to_row.get(str(oid))
             for flag in parsed.get("flags") or ["Description"]:
                 name = str(flag).split(":")[0]
+                # Empty descriptions are intentionally not a QA warning in Fix Points;
+                # Fieldwork Manager still retains EmptyDescription for its cleaning workflow.
+                if name == "EmptyDescription":
+                    continue
                 rec = by_flag.setdefault(name, {"rows": set(), "sample": ""})
                 if i is not None:
                     rec["rows"].add(i)
