@@ -1522,6 +1522,17 @@ class BaseQAWorkbenchWindow(QMainWindow):
             f for f in self.tracked_findings
             if self._filter_finding(f) and f.get("key") not in self.ignored_keys
         ]
+        # Keep a Field Book Common Error immediately before Unknown Code even when the
+        # tracked findings were first discovered in a different order on an earlier run.
+        common_errors = [f for f in visible_tracked
+                         if str(f.get("flag", "")) == "CommonConversionError"]
+        if common_errors:
+            other_findings = [f for f in visible_tracked
+                              if str(f.get("flag", "")) != "CommonConversionError"]
+            unknown_at = next((index for index, finding in enumerate(other_findings)
+                               if str(finding.get("flag", "")) == "UnknownCode"),
+                              len(other_findings))
+            visible_tracked = other_findings[:unknown_at] + common_errors + other_findings[unknown_at:]
         zero_checks = self._zero_check_findings(visible_tracked)
         summary_findings = visible_tracked + zero_checks
         self.active_findings = summary_findings
@@ -2866,7 +2877,8 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
         is_exact_dup = "duplicate" in chk or ("number" in chk and "used" in finding.get("detail", "").lower())
         is_lookalike = "look-alike" in chk
         is_spacing = "SeparatorSpacingError" in flag or "spacing at the separator" in chk
-        is_common_conversion = "CommonConversionError" in flag or "common conversion" in chk
+        is_common_conversion = ("CommonConversionError" in flag or "common conversion" in chk
+                                or "common error" in chk)
         is_sep = (is_spacing or is_common_conversion or "MisplacedAfterSeparator" in flag
                   or "potential code in descriptor" in chk or "text before" in chk or "separator" in chk)
 
@@ -2924,6 +2936,19 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
                     # reuse the potential-code autocorrect, which may move code out of notes.
                     sugg = normalize_fieldbook_separator_spacing(orig_desc, commands)
                     sugg_num = sugg
+                elif is_common_conversion:
+                    # The Field Book's Common Error rule is the source of truth, even when
+                    # the source token is unknown or is itself a valid code.
+                    try:
+                        from ..fieldwork.parse import matching_correction_rule
+                        rule = matching_correction_rule(
+                            orig_desc, fieldbook_path=fb_path, commands=commands)
+                        if rule:
+                            sugg = str(rule.get("suggestion") or "")
+                    except Exception:
+                        sugg = ""
+                    sugg = sugg or orig_desc
+                    sugg_num = sugg
                 else:
                     try:
                         from ..fieldwork.clean import _autocorrect_desc, _autocorrect_desc_leave_number
@@ -2933,18 +2958,14 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
                         pass
                     if not sugg:
                         raw_desc = orig_desc
-                        if is_common_conversion:
-                            # Keep every original token for review; never synthesize a one-code replacement.
-                            sugg = raw_desc
+                        description_token = command_map(commands).get("description", "")
+                        if find_separator(raw_desc, description_token) >= 0:
+                            c_part, f_part = split_at_separator(raw_desc, description_token, maxsplit=1)
+                            c_part, f_part = c_part.strip(), f_part.strip()
+                            joiner = separator_text("description", commands)
+                            sugg = f"{f_part}{joiner}{c_part}" if c_part and joiner else (f"{f_part} {c_part}" if c_part else f_part)
                         else:
-                            description_token = command_map(commands).get("description", "")
-                            if find_separator(raw_desc, description_token) >= 0:
-                                c_part, f_part = split_at_separator(raw_desc, description_token, maxsplit=1)
-                                c_part, f_part = c_part.strip(), f_part.strip()
-                                joiner = separator_text("description", commands)
-                                sugg = f"{f_part}{joiner}{c_part}" if c_part and joiner else (f"{f_part} {c_part}" if c_part else f_part)
-                            else:
-                                sugg = raw_desc
+                            sugg = raw_desc
                     if not sugg_num:
                         sugg_num = sugg
 
@@ -2968,9 +2989,9 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
                 actions = ["Skip", "Correct", "Ignore"] if is_spacing else [
                     "Skip", "Correct", "Correct (Leave # in Descriptor)", "Ignore"]
                 cb_action.addItems(actions)
-                # Spacing fixes are safe, deterministic, and limited to whitespace;
-                # other separator corrections remain opt-in.
-                default_action = "Correct" if is_spacing else "Skip"
+                # Spacing fixes are deterministic; a Common Error has an explicit
+                # Field Book correction rule. Both start staged as Correct.
+                default_action = "Correct" if is_spacing or is_common_conversion else "Skip"
                 cb_action.setCurrentText(str(separator_draft.get("action", default_action)))
 
                 # Connect dropdown change to update the Fixed Code column preview in real time
@@ -3012,8 +3033,8 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
             if is_spacing:
                 hint_text = "Only separator spacing is changed; feature-code order and note text are preserved."
             elif is_common_conversion:
-                hint_text = ("The matching correction rule would collapse valid Field Book codes into one. "
-                             "Review or edit the full description; Correct is offered before Ignore.")
+                hint_text = ("This Common Error matches a Field Book correction rule. The rule's full-description "
+                             "proposal is shown for each point; Correct is selected by default, and edits remain staged.")
             else:
                 hint_text = "Double-click 'Fixed Code' to overwrite and set action to Correct."
             lay_g.addWidget(Hint(hint_text))
@@ -3062,6 +3083,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
 
             self.desc_edits: list[tuple[SurveyPoint, QLineEdit, QLabel]] = []
             self.autofix_buttons: dict[int, QPushButton] = {}
+            self.autofix_suggestions: dict[int, QLabel] = {}
             self.current_focused_ed: QLineEdit | None = None
 
             for p in pts:
@@ -3087,13 +3109,34 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
                 row_h.addWidget(lbl_orig, 1)
                 lay_p.addLayout(row_h)
 
-                # Key-in box and status feedback
+                # Keep the original visible above, while loading a safe proposal into this
+                # point's editable key-in box as a staged (not yet committed) correction.
+                # A saved draft always wins so navigating away and back preserves user edits.
+                description_draft = finding.get("description_drafts", {}).get(p.id)
+                is_unknown, autofix_guess = self._autofix_guess_for_description(p.desc)
+                initial_desc = (autofix_guess if is_unknown and autofix_guess else p.desc)
+                if description_draft is not None:
+                    initial_desc = description_draft
+                ed = QLineEdit(str(initial_desc or ""))
+                if is_unknown:
+                    suggestion_text = (f"Proposed autofix: {autofix_guess}" if autofix_guess else
+                                       "Proposed autofix: No safe suggestion; enter the corrected code manually.")
+                    lbl_suggestion = QLabel(suggestion_text)
+                    lbl_suggestion.setObjectName("autofixSuggestion")
+                    lbl_suggestion.setTextFormat(Qt.PlainText)
+                    lbl_suggestion.setWordWrap(True)
+                    lbl_suggestion.setToolTip("This proposal applies only to the point shown in this correction card.")
+                    lbl_suggestion.setStyleSheet(
+                        "QLabel#autofixSuggestion { color: #34495e; background: #eef5ff; "
+                        "border: 1px solid #c8d9ed; border-radius: 3px; padding: 4px 6px; font-size: 11px; }")
+                    self.autofix_suggestions[p.id] = lbl_suggestion
+                    lay_p.addWidget(lbl_suggestion)
+                    if autofix_guess:
+                        ed.setToolTip(f"Proposed autofix: {autofix_guess}")
+
                 row_ed = QHBoxLayout()
                 row_ed.addWidget(QLabel("<b>Fixed:</b>"))
-                description_draft = finding.get("description_drafts", {}).get(p.id)
-                ed = QLineEdit(str(p.desc or "") if description_draft is None else str(description_draft))
                 row_ed.addWidget(ed, 1)
-                is_unknown, autofix_guess = self._autofix_guess_for_description(p.desc)
                 if is_unknown:
                     btn_autofix = QPushButton("Auto Fix")
                     btn_autofix.setEnabled(autofix_guess is not None)
@@ -3111,16 +3154,6 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
                     self.autofix_buttons[p.id] = btn_autofix
                     row_ed.addWidget(btn_autofix)
                 lay_p.addLayout(row_ed)
-
-                if is_unknown:
-                    lbl_suggestion = QLabel(
-                        f"Autofix suggestion: {autofix_guess}"
-                        if autofix_guess else
-                        "Autofix suggestion: No safe suggestion; enter the corrected code manually.")
-                    lbl_suggestion.setTextFormat(Qt.PlainText)
-                    lbl_suggestion.setWordWrap(True)
-                    lbl_suggestion.setStyleSheet("color: #5f6b76; font-size: 11px;")
-                    lay_p.addWidget(lbl_suggestion)
 
                 lbl_status = QLabel("")
                 lbl_status.setTextFormat(Qt.RichText)
@@ -3265,19 +3298,23 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
         return escaped
 
     def _autofix_guess_for_description(self, description: str | None) -> tuple[bool, str | None]:
-        """Return the existing Fieldwork Manager safe guess for an unknown-code description."""
-        from ..fieldwork.parse import parse_desc_field
+        """Return a Field Book rule proposal first, then the general unknown-code safe guess."""
+        from ..fieldwork.parse import matching_correction_rule, parse_desc_field
         from ..fieldwork.clean import _get_autofix_for_desc
 
         raw = str(description or "")
-        parsed = parse_desc_field(raw, self.code_set or set(), fieldbook_path=self.fieldbook_path or None)
+        fieldbook_path = self.fieldbook_path or None
+        parsed = parse_desc_field(raw, self.code_set or set(), fieldbook_path=fieldbook_path)
         unknown_flags = [str(flag) for flag in parsed.get("flags", [])
                          if str(flag).casefold().startswith("unknowncode:")]
         if not unknown_flags:
             return False, None
+        rule = matching_correction_rule(raw, fieldbook_path=fieldbook_path)
+        if rule and rule.get("suggestion", "").strip() != raw.strip():
+            return True, str(rule["suggestion"])
         guess = _get_autofix_for_desc(
             raw, " ".join(unknown_flags), str(parsed.get("flag_detail", "")),
-            self.code_set or set(), fieldbook_path=self.fieldbook_path or None,
+            self.code_set or set(), fieldbook_path=fieldbook_path,
         )
         if not guess or str(guess).strip() == raw.strip():
             return True, None
@@ -4003,9 +4040,11 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
         finding_flag = str(finding.get("flag", ""))
         finding_check = str(finding.get("check", "")).lower()
         is_spacing = "SeparatorSpacingError" in finding_flag or "spacing at the separator" in finding_check
-        is_common_conversion = "CommonConversionError" in finding_flag or "common conversion" in finding_check
+        is_common_conversion = ("CommonConversionError" in finding_flag
+                                or "common conversion" in finding_check
+                                or "common error" in finding_check)
         summary_label = ("Corrected separator spacing" if is_spacing else
-                         "Reviewed common-conversion description" if is_common_conversion else
+                         "Reviewed common error" if is_common_conversion else
                          "Corrected potential code in descriptor")
         if to_ignore:
             ign_str = f"Ignored {len(to_ignore)} point(s)"

@@ -92,6 +92,7 @@ def test_custom_fieldbook_meanings_and_alphanumeric_separators_are_used():
 def test_a_second_segment_starting_before_the_first_one_ends_is_a_missing_end():
     issues = LC.detect_line_errors(rows("TOC ST", "TOC ST", "TOC END"), f2f_set=F2F)
     assert "Missing END" in kinds(issues)
+    assert "Line Order" in kinds(issues)
     assert "before a new Start Line" in " ".join(e["detail"] for e in issues)
     assert any(e["oid"] == "1" for e in issues), "the fix belongs on the point that should have ended"
 
@@ -114,6 +115,17 @@ def test_curve_command_order_is_checked_across_points_and_repeated_curves_are_va
     nested = LC.detect_line_errors(
         rows("TOC ST", "TOC PC", "TOC PC", "TOC PT", "TOC END"), f2f_set=F2F)
     assert any(issue["issue_type"] == "Line Order" for issue in nested)
+
+    # Detect invalid order within one description, plus a curve command that appears
+    # after a prior point already ended the line.
+    same_point = LC.detect_line_errors(
+        rows("TOC PC ST", "TOC PT END"), f2f_set=F2F)
+    assert any(issue["issue_type"] == "Line Order" and issue["oid"] == "1"
+               for issue in same_point)
+    after_end = LC.detect_line_errors(
+        rows("TOC ST", "TOC END", "TOC PC", "TOC PT"), f2f_set=F2F)
+    assert any(issue["issue_type"] == "Line Order" and issue["oid"] == "3"
+               for issue in after_end)
 
     # A line may carry several properly paired curves; the state machine must allow PC/PT to repeat.
     assert LC.detect_line_errors(

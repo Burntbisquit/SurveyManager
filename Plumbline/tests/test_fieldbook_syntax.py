@@ -79,7 +79,7 @@ def test_common_conversion_rule_flags_and_preserves_a_valid_multi_code_descripti
     from plumbline.io import f2f
 
     commands = {"multicode": "PLUS", "description": "NOTE"}
-    rules = [["EA PLUS SW", "EA"]]
+    rules = [["EA PLUS SW", "EA"], ["EA PLUS MYSTERY", "EA"], ["EA", "SW"]]
     book = tmp_path / "office.fwb"
     assert write_fwb_file(
         book,
@@ -103,6 +103,19 @@ def test_common_conversion_rule_flags_and_preserves_a_valid_multi_code_descripti
     assert [item["base"] for item in with_note["code_classified"]
             if item.get("status") in ("exact", "line_instance")] == ["ea", "sw"]
 
+    # A Field Book Common Error is still reported when the source includes an unknown token.
+    unknown_rule = parse_desc_field("EA PLUS MYSTERY", {"ea", "sw"}, fieldbook_path=book)
+    assert unknown_rule["raw"] == "EA PLUS MYSTERY"
+    assert "CommonConversionError" in unknown_rule["flags"]
+    assert "UnknownCode:MYSTERY" in unknown_rule["flags"]
+    assert unknown_rule["autofix_suggestion"] == "EA"
+
+    # Matching a valid code is also a Common Error when the active Field Book says so.
+    valid_rule = parse_desc_field("EA ST", {"ea", "sw"}, fieldbook_path=book)
+    assert valid_rule["raw"] == "EA ST"
+    assert "CommonConversionError" in valid_rule["flags"]
+    assert valid_rule["autofix_suggestion"] == "SW ST"
+
     # A correction rule must not rewrite a token that occurs only in free text.
     note_only = parse_desc_field("EA NOTE SIDEWALK", {"ea"}, commands=commands,
                                  rules=[["SIDEWALK", "SW"]])
@@ -112,10 +125,17 @@ def test_common_conversion_rule_flags_and_preserves_a_valid_multi_code_descripti
     project.settings["fieldbook_file"] = str(book)
     project.codes, _stats = f2f.convert(f2f.read(book))
     project.add_point(100, 200, 5, number="5101", desc="EA PLUS SW NOTE roadway")
+    project.add_point(101, 201, 5, number="5102", desc="EA PLUS MYSTERY")
+    project.add_point(102, 202, 5, number="5103", desc="EA")
     report = check_project(project, f2f={"ea", "sw"}, fieldbook_path=str(book))
-    finding = next(f for f in report["findings"] if f.get("flag") == "CommonConversionError")
-    assert finding["check"] == "Common conversion error"
+    findings = report["findings"]
+    finding = next(f for f in findings if f.get("flag") == "CommonConversionError")
+    unknown = next(f for f in findings if f.get("flag") == "UnknownCode")
+    assert finding["check"] == "Common error"
     assert finding["level"] == "warn"
+    assert [f.get("flag") for f in findings].index("CommonConversionError") < \
+        [f.get("flag") for f in findings].index("UnknownCode")
+    assert report["ids"][unknown["rows"][0]] == 2
 
 
 def test_parser_reads_semantic_separators_from_the_active_fieldbook(tmp_path):

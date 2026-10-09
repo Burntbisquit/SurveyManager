@@ -144,6 +144,62 @@ def _extract_semantic_tokens(text: str, f2f_set, command_set, commands=None) -> 
             extracted.extend(split_compact(raw_token))
     return extracted
 
+
+def matching_correction_rule(raw_desc: str, rules=None, fieldbook_path=None, commands=None):
+    """Return the first Field Book common-error rule matching the code portion of a description.
+
+    A correction rule is meaningful even when its source is not a valid Field Book code. Keep
+    matching independent of token classification so an unknown code cannot hide the rule that
+    explains how it should be corrected. Free-text after the active description separator is not
+    searched.
+    """
+    raw = str(raw_desc or "")
+    if not raw.strip():
+        return None
+    if rules is None and fieldbook_path:
+        try:
+            from .config import get_correction_rules
+            rules = get_correction_rules(fieldbook_path)
+        except Exception:
+            rules = None
+    if not rules:
+        return None
+    try:
+        semantic_commands = get_command_map(fieldbook_path, commands)
+    except Exception:
+        semantic_commands = get_command_map(commands=commands)
+    description_token = semantic_commands.get("description", "")
+    boundary = find_separator(raw, description_token)
+    code_part = raw[:boundary] if boundary >= 0 else raw
+
+    for rule in rules:
+        try:
+            error_text, fix_text = rule[0], rule[1]
+        except (TypeError, IndexError):
+            continue
+        error_text = str(error_text or "").strip()
+        fix_text = str(fix_text or "").strip()
+        tokens = re.findall(r"[A-Za-z0-9]+", error_text)
+        if not tokens or not fix_text:
+            continue
+        token_separator = r"[\W_]+"
+        pattern = re.compile(
+            r"(?<![A-Za-z0-9_])" + token_separator.join(re.escape(token) for token in tokens)
+            + r"(?![A-Za-z0-9_])", re.IGNORECASE,
+        )
+        match = pattern.search(code_part)
+        if match is None:
+            continue
+        start, end = match.span()
+        return {
+            "error": error_text,
+            "fix": fix_text,
+            "matched": match.group(0),
+            "suggestion": raw[:start] + fix_text + raw[end:],
+        }
+    return None
+
+
 def parse_desc_field(raw_desc: str, f2f_set, fieldbook_path=None, command_set=None, rules=None, commands=None):
     """Parse a raw Description field into code_part / free_desc and classified tokens.
     Handles missing dash/spaces, case-insensitive, no leading strip, trailing strip only on fail.
@@ -164,47 +220,20 @@ def parse_desc_field(raw_desc: str, f2f_set, fieldbook_path=None, command_set=No
     description_token = semantic_commands.get("description", "")
     multicode_token = semantic_commands.get("multicode", "")
 
-    # Apply correction rules if provided (or load from fieldbook). Match complete tokens
-    # case-insensitively with whitespace/punctuation-tolerant separators; this catches the
-    # rule inside a full description such as "EA PLUS SW NOTE roadway" without scanning
-    # the free-text portion after NOTE.
-    if rules is None and fieldbook_path:
-        try:
-            from .config import get_correction_rules
-            rules = get_correction_rules(fieldbook_path)
-        except Exception:
-            rules = None
-    if rules:
-        boundary = find_separator(raw, description_token)
-        code_end = boundary if boundary >= 0 else len(raw)
-        code_part_for_rules = raw[:code_end]
-        for rule in rules:
-            try:
-                err, fix = rule[0], rule[1]
-            except (TypeError, IndexError):
-                continue
-            err, fix = str(err or "").strip(), str(fix or "").strip()
-            if not err or not fix:
-                continue
-            tokens = re.findall(r"[A-Za-z0-9]+", err)
-            if not tokens:
-                continue
-            separator = r"[\W_]+"
-            pattern = re.compile(
-                r"(?<![A-Za-z0-9_])" + separator.join(re.escape(token) for token in tokens)
-                + r"(?![A-Za-z0-9_])", re.IGNORECASE,
-            )
-            match = pattern.search(code_part_for_rules)
-            if match is None:
-                continue
-            common_conversion_warning = common_conversion_rule_warning(
-                err, fix, f2f_set, fieldbook_path=fieldbook_path,
-                command_set=command_set, commands=semantic_commands)
-            # A destructive conversion is a finding, not an automatic rewrite. Safe rules
-            # replace only their matched code tokens and retain commands and note text.
-            if common_conversion_warning is None:
-                raw = raw[:match.start()] + fix + raw[match.end():]
-            break
+    # Correction Rules are reviewable Common Errors in QA, not silent parser rewrites.
+    # Match the code portion regardless of whether its source token is currently known;
+    # keep the raw description intact so the user can compare and apply the book's fix.
+    correction_rule = matching_correction_rule(
+        raw, rules=rules, fieldbook_path=fieldbook_path, commands=semantic_commands)
+    if correction_rule:
+        common_conversion_warning = common_conversion_rule_warning(
+            correction_rule["error"], correction_rule["fix"], f2f_set,
+            fieldbook_path=fieldbook_path, command_set=command_set,
+            commands=semantic_commands)
+        common_conversion_warning = common_conversion_warning or (
+            f"Field Book common error rule {correction_rule['error']!r} → "
+            f"{correction_rule['fix']!r} matches this description. "
+            "Review and apply the proposed correction.")
 
     if command_set is None:
         try:
@@ -349,6 +378,8 @@ def parse_desc_field(raw_desc: str, f2f_set, fieldbook_path=None, command_set=No
         "free_classified": free_classified,
         "flags": flags,
         "flag_detail": "; ".join(details) if details else "",
+        "correction_rule": correction_rule,
+        "autofix_suggestion": correction_rule.get("suggestion") if correction_rule else None,
         "parsed_code_str": parsed_code_str,
         "misplaced_sets": misplaced_sets,
     }

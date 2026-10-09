@@ -559,7 +559,7 @@ def apply_rows_to_project(project, rows, crs=None, code_table=None,
 #: The description parser's flag names, said the way somebody would say them out loud.  The raw
 #: name travels beside it (``flag``), because that is what a fix tool will switch on.
 FLAG_TITLES = {
-    "CommonConversionError": "Common conversion error",
+    "CommonConversionError": "Common error",
     "UnknownCode": "Unknown code",
     "EmptyDescription": "No description",
     "OrphanCommand": "Orphan command",
@@ -868,7 +868,14 @@ def check_project(project, f2f=None, fieldbook_path=None, ne_tol: float | None =
                     rec["rows"].add(i)
                 if not rec["sample"]:
                     rec["sample"] = str(parsed.get("raw", "") or "")
-        for name, rec in sorted(by_flag.items(), key=lambda kv: (-len(kv[1]["rows"]), kv[0])):
+        flag_rows = sorted(by_flag.items(), key=lambda kv: (-len(kv[1]["rows"]), kv[0]))
+        common_errors = [item for item in flag_rows if item[0] == "CommonConversionError"]
+        if common_errors:
+            other_flags = [item for item in flag_rows if item[0] != "CommonConversionError"]
+            unknown_at = next((index for index, (name, _rec) in enumerate(other_flags)
+                               if name == "UnknownCode"), len(other_flags))
+            flag_rows = other_flags[:unknown_at] + common_errors + other_flags[unknown_at:]
+        for name, rec in flag_rows:
             title = FLAG_TITLES.get(name, name)
             lvl = "error" if name in {"UnknownCode", "SeparatorSpacingError"} else "warn"
             out["findings"].append({

@@ -1030,6 +1030,48 @@ def test_common_conversion_dialog_orders_correct_before_ignore_and_preserves_cod
     assert dlg.result_new_desc == "EA PLUS SW"
 
 
+def test_common_error_rules_feed_point_proposals_default_to_correct_and_precede_unknown(win, app, tmp_path):
+    from plumbline.fieldwork.io_carlson import write_fwb_file
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    book = tmp_path / "common-errors.fwb"
+    assert write_fwb_file(
+        book,
+        ["Code", "Description", "Symbol", "Layer", "Entity Type", "Category"],
+        [["EA", "Asphalt", "CG08", "PAVEMENT", "Point", "Surface"],
+         ["SW", "Sidewalk", "CG08", "SIDEWALK", "Point", "Surface"],
+         ["RCP", "Reinforced Concrete Pipe", "CG08", "UTILITIES", "Point", "Utility"]],
+        rules=[["BADCODE", "RCP"], ["EA", "RCP"]],
+    )
+    project = win.state.project
+    project.settings["fieldbook_file"] = str(book)
+    unknown_point = project.add_point(950, 1050, 50, number="9051", desc="BADCODE ST")
+    valid_point = project.add_point(951, 1051, 50, number="9052", desc="EA")
+    project.add_point(952, 1052, 50, number="9053", desc="MYSTERY ST")
+    project.add_point(953, 1053, 50, number="9054", desc="ZZZ ST")
+
+    dialog = FixPointErrorsDialog(win.state, win)
+    common = next(f for f in dialog.active_findings if f.get("flag") == "CommonConversionError")
+    unknown = next(f for f in dialog.active_findings if f.get("flag") == "UnknownCode")
+    assert common["check"] == "Common error"
+    assert dialog.active_findings.index(common) < dialog.active_findings.index(unknown)
+    result_flags = [f.get("flag") for f in dialog.result["findings"]]
+    assert result_flags.index("CommonConversionError") < result_flags.index("UnknownCode")
+
+    dialog._open_inline_editor(unknown)
+    assert dialog.autofix_suggestions[unknown_point.id].text() == "Proposed autofix: RCP ST"
+    unknown_editor = next(editor for point, editor, _label in dialog.desc_edits
+                          if point.id == unknown_point.id)
+    assert unknown_editor.text() == "RCP ST"
+    assert unknown_point.desc == "BADCODE ST"  # The proposed text is staged, not committed.
+
+    dialog._open_inline_editor(common)
+    assert [item[2].text() for item in dialog.sep_corrections] == ["RCP ST", "RCP"]
+    assert [item[3].currentText() for item in dialog.sep_corrections] == ["Correct", "Correct"]
+    assert {item[0].id for item in dialog.sep_corrections} == {unknown_point.id, valid_point.id}
+    dialog.close()
+
+
 def test_close_stack_ignore_suppresses_only_the_selected_point(win, monkeypatch):
     from PySide6.QtWidgets import QDialog
     from plumbline.fieldwork import bridge as FB
@@ -1187,9 +1229,10 @@ def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkey
     assert dlg.stack.currentIndex() == 1
     assert p_unk.id in dlg.autofix_buttons and p_unk2.id in dlg.autofix_buttons
     assert not any(button.text() == "Select All Correct" for button in dlg.findChildren(QPushButton))
-    suggestion = next(label for label in dlg.findChildren(QLabel)
-                      if label.text().startswith("Autofix suggestion:"))
-    assert suggestion.text() == "Autofix suggestion: RCP ST"
+    suggestions = dlg.autofix_suggestions
+    assert set(suggestions) == {p_unk.id, p_unk2.id}
+    assert suggestions[p_unk.id].text() == "Proposed autofix: RCP ST"
+    assert suggestions[p_unk2.id].text() == "Proposed autofix: RCP ST"
     original_label = next(label for label in dlg.findChildren(QLabel)
                           if f"plumbline-point:{p_unk.id}" in label.text())
     focused = []
@@ -1203,6 +1246,7 @@ def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkey
     # Fixed-description input uses a dark foreground on its pale validation background.
     fixed_edit = next(item[1] for item in dlg.desc_edits if item[0].id == p_unk.id)
     second_fixed_edit = next(item[1] for item in dlg.desc_edits if item[0].id == p_unk2.id)
+    assert fixed_edit.text() == "RCP ST" and second_fixed_edit.text() == "RCP ST"
     assert "color: #1f2933" in fixed_edit.styleSheet()
     auto_fix_button.click()
     second_auto_fix_button.click()

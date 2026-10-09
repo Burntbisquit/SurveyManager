@@ -158,6 +158,10 @@ def detect_line_errors(working_rows, fieldbook_path=None, f2f_set=None, command_
                         f"Line {code_raw} segment is missing End Line/Close before a new Start Line "
                         f"at OID {oid} ({raw}); previous segment started at OID {current_segment[0][0]}",
                         f"Add End Line to OID {current_segment[-1][0]}")
+                    add("Line Order", oid,
+                        f"Line {code_raw} starts a new segment at OID {oid} ({raw}) before the "
+                        f"previous segment from OID {current_segment[0][0]} ended.",
+                        "End or close the current segment before the next Start Line.")
                     segments.append(current_segment)
                     current_segment = []
                 in_line = True
@@ -186,17 +190,32 @@ def detect_line_errors(working_rows, fieldbook_path=None, f2f_set=None, command_
             segments.append(current_segment)
 
         for segment in segments:
-            # A line can contain several curves (PC -> PT may repeat), so a simple
-            # ascending-rank comparison would incorrectly flag a valid second curve.
-            # Track the curve state across every point in the segment instead: PT must
-            # follow a PC, and a second PC cannot start before the first curve ends.
+            # Validate the full semantic sequence, not only PC/PT pairing. A rank-only
+            # sort would reject valid repeated curves, so carry explicit line/curve state
+            # across points while preserving command order within each description.
             events = [(meaning, oid, raw) for oid, line_commands, raw in segment
                       for meaning in line_commands if meaning in RANK]
+            line_started = False
+            line_ended = False
             curve_open = False
             curve_open_oid = None
+            saw_event = False
             order_error = None
             for meaning, oid, raw in events:
-                if meaning == "start_curve":
+                if meaning == "start_line":
+                    if saw_event or line_started:
+                        order_error = (oid, raw, "Start Line appears after another command in this segment")
+                        break
+                    line_started = True
+                elif not line_started:
+                    label = meaning.replace("_", " ").title()
+                    order_error = (oid, raw, f"{label} appears before Start Line")
+                    break
+                elif line_ended:
+                    label = meaning.replace("_", " ").title()
+                    order_error = (oid, raw, f"{label} appears after End Line/Close")
+                    break
+                elif meaning == "start_curve":
                     if curve_open:
                         order_error = (oid, raw, "Start Curve appears before the preceding curve's End Curve")
                         break
@@ -208,14 +227,20 @@ def detect_line_errors(working_rows, fieldbook_path=None, f2f_set=None, command_
                         break
                     curve_open = False
                     curve_open_oid = None
+                elif meaning in ("end_line", "close"):
+                    if curve_open:
+                        order_error = (oid, raw, "End Line/Close appears before the open curve's End Curve")
+                        break
+                    line_ended = True
+                saw_event = True
             if order_error:
                 bad_oid, bad_raw, why = order_error
                 observed = " → ".join(f"{meaning.replace('_', ' ').title()} (OID {oid})"
                                       for meaning, oid, _raw in events)
                 add("Line Order", bad_oid,
                     f"Line {code_raw} has commands out of order across its point sequence: {why}. "
-                    f"Observed {observed}; keep each Start Curve before its matching End Curve "
-                    "and finish the curve before End Line/Close.",
+                    f"Observed {observed}; start with Start Line, pair each Start Curve with "
+                    "its End Curve, and finish with End Line/Close.",
                     "Review the full point sequence: Start Line → Start Curve → End Curve → End Line/Close.")
 
             curve_starts = [oid for oid, line_commands, _raw in segment
