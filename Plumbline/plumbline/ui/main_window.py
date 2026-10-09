@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDockWidget, QFileDialog, QFormLayout,
                                QHBoxLayout, QVBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
                                QPushButton, QSizePolicy, QSpinBox, QToolBar, QToolButton, QWidget)
@@ -23,6 +23,7 @@ from ..core import reference as REF
 from ..core import units as U
 from ..core.model import ImageryLayer, Polyline, Surface
 from ..core.project import Project
+from ..core.project_package import create_project_package
 from ..core.qa import run_checks
 from ..core.settings import settings, user_dir
 from ..core.surface import (apply_contours, build_tin, compute_contour_data, gather_surface_inputs, surface_signature)
@@ -42,9 +43,10 @@ from .import_export import (IMPORT_FILTER, POINTS_FILTER, ImportPlan, Importer, 
                             apply_import, describe_folder_import)
 from .imagery_ui import AddImageryDialog, ImageryDock, _acc_text
 from .new_project import NewProjectDialog
+from .project_package_dialog import ProjectPackageDialog
 from .surface_dialogs import ContourDialog, ProfileDialog, SurfaceDialog, VolumeDialog, build_report_text
-from .tools import (ArcTool, DepthLineTool, DrawPolylineTool, MeasureTool, MoveTool, PanTool, PointTool,
-                    SelectTool, TextTool, ZoomWindowTool, parse_coordinate)
+from .tools import (ArcTool, DepthLineTool, DrawPolylineTool, ImageryNudgeTool, MeasureTool, MoveTool,
+                    PanTool, PointTool, SelectTool, TextTool, ZoomWindowTool, parse_coordinate)
 from .view3d import SceneProvider, View3DPanel
 from .widgets import FormDialog, confirm, dspin, error_box, info_box, ispin, run_blocking
 
@@ -168,9 +170,11 @@ class MainWindow(QMainWindow):
     def __init__(self, project: Project | AppState | None = None, open_path: str | None = None, welcome: bool = False):
         super().__init__()
         self.state = project if isinstance(project, AppState) else AppState(project)
+        self.state._save_untitled_before_edit = self.save_as
         self.setWindowIcon(icons.app_icon())
         self.resize(1480, 920)
         self._icon_actions: list = []
+        self._imagery_nudge_tool = None
         s = settings()
         theme.apply_theme(QApplication.instance(), s.get("theme"))
         C.set_proj_network(bool(s.get("proj_network")))
@@ -391,6 +395,10 @@ class MainWindow(QMainWindow):
                                tip="Recode selected points in description coding to form a linework figure")
         self.a_edit_linework_coding = A("&Edit Linework Coding (Point Coder)...", self.edit_linework_coding_dialog, icon="polyline",
                                         tip="Inspect, reverse, close/open, or recode figure points")
+        self.a_edit_line_geometry = A("Edit Line &Geometry...", self.edit_selected_line_geometry, icon="polyline",
+                                     tip="Stage vertex, curve, endpoint, and geometry edits with a preview")
+        self.a_join_lines = A("Join Selected &Lines...", self.join_selected_lines_dialog, icon="polyline",
+                              tip="Draft, orient, average, condense, preview, and accept selected line joins")
         self.a_fieldbook = A("&Field Book...", self.open_fieldbook_dialog, icon="layers",
                              tip="Field Book: Convert Carlson code table, Select/Pull field book, or View field book report")
         self.a_f2f = self.a_fieldbook
@@ -428,13 +436,14 @@ class MainWindow(QMainWindow):
                tip="Reduce raw field data: duplicate checks, description parsing, renumbering")
         self.a_fw_import = A("Import &Cleaned Field Data...", self.import_fieldwork,
               tip="Bring a consolidated .fwk into this project through the field-data checks")
+        self.a_points_table = A("Survey &Points Table", self.open_survey_points, icon="table",
+              tip="Open the searchable survey-points table")
         self.a_ref_file = A("Import Points from &File...", self.import_points_file,
              tip="A CSV of stake-out, control or other reference coordinates.  "
                                 "One layer per role, and the points stay out of the fieldwork list.")
         self.a_file_crs = A("File &Coordinate Systems...", self.file_crs_dialog,
-             tip="What coordinate system each imported file's numbers were taken to be "
-                                "in - and how to change it afterwards (relabel, reproject, or the "
-                                "ground/grid SAF).")
+             tip="Set a file's coordinates to the project system, reproject them, or correct their "
+                 "ground/grid Surface Adjustment Factor (SAF).")
         self.a_ref_folder = A("Import Points from F&older...", self.import_points_folder,
                tip="Every point file in a folder, as one import.  The default is this "
                                   "job's field data; choose a reference role for somebody else's "
@@ -517,13 +526,14 @@ class MainWindow(QMainWindow):
             m.addAction(self.tool_acts[k])
         m = add_menu("&Survey")
         # the field-data half of the program opens from here
-        m.addActions([self.a_fw_manager, self.a_fw_import])
+        m.addActions([self.a_fw_manager, self.a_fw_import, self.a_points_table])
         m.addSeparator()
         m.addActions([self.a_ref_file, self.a_ref_folder])
         m.addSeparator()
-        m.addAction(self.a_file_crs)
+        m.addActions([self.a_crs, self.a_calc, self.a_file_crs])
         m.addSeparator()
-        m.addActions([self.a_fix_points, self.a_fix_linework, self.a_fieldbook, self.a_codes, self.a_linework, self.a_join_points, self.a_edit_linework_coding])
+        m.addActions([self.a_fix_points, self.a_fix_linework, self.a_fieldbook, self.a_codes, self.a_linework,
+                      self.a_join_points, self.a_join_lines, self.a_edit_line_geometry, self.a_edit_linework_coding])
         m.addSeparator()
         m.addActions([self.a_cogo, self.a_transform])
         m = add_menu("S&urface")
@@ -532,8 +542,6 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_img_add)
         m.addSeparator()
         m.addActions([self.a_gmaps, self.a_gmaps_copy])
-        m = add_menu("&Coordinates")
-        m.addActions([self.a_crs, self.a_calc])
         m = add_menu("&Reports")
         m.addActions([self.a_r_pts, self.a_r_lines, self.a_r_qa, self.a_r_audit, self.a_r_crs, self.a_sf_rep])
         # (there is no Tools menu: its four items were a folder, a window and two imports, and
@@ -632,6 +640,13 @@ class MainWindow(QMainWindow):
         cv.cursor_moved.connect(self._cursor)
         cv.hint_changed.connect(self._hint)
         cv.escape_pressed.connect(self._escape)
+        self._escape_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        self._escape_shortcut.setContext(Qt.WindowShortcut)
+        self._escape_shortcut.activated.connect(self._escape)
+        app = QApplication.instance()
+        if app is not None:
+            app.focusChanged.connect(self._update_escape_shortcut)
+            self._update_escape_shortcut(None, app.focusWidget())
         cv.files_dropped.connect(self._files_dropped)
         self.layers.current_changed.connect(self._current_layer)
         self.cmb_layer.activated.connect(lambda i: self.layers.set_current(self.cmb_layer.currentText()))
@@ -651,6 +666,7 @@ class MainWindow(QMainWindow):
         self.imagery.add_requested.connect(self.add_imagery)
         self.imagery.ge_import_requested.connect(self.import_ge_pins)
         self.imagery.ge_export_requested.connect(self._export_kml)
+        self.imagery.nudge_by_points_requested.connect(self.toggle_imagery_nudge)
         self._tile_timer = QTimer(self)
         self._tile_timer.timeout.connect(self._tile_status)
         self._tile_timer.start(400)
@@ -767,22 +783,30 @@ class MainWindow(QMainWindow):
             a.setChecked(True)
             a.blockSignals(False)
 
-    def _escape(self):
-        """Escape: put down whatever is being picked, then hand the view back to Pan.
+    def _update_escape_shortcut(self, _old_focus, focus=None):
+        """Enable the window shortcut for toolbar/panel focus, leaving canvas Esc to its tool."""
+        widget = focus
+        while widget is not None:
+            if widget is self.canvas or widget == self.canvas:
+                self._escape_shortcut.setEnabled(False)
+                return
+            widget = widget.parentWidget()
+        self._escape_shortcut.setEnabled(True)
 
-        Done once or twice, the second Esc matters - after a tool is cancelled the drawing is
-        in a known state, and the next thing a surveyor does is usually look somewhere else.
-        """
+    def _escape(self):
+        """Cancel the current tool/action and return keyboard focus and cursor to Pan."""
         tool = self.canvas.tool
         if tool is not None and tool.name != "pan":
             try:
                 tool.cancel()
             except Exception:
                 pass
-            self.set_tool("pan")
             self.state.log("Tool released - Pan.  Drag to move the view.", "info")
-        else:
-            self.set_tool("pan")
+        self.set_tool("pan")
+        self.canvas._panning = False
+        self.canvas._pan_last = None
+        self.canvas.setCursor(self.tools["pan"].cursor)
+        self.canvas.setFocus(Qt.OtherFocusReason)
 
     def _command_entered(self):
         text = self.ed_cmd.text().strip()
@@ -872,7 +896,7 @@ class MainWindow(QMainWindow):
             url, lat, lon, zoom = maps.maps_link_for_view(pr, v.cx, v.cy, v.scale, satellite)
         except C.LocalCRSError:
             info_box(self, "Google Maps", "This project uses a local coordinate system, so the view has no real-world location.\n\n"
-                                          "Assign a coordinate system first (Coordinates > Project Coordinate System).")
+                                          "Assign a coordinate system first (Survey > Project Coordinate System).")
             return
         except Exception as ex:
             error_box(self, "Google Maps", f"Could not turn the view center into a latitude / longitude:\n{ex}")
@@ -895,20 +919,17 @@ class MainWindow(QMainWindow):
         if not dlg.exec():
             return
         name = dlg.project_name
-        if dlg.setup_job:
-            # Create the job folder first, with the cancelable progress dialog.  If the
-            # user cancels, nothing was created and nothing was opened - no half-made job.
-            from .job_setup import run_job_setup
-            creation = run_job_setup(self, dlg.setup_parent_folder, name, dlg.setup_template,
-                                     dlg.setup_weeks, dlg.crs.label, crs_record=dlg.crs.to_dict())
-            if creation is None:
-                self.state.log("Job folder setup cancelled", "warn")
-                return
-            self._open(str(creation.paths.project_file))
-            self.state.log(f"Created job folder {creation.paths.root} - {creation.summary}", "ok")
+        # Every new project is a standard job package.  There is no minimal-folder branch or
+        # folder-style choice; the fixed folder list is previewed in the setup panel.
+        from .job_setup import run_job_setup
+        creation = run_job_setup(self, dlg.setup_parent_folder, name, dlg.setup_template,
+                                 dlg.setup_weeks, dlg.crs.label, crs_record=dlg.crs.to_dict())
+        if creation is None:
+            self.state.log("Job folder setup cancelled", "warn")
             return
-        self.state.new_project(name, dlg.crs)
-        self.state.log(f"New project '{name}' - {dlg.crs.label}", "ok")
+        self._job_root_choice = None
+        self._open(str(creation.paths.project_file), route="new")
+        self.state.log(f"Created job folder {creation.paths.root} - {creation.summary}", "ok")
 
     # ------------------------------------------------------------------ field data / job folder
     def open_fieldwork(self):
@@ -964,6 +985,8 @@ class MainWindow(QMainWindow):
                      f"{tally['failed']} file(s) could not be read and were skipped; the message log "
                      f"names them and says why.  Nothing was guessed - check those files and import "
                      f"them one at a time if they matter.")
+        if role is None and tally.get("points"):
+            self._complete_import_onboarding(imported_points=tally["points"])
 
     def import_fieldwork(self):
         """Survey > Import Cleaned Field Data - a .fwk straight into this project."""
@@ -1002,6 +1025,8 @@ class MainWindow(QMainWindow):
         changed = getattr(self.state, "project_changed", None)
         if callable(changed):
             changed()
+        if result.get("points", 0):
+            self._complete_import_onboarding(imported_points=result["points"])
 
     def file_crs_dialog(self):
         """Survey > File Coordinate Systems (change order, item 6)."""
@@ -1128,6 +1153,140 @@ class MainWindow(QMainWindow):
                 return str(data)
         return str(folder) if folder else ""
 
+    def _default_field_data_folder(self) -> str:
+        """The user-level import folder, falling back to Downloads and then Home."""
+        configured = str(settings().get("field_data_import_folder", "") or "").strip()
+        if configured and Path(configured).expanduser().is_dir():
+            return str(Path(configured).expanduser())
+        downloads = Path.home() / "Downloads"
+        return str(downloads if downloads.is_dir() else Path.home())
+
+    def _existing_field_data_start(self) -> str:
+        """Start at the last field-work source folder, falling back to packaged Field Data."""
+        source = self.state.project.settings.get("field_data_source_folder")
+        if source and Path(source).expanduser().is_dir():
+            return str(Path(source).expanduser())
+        data = self.state.project.settings.get("data_folder")
+        if data and Path(data).expanduser().is_dir():
+            return str(Path(data).expanduser())
+        root = self._job_folder()
+        if root is not None and (root / "Field Data").is_dir():
+            return str(root / "Field Data")
+        return self._default_field_data_folder()
+
+    def _complete_import_onboarding(self, imported_points: int = 0):
+        """Finish the point-import route with CRS, default imagery, then the QA offer."""
+        pr = self.state.project
+        if imported_points and pr.crs.is_local:
+            self._ensure_project_crs()
+
+        survey_points = REF.survey_points(pr)
+        if survey_points and not pr.crs.is_local and not pr.imagery:
+            self._offer_default_esri_imagery()
+        # This offer is deliberately independent of the imagery answer: declining imagery must
+        # never skip the Fix Point Errors review.
+        if survey_points:
+            self._offer_fix_point_errors()
+
+    def _offer_default_esri_imagery(self) -> bool:
+        """Offer the shipped Esri World Imagery layer after field data has a project CRS."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Add Default Imagery")
+        box.setText("Would you like to add Esri World Imagery to this project?")
+        box.setInformativeText(
+            "Visible satellite tiles will be fetched automatically as the map draws and cached for "
+            "later use. Internet access is needed for tiles that are not already cached.")
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return False
+
+        from ..core.tiles import PRESETS
+        source = next((tile for tile in PRESETS if tile.name == "Esri World Imagery"), None)
+        if source is None:
+            self.state.log("The default Esri World Imagery source is not available.", "warn")
+            return False
+        self.create_imagery_layer({"kind": "tiles", "name": source.name,
+                                   "source": source.to_dict()})
+        self.state.log("Esri World Imagery added; visible map tiles are loading automatically.", "ok")
+        return True
+
+    def _offer_fix_point_errors(self) -> bool:
+        """Offer the Fix Point Errors workbench after the import route, regardless of imagery choice."""
+        if not REF.survey_points(self.state.project):
+            return False
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Fix Point Errors")
+        box.setText("Would you like to review the survey points for errors now?")
+        box.setInformativeText("You can open Fix Point Errors later from Survey at any time.")
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return False
+        self.open_fix_point_errors()
+        return True
+
+    def _ask_field_data_route(self, route: str) -> int:
+        """Initial-project onboarding: offer a field-data folder scan/import."""
+        if route == "new":
+            title = "Import Field Data"
+            question = "Would you like to select and import a field-data folder now?"
+            detail = "The selected point files will be copied into this project's standard Field Data folder."
+            start = self._default_field_data_folder()
+            picker_title = "Select a Field Data Folder"
+        else:
+            title = "Check Field Data"
+            question = "Would you like to check the parent field-work folder for new survey files?"
+            detail = "Unchanged files already imported into this project will be greyed out."
+            start = self._existing_field_data_start()
+            picker_title = "Choose the Parent Field-Work Folder"
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(title)
+        box.setText(question)
+        box.setInformativeText(detail)
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return 0
+
+        folder = QFileDialog.getExistingDirectory(self, picker_title, start)
+        if not folder:
+            return 0
+        settings().set("field_data_import_folder", str(Path(folder).expanduser()))
+        return self._run_field_data_folder_import(Path(folder))
+
+    def _run_field_data_folder_import(self, folder: Path) -> int:
+        """Show the reusable per-file picker and import only its selected field-data files."""
+        folder = Path(folder).expanduser()
+        if not folder.is_dir():
+            error_box(self, "Import Field Data", f"{folder} is not a folder.")
+            return 0
+        dlg = ReferenceFolderDialog(self.state, folder, self, field_data_only=True)
+        if not dlg.exec():
+            return 0
+        selected = dlg.selected_files()
+        tally = self.importer.import_reference_folder(
+            folder, None, dlg.chk_sub.isChecked(), selected_files=selected)
+        if not tally.get("points"):
+            error_box(self, "Import Field Data",
+                      f"No points were imported from {folder.name}."
+                      + (f"\n\n{tally.get('failed', 0)} file(s) could not be read; the message log names them."
+                         if tally.get("failed") else ""))
+            return 0
+        self.state.log(
+            f"Field data import: {describe_folder_import(tally)} - copied to the project's "
+            f"Field Data folder - from {folder}", "ok")
+        if tally.get("failed"):
+            info_box(self, "Import Field Data",
+                     f"{tally['points']:,} point(s) came in from {tally['files']} file(s).\n\n"
+                     f"{tally['failed']} file(s) could not be read and were skipped; the message log "
+                     "names them and says why.")
+        return int(tally.get("points", 0) or 0)
+
     def open_project(self):
         if not self.maybe_save():
             return
@@ -1139,13 +1298,17 @@ class MainWindow(QMainWindow):
         if self.maybe_save():
             self._open(path)
 
-    def _open(self, path):
+    def _open(self, path, *, route: str = "existing"):
         try:
             self.state.open_project(path)
         except Exception as ex:
             error_box(self, "Open Project", f"Could not open {Path(path).name}:\n{ex}", traceback.format_exc())
             return
         self.state.log(f"Opened {path}", "ok")
+        if self.state.project.crs.is_local:
+            self._ensure_project_crs()
+        imported_points = self._ask_field_data_route("new" if route == "new" else "existing")
+        self._complete_import_onboarding(imported_points=imported_points)
 
     def open_sample(self):
         if not self.maybe_save():
@@ -1229,20 +1392,39 @@ class MainWindow(QMainWindow):
 
     def save_as(self) -> bool:
         pr = self.state.project
-        start = pr.path or f"{pr.name}.plb"
-        p, _ = QFileDialog.getSaveFileName(self, "Save project as", start, "Plumbline project (*.plb)")
-        if not p:
+        if pr.path:
+            current_root = Path(pr.path).expanduser().parent
+            parent_start = current_root.parent
+            suggested_name = f"{pr.name or 'Project'} Copy"
+        else:
+            parent_start = Path.cwd()
+            data_folder = (pr.settings or {}).get("data_folder")
+            if data_folder and Path(str(data_folder)).expanduser().exists():
+                parent_start = Path(str(data_folder)).expanduser().parent
+            suggested_name = ("Untitled Project" if str(pr.name or "").strip().casefold() in {"", "untitled"}
+                              else str(pr.name))
+        dlg = ProjectPackageDialog(self, name=suggested_name, parent_folder=str(parent_start))
+        if not dlg.exec():
             return False
-        if not p.lower().endswith(".plb"):
-            p += ".plb"
         try:
-            if pr.name in ("Untitled", ""):
-                pr.name = Path(p).stem
-            self.state.save_project(p)
+            package = create_project_package(
+                pr, dlg.parent_folder, dlg.project_name)
         except Exception as ex:
-            error_box(self, "Save", str(ex), traceback.format_exc())
+            error_box(self, "Save Project Package", str(ex), traceback.format_exc())
             return False
-        self.state.log(f"Saved {p}", "ok")
+
+        # Adopt the package's rebased settings/assets without replacing AppState or
+        # discarding the current selection and undo stack.
+        pr.restore(package.snapshot())
+        pr.path = package.path
+        pr._portable_paths = True
+        self._job_root_choice = None
+        self.state._prune_selection()
+        self.state.set_dirty(False)
+        self.state._after_change({"all"})
+        self.state.undo_changed.emit()
+        settings().add_recent(str(pr.path))
+        self.state.log(f"Saved project package {pr.path}", "ok")
         self.update_title()
         return True
 
@@ -1344,15 +1526,34 @@ class MainWindow(QMainWindow):
             self.canvas.invalidate()
 
     # ================================================================== survey
+    def _show_modal_qa_workbench(self, workbench):
+        """Show a central-widget QA window modally while keeping the main window alive."""
+        self._qa_workbench_window = workbench
+        workbench.setWindowModality(Qt.WindowModal)
+        workbench.setAttribute(Qt.WA_DeleteOnClose, True)
+        workbench.destroyed.connect(self._clear_qa_workbench_reference)
+        workbench.show()
+        workbench.raise_()
+        workbench.activateWindow()
+
+    def _clear_qa_workbench_reference(self, *_):
+        self._qa_workbench_window = None
+
+    def open_survey_points(self):
+        """Survey > Survey Points Table: reveal the existing searchable points dock."""
+        self.d_pts.show()
+        self.d_pts.raise_()
+        self.points.view.setFocus()
+
     def open_fix_point_errors(self):
         """Survey > Fix Point Errors: open the dedicated Fix Point Errors workbench."""
         from .qa_workspace import FixPointErrorsDialog
-        FixPointErrorsDialog(self.state, self).exec()
+        self._show_modal_qa_workbench(FixPointErrorsDialog(self.state, self))
 
     def open_fix_linework(self):
         """Survey > Fix Linework: open the dedicated Fix Linework workbench."""
         from .qa_workspace import FixLineworkDialog
-        FixLineworkDialog(self.state, self).exec()
+        self._show_modal_qa_workbench(FixLineworkDialog(self.state, self))
 
     def qa_dialog(self):
         self.open_fix_point_errors()
@@ -1426,15 +1627,46 @@ class MainWindow(QMainWindow):
 
     def edit_linework_coding_dialog(self):
         sel_ents = [self.state.project.entities[eid] for eid in self.state.sel_entities if eid in self.state.project.entities]
-        poly = next((e for e in sel_ents if isinstance(e, Polyline) and (e.derived.startswith("linework") or (e.attrs or {}).get("points"))), None)
+        poly = next((e for e in sel_ents if isinstance(e, Polyline) and
+                     (e.derived.startswith("linework") or (e.attrs or {}).get("points"))), None)
+        if poly is None:
+            info_box(self, "Edit Linework Coding", "Select a coded linework polyline first.")
+            return
         from .linework_dialog import EditLineworkCodingDialog
         dlg = EditLineworkCodingDialog(self.state, poly, self)
         dlg.exec()
+
+    def edit_selected_line_geometry(self):
+        """Open the transactional vertex/curve editor for exactly one selected polyline."""
+        polylines = [self.state.project.entities[eid] for eid in sorted(self.state.sel_entities)
+                     if isinstance(self.state.project.entities.get(eid), Polyline)]
+        if len(polylines) != 1:
+            info_box(self, "Edit Line Geometry", "Select exactly one polyline in the drawing or Properties panel.")
+            return
+        from .linework_editor_dialog import LineEditorDialog
+        LineEditorDialog(self.state, polylines[0], self).exec()
+
+    def join_selected_lines_dialog(self):
+        """Open a separate preview-first workflow for joining two or more selected polylines."""
+        polylines = [self.state.project.entities[eid] for eid in sorted(self.state.sel_entities)
+                     if isinstance(self.state.project.entities.get(eid), Polyline)]
+        if len(polylines) < 2:
+            info_box(self, "Join Lines", "Select two or more open polylines in the drawing first.")
+            return
+        from .linework_editor_dialog import JoinLinesDialog
+        JoinLinesDialog(self.state, polylines, self).exec()
 
     def cogo_dialog(self):
         TraverseDialog(self.state, self).exec()
 
     # ================================================================== coordinates
+    def _ensure_project_crs(self) -> bool:
+        """Open the project CRS picker when unassigned, and report whether it was assigned."""
+        if not self.state.project.crs.is_local:
+            return True
+        self.crs_dialog()
+        return not self.state.project.crs.is_local
+
     def crs_dialog(self, calculator: bool = False):
         dlg = CRSDialog(self.state, self)
         if calculator:
@@ -1594,6 +1826,44 @@ class MainWindow(QMainWindow):
             ReportViewer(self, reports.surface_report(self.state.project, s)).exec()
 
     # ================================================================== imagery
+    def toggle_imagery_nudge(self):
+        """Pick image/target point pairs in the plan view and apply their mean display shift."""
+        active = self._imagery_nudge_tool
+        if active is not None and self.canvas.tool is active:
+            active.cancel()
+            self.set_tool("pan")
+            return
+
+        layer = self.imagery.current_layer()
+        if layer is None:
+            info_box(self, "Nudge Imagery", "Select an imagery layer first.")
+            return
+        if not layer.visible:
+            info_box(self, "Nudge Imagery", "Turn on the selected imagery layer before nudging it by points.")
+            return
+        if not self.canvas.opts.show_imagery:
+            self.view_toggles["show_imagery"].setChecked(True)
+
+        def on_deactivate():
+            self.imagery.set_nudge_mode_active(False)
+            if self._imagery_nudge_tool is tool:
+                self._imagery_nudge_tool = None
+
+        def on_finish(applied: bool):
+            if not applied:
+                self.state.log("Imagery nudge cancelled; no point pairs were applied.", "info")
+            if self.canvas.tool is tool:
+                self.set_tool("pan")
+
+        tool = ImageryNudgeTool(self.canvas, layer.id, on_finish=on_finish, on_deactivate=on_deactivate)
+        self._imagery_nudge_tool = tool
+        self.tool_group.setExclusive(False)
+        for action in self.tool_acts.values():
+            action.setChecked(False)
+        self.tool_group.setExclusive(True)
+        self.imagery.set_nudge_mode_active(True)
+        self.canvas.set_tool(tool)
+
     def _unique_layer_name(self, base: str) -> str:
         names = {l.name for l in self.state.project.imagery.values()}
         n, k = base, 2
@@ -1613,6 +1883,8 @@ class MainWindow(QMainWindow):
         self.d_img.raise_()
         if pr.extents() is None:
             self._default_view_for_crs()
+        self.canvas.invalidate()
+        self.canvas.update()
         self.state.log(f"Imagery layer added: {spec['name']}", "ok")
 
     def _default_view_for_crs(self):
@@ -1627,11 +1899,15 @@ class MainWindow(QMainWindow):
             pass
 
     def add_imagery(self):
+        if not self._ensure_project_crs():
+            return
         dlg = AddImageryDialog(self.state, self)
         if dlg.exec() and dlg.layer_spec:
             self.create_imagery_layer(dlg.layer_spec)
 
     def add_imagery_file(self, path: str) -> bool:
+        if not self._ensure_project_crs():
+            return False
         try:
             r = run_blocking(self, "Reading image ...", IM.read_georeferenced_image, path)
         except RuntimeError as ex:
@@ -1642,6 +1918,8 @@ class MainWindow(QMainWindow):
         return True
 
     def add_kml_overlay(self, o: dict) -> bool:
+        if not self._ensure_project_crs():
+            return False
         corners = IM.kml_overlay_corners(o["north"], o["south"], o["east"], o["west"], o.get("rotation", 0.0))
         self.create_imagery_layer({"kind": "file", "name": o.get("name", "Overlay"),
                                    "source": {"path": o["file"], "corners": [list(c) for c in corners], "crs": "EPSG:4326", "attribution": ""}})

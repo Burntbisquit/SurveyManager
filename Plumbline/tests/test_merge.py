@@ -311,6 +311,12 @@ def test_job_folder_has_the_expected_shape(tmp_path):
     from plumbline.core.project import Project
     pr = Project.load(out.paths.project_file)
     assert pr.name == "23-036.03 Murchison" and pr.crs.authority == "EPSG:6584"
+    assert len(pr.codes) == 0
+    from plumbline.fieldwork.io_carlson import read_fwb_file, read_fwb_extra
+    headers, rows = read_fwb_file(out.paths.fieldbook_file)
+    assert headers and rows == []  # a blank Field Book shell, not the old five-code sample
+    assert read_fwb_extra(out.paths.fieldbook_file)["rules"] == []
+    assert pr.settings["fieldbook_file"] == str(out.paths.fieldbook_file)
 
 
 def test_new_job_starts_unassigned_by_default(tmp_path):

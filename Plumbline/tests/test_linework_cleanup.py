@@ -92,6 +92,7 @@ def test_custom_fieldbook_meanings_and_alphanumeric_separators_are_used():
 def test_a_second_segment_starting_before_the_first_one_ends_is_a_missing_end():
     issues = LC.detect_line_errors(rows("TOC ST", "TOC ST", "TOC END"), f2f_set=F2F)
     assert "Missing END" in kinds(issues)
+    assert "Line Order" in kinds(issues)
     assert "before a new Start Line" in " ".join(e["detail"] for e in issues)
     assert any(e["oid"] == "1" for e in issues), "the fix belongs on the point that should have ended"
 
@@ -101,6 +102,52 @@ def test_two_lines_are_judged_one_at_a_time():
     issues = LC.detect_line_errors(rows("EP ST", "TOC ST", "EP END", "TOC END"),
                                    f2f_set={"ep", "toc"})
     assert issues == []
+
+
+def test_curve_command_order_is_checked_across_points_and_repeated_curves_are_valid():
+    out_of_order = LC.detect_line_errors(
+        rows("TOC ST", "TOC PT", "TOC PC", "TOC END"), f2f_set=F2F)
+    order_issues = [issue for issue in out_of_order if issue["issue_type"] == "Line Order"]
+    assert len(order_issues) == 1
+    assert order_issues[0]["oid"] == "2"
+    assert "across its point sequence" in order_issues[0]["detail"]
+
+    nested = LC.detect_line_errors(
+        rows("TOC ST", "TOC PC", "TOC PC", "TOC PT", "TOC END"), f2f_set=F2F)
+    assert any(issue["issue_type"] == "Line Order" and issue["oid"] == "3"
+               for issue in nested), "a second Start Curve must follow the first End Curve"
+
+    # End Curve must come before either End Line or Close; a terminator during an
+    # open curve is an order error, even when the later End Curve is on another point.
+    for terminator in ("END", "X"):
+        ended_before_curve = LC.detect_line_errors(
+            rows("TOC ST", "TOC PC", f"TOC {terminator}", "TOC PT"), f2f_set=F2F)
+        assert any(issue["issue_type"] == "Line Order" and issue["oid"] == "3"
+                   for issue in ended_before_curve), terminator
+
+    # Detect invalid order within one description, plus a curve command that appears
+    # after a prior point already ended the line.
+    same_point = LC.detect_line_errors(
+        rows("TOC PC ST", "TOC PT END"), f2f_set=F2F)
+    assert any(issue["issue_type"] == "Line Order" and issue["oid"] == "1"
+               for issue in same_point)
+    after_end = LC.detect_line_errors(
+        rows("TOC ST", "TOC END", "TOC PC", "TOC PT"), f2f_set=F2F)
+    assert any(issue["issue_type"] == "Line Order" and issue["oid"] == "3"
+               for issue in after_end)
+
+    # A line may carry several properly paired curves; the state machine must allow PC/PT to repeat.
+    assert LC.detect_line_errors(
+        rows("TOC ST", "TOC PC", "TOC PT", "TOC PC", "TOC PT", "TOC END"),
+        f2f_set=F2F) == []
+
+
+def test_line_order_fix_validation_checks_the_whole_sequence_after_a_fix_moves_the_error():
+    working = rows("TOC ST", "TOC PT", "TOC PC", "TOC END")
+    result = LC.validate_fix(working, "2", "TOC PC", f2f_set=F2F)
+    assert not result["ok"]
+    assert result["still"] and result["still"][0]["issue_type"] == "Line Order"
+    assert result["still"][0]["oid"] == "3"
 
 
 # ------------------------------------------------------------------ the proposal
@@ -205,6 +252,73 @@ def test_the_project_side_reads_lines_with_the_same_reader(win, app):
     theirs = LC.detect_line_errors(FB.working_rows_from_project(pr)[0], f2f_set={"toc"})
     assert [e["issue_type"] for e in mine] == [e["issue_type"] for e in theirs]
     assert mine and all(e["issue_type"] in LC.ISSUE_TYPES for e in mine)
+
+
+def test_project_fieldwork_code_flags_ignore_deleted_points():
+    from plumbline.core.project import Project
+    from plumbline.fieldwork.bridge import check_project
+
+    project = Project("Deleted code")
+    active = project.add_point(0, 0, 0, number="1", desc="UNKNOWNCODE")
+    deleted = project.add_point(10, 0, 0, number="2", desc="UNKNOWNCODE",
+                                attrs={"qa_deleted": True})
+    report = check_project(project, f2f={"toc"})
+    unknown = next(finding for finding in report["findings"]
+                   if finding.get("flag") == "UnknownCode")
+    assert [report["ids"][i] for i in unknown["rows"]] == [active.id]
+    assert all(str(oid) != str(deleted.id) for oid in report["flags"])
+
+
+def test_empty_description_is_not_reported_as_a_fix_points_warning():
+    from plumbline.core.project import Project
+    from plumbline.fieldwork.bridge import check_project
+
+    project = Project("Blank description")
+    project.add_point(0, 0, 0, number="1", desc="")
+    report = check_project(project, f2f={"toc"})
+    assert all(finding.get("flag") != "EmptyDescription" for finding in report["findings"])
+
+
+def test_line_order_findings_are_errors_not_warnings():
+    from plumbline.core.project import Project
+    from plumbline.fieldwork.bridge import check_project
+
+    project = Project("Line order severity")
+    project.add_point(0, 0, 0, number="1", desc="TOC ST PC END PT")
+    report = check_project(project, f2f=F2F)
+    line_order_findings = [finding for finding in report["findings"]
+                           if finding.get("flag") == "LineOrderError"]
+    assert line_order_findings
+    assert all(finding["level"] == "error" for finding in line_order_findings)
+    assert any(finding.get("check") == "line: line order" for finding in line_order_findings)
+    assert any(finding.get("check") == "Line command out of order" for finding in line_order_findings)
+
+    repeated_curve_project = Project("Repeated curve start")
+    for i, desc in enumerate(("TOC ST", "TOC PC", "TOC PC", "TOC PT", "TOC END")):
+        repeated_curve_project.add_point(i, 0, 0, number=str(i + 1), desc=desc)
+    repeated_report = check_project(repeated_curve_project, f2f=F2F)
+    repeated_order = [finding for finding in repeated_report["findings"]
+                      if finding.get("check") == "line: line order"]
+    assert repeated_order and all(finding["level"] == "error" for finding in repeated_order)
+
+
+def test_curve_start_before_line_start_is_flagged_when_feature_code_is_unknown():
+    from plumbline.core.fieldbook_syntax import command_map
+    from plumbline.fieldwork.parse import _validate_line_command_order
+
+    def line_order_flags(description):
+        row = ["17", "17", "0", "0", "0", description, "", "crew.csv"]
+        return _validate_line_command_order([row], {"toc"}, commands=command_map())
+
+    # EG is intentionally absent from this active-book code set; PC before ST is still an error.
+    flags = line_order_flags("EG PC ST")
+    assert "LineOrderError" in flags["17"]
+
+    # A trailing note is outside the code portion and must not suppress the finding, while
+    # command-looking text after the description separator is not part of line ordering.
+    assert "LineOrderError" in line_order_flags("EG PC ST / note")["17"]
+    assert "LineOrderError" not in line_order_flags("EG / note PC ST").get("17", [])
+    assert "LineOrderError" not in line_order_flags("EG ST PC").get("17", [])
 
 
 def test_the_dock_reports_the_line_issues_and_they_select_the_points(win, app):

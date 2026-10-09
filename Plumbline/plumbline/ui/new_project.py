@@ -15,7 +15,7 @@ reads *NO CRS* in the status bar - and the moment a tool genuinely needs to know
 on the earth the job is (imagery, KML, GIS, reprojection, datum work), it says so:
 
     "Grid convergence needs a coordinate system - this project's CRS is UNASSIGNED.
-     Select CRS first (Coordinates > Project Coordinate System...)."
+     Select CRS first (Survey > Project Coordinate System...)."
 
 Drawing, surfaces, volumes, DXF and point handling never need a CRS and never nag.
 
@@ -210,7 +210,7 @@ class NewProjectDialog(QDialog):
                 return
             if self.crs is not None:
                 self.extra.apply_to(self.crs)
-        reason = self.setup.validate() if self.setup.enabled else None
+        reason = self.setup.validate()
         if reason:
             error_box(self, "New Project", reason)
             return

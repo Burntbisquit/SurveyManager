@@ -1,6 +1,7 @@
 """The Project: everything in one drawing/job, plus (de)serialisation and undo snapshots."""
 from __future__ import annotations
 
+import copy
 import json
 import math
 import os
@@ -35,6 +36,34 @@ DEFAULT_SETTINGS = {
     "f2f_path": "",              # the office's field-to-finish code table last converted from
 }
 
+
+def _package_relative_path(root: Path, value) -> str:
+    """Store an asset under a package root relative to the project file."""
+    text = str(value or "")
+    if not text or "://" in text:
+        return text
+    try:
+        path = Path(text).expanduser()
+        candidate = path if path.is_absolute() else root / path
+        return candidate.resolve().relative_to(root.resolve()).as_posix()
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return text
+
+
+def _package_absolute_path(root: Path, value) -> str:
+    """Resolve an internal relative package reference for the live application session."""
+    text = str(value or "")
+    if not text or "://" in text:
+        return text
+    try:
+        path = Path(text).expanduser()
+        if path.is_absolute():
+            return text
+        return str((root / path).resolve())
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return text
+
+
 # Everything an edit can change, and therefore everything undo/redo must carry.  `name` is in
 # here so undo can restore a rename (and so AppState.edit(discard_if_unchanged=True) notices
 # one); `path` deliberately is not - undoing an edit should never change which file you are
@@ -47,6 +76,7 @@ class Project:
     def __init__(self, name: str = "Untitled", crs: ProjectCRS | None = None):
         self.name = name
         self.path: str | None = None
+        self._portable_paths = False
         # No silent geodetic assumption: a project without a CRS uses plain local coordinates (US survey feet)
         self.crs: ProjectCRS = crs or ProjectCRS.local("ftUS")
         self.settings: dict = dict(DEFAULT_SETTINGS)
@@ -59,7 +89,9 @@ class Project:
         # Named sets of objects that can be switched on and off together (core/groups.py).  A
         # group switched off hides its objects **everywhere** - drawing, exports and surfaces.
         self.groups: GroupSet = GroupSet()
-        self.codes: FeatureCodeTable = default_codes()
+        # A new project has no office vocabulary until a Field Book is selected or converted.
+        # The built-in starter library remains available explicitly through the Feature Codes UI.
+        self.codes: FeatureCodeTable = FeatureCodeTable()
         self.notes: str = ""
         self._next_id = 1
         self.revision = 0
@@ -319,12 +351,80 @@ class Project:
         return {"matched": matched, "unknown": unknown}
 
     def process_linework(self, order: str = "file") -> dict:
-        """(Re)build linework from coded points.  Replaces previously generated linework."""
+        """(Re)build coded linework, respecting geometry edits accepted as manual overrides."""
+        manual_overrides = {}
+        for entity in self.entities.values():
+            if not isinstance(entity, Polyline):
+                continue
+            attrs = entity.attrs or {}
+            if not attrs.get("manual_linework_override"):
+                continue
+            raw_scopes = attrs.get("linework_override_scopes", []) or []
+            valid_scopes = False
+            if isinstance(raw_scopes, (tuple, list)):
+                for raw in raw_scopes:
+                    if not isinstance(raw, dict) or not str(raw.get("code", "")).strip():
+                        continue
+                    code = str(raw.get("code", "")).strip()
+                    string = str(raw.get("string", "") or "").strip()
+                    source_ids = set()
+                    for pid in raw.get("point_ids", []) or []:
+                        try:
+                            source_ids.add(int(pid))
+                        except (TypeError, ValueError):
+                            continue
+                    source_sequences = set()
+                    for sequence in raw.get("source_sequences", []) or []:
+                        if not isinstance(sequence, (tuple, list)) or len(sequence) < 2:
+                            continue
+                        try:
+                            source_sequences.add(tuple(int(pid) for pid in sequence))
+                        except (TypeError, ValueError):
+                            continue
+                    key = (code.casefold(), string.casefold())
+                    manual_overrides.setdefault(key, []).append((source_ids, source_sequences))
+                    valid_scopes = True
+            if not valid_scopes:
+                raw_ids = attrs.get("linework_override_point_ids", []) or []
+                source_ids = set()
+                for pid in raw_ids:
+                    try:
+                        source_ids.add(int(pid))
+                    except (TypeError, ValueError):
+                        continue
+                source_sequences = set()
+                for sequence in attrs.get("linework_override_source_sequences", []) or []:
+                    if not isinstance(sequence, (tuple, list)) or len(sequence) < 2:
+                        continue
+                    try:
+                        source_sequences.add(tuple(int(pid) for pid in sequence))
+                    except (TypeError, ValueError):
+                        continue
+                for raw in attrs.get("linework_override_keys", []) or []:
+                    if isinstance(raw, (tuple, list)) and len(raw) >= 2 and str(raw[0]).strip():
+                        key = (str(raw[0]).casefold(), str(raw[1]).casefold())
+                        manual_overrides.setdefault(key, []).append((source_ids, source_sequences))
         removed = self.remove_derived("linework")
         strings = build_linework(self.points.values(), self.codes, order,
                                  commands=self.settings.get("f2f_commands"))
         made = 0
         for ls in strings:
+            override_sets = manual_overrides.get((str(ls.code).casefold(), str(ls.string).casefold()), [])
+            line_sequence = tuple(int(pid) for pid in ls.ids)
+            line_ids = set(line_sequence)
+            suppressed = False
+            for source_ids, source_sequences in override_sets:
+                if source_sequences:
+                    if any(line_sequence == sequence or line_sequence == sequence[::-1]
+                           for sequence in source_sequences):
+                        suppressed = True
+                        break
+                elif source_ids and line_ids and line_ids.issubset(source_ids):
+                    # Compatibility for old overrides that only recorded the source point set.
+                    suppressed = True
+                    break
+            if suppressed:
+                continue
             fc = self.codes.get(ls.code)
             pts = [self.points[i] for i in ls.ids if i in self.points]
             if len(pts) < 2:
@@ -332,7 +432,8 @@ class Project:
             verts = np.array([[p.x, p.y, p.z] for p in pts])
             self.add_polyline(verts, fc.layer or "0", ls.closed, None,
                               "breakline" if fc.breakline else "line", "linework",
-                              {"code": ls.code, "string": ls.string, "points": [p.number for p in pts]})
+                              {"code": ls.code, "string": ls.string,
+                               "points": [p.number for p in pts], "point_ids": [p.id for p in pts]})
             made += 1
         self.touch()
         return {"strings": made, "replaced": removed}
@@ -437,7 +538,7 @@ class Project:
 
     # ------------------------------------------------------------------ persistence
     def to_dict(self) -> dict:
-        return {
+        data = {
             "format": FORMAT, "version": VERSION, "name": self.name, "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
             "crs": self.crs.to_dict(), "settings": self.settings, "notes": self.notes,
             "layers": [l.to_dict() for l in self.layers.values()],
@@ -449,15 +550,47 @@ class Project:
             "codes": self.codes.to_list(), "next_id": self._next_id,
             "groups": self.groups.to_list(),
         }
+        if self._portable_paths:
+            data["package"] = {"relative_asset_paths": True}
+            if self.path:
+                root = Path(self.path).expanduser().resolve().parent
+                data["settings"] = copy.deepcopy(self.settings)
+                for key in ("fieldbook_file", "f2f_path", "data_folder", "field_data_source_folder"):
+                    value = data["settings"].get(key)
+                    if value:
+                        data["settings"][key] = _package_relative_path(root, value)
+                data["imagery"] = copy.deepcopy(data["imagery"])
+                for layer in data["imagery"]:
+                    source = layer.get("source")
+                    if isinstance(source, dict) and source.get("path"):
+                        source["path"] = _package_relative_path(root, source["path"])
+                data["points"] = copy.deepcopy(data["points"])
+                for point in data["points"]:
+                    attrs = point[7] if len(point) > 7 else None
+                    if not isinstance(attrs, dict):
+                        continue
+                    for key in ("fieldwork_source", "fieldwork_folder"):
+                        if attrs.get(key):
+                            attrs[key] = _package_relative_path(root, attrs[key])
+                    imported = attrs.get("import")
+                    if isinstance(imported, dict) and imported.get("folder"):
+                        imported["folder"] = _package_relative_path(root, imported["folder"])
+        return data
 
     def save(self, path: str | os.PathLike | None = None):
         path = Path(path or self.path or "")
         if not str(path):
             raise ValueError("no path")
+        previous_path = self.path
+        self.path = str(path)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, separators=(",", ":"))
-        os.replace(tmp, path)
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.to_dict(), f, separators=(",", ":"))
+            os.replace(tmp, path)
+        except Exception:
+            self.path = previous_path
+            raise
         self.path = str(path)
 
     @classmethod
@@ -465,6 +598,9 @@ class Project:
         if d.get("format") != FORMAT:
             raise ValueError("Not a Plumbline project file")
         p = cls(d.get("name", "Untitled"), ProjectCRS.from_dict(d["crs"]))
+        package_meta = d.get("package") or {}
+        p._portable_paths = bool(
+            isinstance(package_meta, dict) and package_meta.get("relative_asset_paths"))
         p.settings = {**DEFAULT_SETTINGS, **d.get("settings", {})}
         p.notes = d.get("notes", "")
         p.layers = {l["name"]: Layer.from_dict(l) for l in d.get("layers", [])}
@@ -482,8 +618,12 @@ class Project:
             ck = ImageryCheck.from_dict(c)
             p.checks[ck.id] = ck
         p.groups = GroupSet.from_list(d.get("groups", []))
-        if d.get("codes"):
-            p.codes = FeatureCodeTable.from_list(d["codes"])
+        if "codes" in d:
+            # An explicit empty list is meaningful for a new job with no selected Field Book.
+            p.codes = FeatureCodeTable.from_list(d.get("codes") or [])
+        else:
+            # Preserve the historical fallback for older project files that predate the code table.
+            p.codes = default_codes()
         p._next_id = int(d.get("next_id", 1))
         p.ensure_layer("0", (230, 230, 230))
         p.ensure_layer("POINTS", (255, 255, 255))
@@ -496,6 +636,16 @@ class Project:
             d = json.load(f)
         p = cls.from_dict(d)
         p.path = str(path)
+        if p._portable_paths:
+            root = Path(path).expanduser().resolve().parent
+            for key in ("fieldbook_file", "f2f_path", "data_folder", "field_data_source_folder"):
+                value = p.settings.get(key)
+                if value:
+                    p.settings[key] = _package_absolute_path(root, value)
+            for layer in p.imagery.values():
+                source = getattr(layer, "source", None)
+                if isinstance(source, dict) and source.get("path"):
+                    source["path"] = _package_absolute_path(root, source["path"])
         return p
 
     # ------------------------------------------------------------------ transforms

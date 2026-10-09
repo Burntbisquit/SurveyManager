@@ -368,6 +368,50 @@ def test_reference_folder_dialog_lists_and_filters_csvs(tmp_path, qapp):
     assert tally["points"] == 2
 
 
+
+def test_field_data_import_is_staged_and_same_size_files_are_greyed(tmp_path, qapp):
+    from plumbline.ui.app_state import AppState
+    from plumbline.ui.import_export import Importer, ReferenceFolderDialog
+
+    source_root = tmp_path / "Downloads" / "Crew 1"
+    source_root.mkdir(parents=True)
+    source = _csv(source_root / "crew1.csv", [(7, BASE_N + 7, BASE_E + 7, 507.0, "EP")])
+    job_root = tmp_path / "Job"
+    job_root.mkdir()
+    state = AppState(_project())
+    state.project.path = str(job_root / "Job.plb")
+
+    class _Win:
+        def __init__(self, app_state):
+            self.state = app_state
+
+        def _job_folder(self):
+            return job_root
+
+    tally = Importer(_Win(state)).import_reference_folder(
+        source_root, None, recursive=True, selected_files=[source])
+    stored = job_root / "Field Data" / source.name
+    assert tally["points"] == 1 and stored.is_file()
+    assert state.project.settings["data_folder"] == str(job_root / "Field Data")
+    assert state.project.settings["field_data_imports"][0]["size"] == source.stat().st_size
+
+    dlg = ReferenceFolderDialog(state, source_root, None, field_data_only=True)
+    assert dlg._imported_flags == [True]
+    assert dlg._checkboxes[0].isEnabled() is False
+    assert dlg.selected_files() == []
+
+    source.write_bytes(source.read_bytes() + b"\n")
+    dlg._refresh_files()
+    assert dlg._imported_flags == [False]
+    assert dlg._checkboxes[0].isEnabled() is True
+    assert dlg.selected_files() == [source]
+
+    # The manifest shares one undo step with its imported points.
+    assert state.undo().startswith("Import points")
+    assert not state.project.points
+    assert state.project.settings.get("field_data_imports", []) == []
+
+
 def test_folder_points_preview_dialog(tmp_path, qapp):
     from plumbline.ui.import_export import FolderPointsPreviewDialog
 

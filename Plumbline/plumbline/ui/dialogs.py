@@ -118,6 +118,17 @@ class SettingsDialog(FormDialog):
         self.sp_snap = ispin(int(s.get("snap_px")), 4, 40)
         self.sp_pt = ispin(int(s.get("point_size_px")), 3, 24)
         self.sp_lab = ispin(int(s.get("label_px")), 7, 24)
+        try:
+            control_tolerance = float(s.get("control_point_tolerance", 0.01))
+            if not math.isfinite(control_tolerance) or control_tolerance < 0:
+                control_tolerance = 0.01
+        except (TypeError, ValueError, OverflowError):
+            control_tolerance = 0.01
+        self.sp_control_tolerance = dspin(control_tolerance, 0.0, 10000.0, 4, 0.01)
+        self.sp_control_tolerance.setToolTip(
+            "Survey-point differences at or below this amount are treated as coordinate rounding. "
+            "The value is applied in each coordinate's stored units (horizontal for northing/easting, "
+            "vertical for elevation).")
         self.ed_cache = QLineEdit(s.get("tile_cache_dir") or "")
         self.ed_cache.setPlaceholderText(str(s.tile_cache_dir))
         self.chk_space_commands = QCheckBox("Separate a feature code from its line command")
@@ -134,6 +145,7 @@ class SettingsDialog(FormDialog):
         self.form.addRow("Snap distance (pixels):", self.sp_snap)
         self.form.addRow("Point symbol size (pixels):", self.sp_pt)
         self.form.addRow("Label size (pixels):", self.sp_lab)
+        self.form.addRow("Control comparison tolerance:", self.sp_control_tolerance)
         self.form.addRow("Imagery cache folder:", self.ed_cache)
         syntax_box = QGroupBox("Field Book command spacing")
         syntax_layout = QVBoxLayout(syntax_box)
@@ -200,6 +212,7 @@ class SettingsDialog(FormDialog):
         s.set("snap_px", self.sp_snap.value(), False)
         s.set("point_size_px", self.sp_pt.value(), False)
         s.set("label_px", self.sp_lab.value(), False)
+        s.set("control_point_tolerance", self.sp_control_tolerance.value(), False)
         s.set("space_between_commands", self.chk_space_commands.isChecked(), False)
         s.set("space_around_multicode_separator", self.chk_space_multicode.isChecked(), False)
         s.set("space_around_description_separator", self.chk_space_description.isChecked(), False)
