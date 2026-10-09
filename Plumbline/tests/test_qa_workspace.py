@@ -1062,8 +1062,11 @@ def test_common_error_rules_feed_point_proposals_default_to_correct_and_precede_
     assert dialog.autofix_suggestions[unknown_point.id].text() == "Proposed autofix: RCP ST"
     unknown_editor = next(editor for point, editor, _label in dialog.desc_edits
                           if point.id == unknown_point.id)
+    assert unknown_editor.text() == "BADCODE ST"
+    assert unknown_point.desc == "BADCODE ST"
+    dialog.autofix_buttons[unknown_point.id].click()
     assert unknown_editor.text() == "RCP ST"
-    assert unknown_point.desc == "BADCODE ST"  # The proposed text is staged, not committed.
+    assert unknown_point.desc == "BADCODE ST"  # Auto Fix stages; Apply/Save commits.
 
     dialog._open_inline_editor(common)
     assert [item[2].text() for item in dialog.sep_corrections] == ["RCP ST", "RCP"]
@@ -1243,10 +1246,10 @@ def test_fix_unknown_code_fieldbook_lookup_and_validation(win, app, auto, monkey
     second_auto_fix_button = dlg.autofix_buttons[p_unk2.id]
     assert auto_fix_button.isEnabled() and second_auto_fix_button.isEnabled()
 
-    # Fixed-description input uses a dark foreground on its pale validation background.
+    # Fixed starts with the original; clicking Auto Fix fills each key-in box.
     fixed_edit = next(item[1] for item in dlg.desc_edits if item[0].id == p_unk.id)
     second_fixed_edit = next(item[1] for item in dlg.desc_edits if item[0].id == p_unk2.id)
-    assert fixed_edit.text() == "RCP ST" and second_fixed_edit.text() == "RCP ST"
+    assert fixed_edit.text() == "BADCODE1 ST" and second_fixed_edit.text() == "BADCODE2 ST"
     assert "color: #1f2933" in fixed_edit.styleSheet()
     auto_fix_button.click()
     second_auto_fix_button.click()

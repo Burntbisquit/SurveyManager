@@ -3109,14 +3109,12 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
                 row_h.addWidget(lbl_orig, 1)
                 lay_p.addLayout(row_h)
 
-                # Keep the original visible above, while loading a safe proposal into this
-                # point's editable key-in box as a staged (not yet committed) correction.
-                # A saved draft always wins so navigating away and back preserves user edits.
+                # Keep the source description in Fixed until the user explicitly chooses
+                # Auto Fix; the proposal remains visible beside this point's key-in box.
+                # A saved draft wins so navigating away and back preserves user edits.
                 description_draft = finding.get("description_drafts", {}).get(p.id)
                 is_unknown, autofix_guess = self._autofix_guess_for_description(p.desc)
-                initial_desc = (autofix_guess if is_unknown and autofix_guess else p.desc)
-                if description_draft is not None:
-                    initial_desc = description_draft
+                initial_desc = p.desc if description_draft is None else description_draft
                 ed = QLineEdit(str(initial_desc or ""))
                 if is_unknown:
                     suggestion_text = (f"Proposed autofix: {autofix_guess}" if autofix_guess else

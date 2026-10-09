@@ -114,7 +114,16 @@ def test_curve_command_order_is_checked_across_points_and_repeated_curves_are_va
 
     nested = LC.detect_line_errors(
         rows("TOC ST", "TOC PC", "TOC PC", "TOC PT", "TOC END"), f2f_set=F2F)
-    assert any(issue["issue_type"] == "Line Order" for issue in nested)
+    assert any(issue["issue_type"] == "Line Order" and issue["oid"] == "3"
+               for issue in nested), "a second Start Curve must follow the first End Curve"
+
+    # End Curve must come before either End Line or Close; a terminator during an
+    # open curve is an order error, even when the later End Curve is on another point.
+    for terminator in ("END", "X"):
+        ended_before_curve = LC.detect_line_errors(
+            rows("TOC ST", "TOC PC", f"TOC {terminator}", "TOC PT"), f2f_set=F2F)
+        assert any(issue["issue_type"] == "Line Order" and issue["oid"] == "3"
+                   for issue in ended_before_curve), terminator
 
     # Detect invalid order within one description, plus a curve command that appears
     # after a prior point already ended the line.
@@ -268,6 +277,29 @@ def test_empty_description_is_not_reported_as_a_fix_points_warning():
     project.add_point(0, 0, 0, number="1", desc="")
     report = check_project(project, f2f={"toc"})
     assert all(finding.get("flag") != "EmptyDescription" for finding in report["findings"])
+
+
+def test_line_order_findings_are_errors_not_warnings():
+    from plumbline.core.project import Project
+    from plumbline.fieldwork.bridge import check_project
+
+    project = Project("Line order severity")
+    project.add_point(0, 0, 0, number="1", desc="TOC ST PC END PT")
+    report = check_project(project, f2f=F2F)
+    line_order_findings = [finding for finding in report["findings"]
+                           if finding.get("flag") == "LineOrderError"]
+    assert line_order_findings
+    assert all(finding["level"] == "error" for finding in line_order_findings)
+    assert any(finding.get("check") == "line: line order" for finding in line_order_findings)
+    assert any(finding.get("check") == "Line command out of order" for finding in line_order_findings)
+
+    repeated_curve_project = Project("Repeated curve start")
+    for i, desc in enumerate(("TOC ST", "TOC PC", "TOC PC", "TOC PT", "TOC END")):
+        repeated_curve_project.add_point(i, 0, 0, number=str(i + 1), desc=desc)
+    repeated_report = check_project(repeated_curve_project, f2f=F2F)
+    repeated_order = [finding for finding in repeated_report["findings"]
+                      if finding.get("check") == "line: line order"]
+    assert repeated_order and all(finding["level"] == "error" for finding in repeated_order)
 
 
 def test_the_dock_reports_the_line_issues_and_they_select_the_points(win, app):

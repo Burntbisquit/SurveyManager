@@ -877,7 +877,9 @@ def check_project(project, f2f=None, fieldbook_path=None, ne_tol: float | None =
             flag_rows = other_flags[:unknown_at] + common_errors + other_flags[unknown_at:]
         for name, rec in flag_rows:
             title = FLAG_TITLES.get(name, name)
-            lvl = "error" if name in {"UnknownCode", "SeparatorSpacingError"} else "warn"
+            lvl = "error" if name in {
+                "UnknownCode", "SeparatorSpacingError", "LineOrderError"
+            } else "warn"
             out["findings"].append({
                 "level": lvl, "check": title, "flag": name, "rows": sorted(rec["rows"]),
                 "message": f"{len(rec['rows'])} description(s) flagged {title.lower()}"
@@ -906,7 +908,8 @@ def check_project(project, f2f=None, fieldbook_path=None, ne_tol: float | None =
             rec = by_line[name]
             code = LC.ISSUE_FLAGS.get(name, name)
             out["findings"].append({
-                "level": "warn", "check": f"line: {name.lower()}", "flag": code,
+                "level": "error" if name == "Line Order" else "warn",
+                "check": f"line: {name.lower()}", "flag": code,
                 "rows": sorted(rec["rows"]),
                 "message": f"{len(rec['rows'])} field point(s) in line(s) with {name.lower()} - "
                            + " ".join(rec["samples"][:1]) + ".",
