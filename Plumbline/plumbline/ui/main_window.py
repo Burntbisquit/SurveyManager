@@ -392,6 +392,10 @@ class MainWindow(QMainWindow):
                                tip="Recode selected points in description coding to form a linework figure")
         self.a_edit_linework_coding = A("&Edit Linework Coding (Point Coder)...", self.edit_linework_coding_dialog, icon="polyline",
                                         tip="Inspect, reverse, close/open, or recode figure points")
+        self.a_edit_line_geometry = A("Edit Line &Geometry...", self.edit_selected_line_geometry, icon="polyline",
+                                     tip="Stage vertex, curve, endpoint, and geometry edits with a preview")
+        self.a_join_lines = A("Join Selected &Lines...", self.join_selected_lines_dialog, icon="polyline",
+                              tip="Draft, orient, average, condense, preview, and accept selected line joins")
         self.a_fieldbook = A("&Field Book...", self.open_fieldbook_dialog, icon="layers",
                              tip="Field Book: Convert Carlson code table, Select/Pull field book, or View field book report")
         self.a_f2f = self.a_fieldbook
@@ -523,7 +527,8 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         m.addActions([self.a_crs, self.a_calc, self.a_file_crs])
         m.addSeparator()
-        m.addActions([self.a_fix_points, self.a_fix_linework, self.a_fieldbook, self.a_codes, self.a_linework, self.a_join_points, self.a_edit_linework_coding])
+        m.addActions([self.a_fix_points, self.a_fix_linework, self.a_fieldbook, self.a_codes, self.a_linework,
+                      self.a_join_points, self.a_join_lines, self.a_edit_line_geometry, self.a_edit_linework_coding])
         m.addSeparator()
         m.addActions([self.a_cogo, self.a_transform])
         m = add_menu("S&urface")
@@ -1453,10 +1458,34 @@ class MainWindow(QMainWindow):
 
     def edit_linework_coding_dialog(self):
         sel_ents = [self.state.project.entities[eid] for eid in self.state.sel_entities if eid in self.state.project.entities]
-        poly = next((e for e in sel_ents if isinstance(e, Polyline) and (e.derived.startswith("linework") or (e.attrs or {}).get("points"))), None)
+        poly = next((e for e in sel_ents if isinstance(e, Polyline) and
+                     (e.derived.startswith("linework") or (e.attrs or {}).get("points"))), None)
+        if poly is None:
+            info_box(self, "Edit Linework Coding", "Select a coded linework polyline first.")
+            return
         from .linework_dialog import EditLineworkCodingDialog
         dlg = EditLineworkCodingDialog(self.state, poly, self)
         dlg.exec()
+
+    def edit_selected_line_geometry(self):
+        """Open the transactional vertex/curve editor for exactly one selected polyline."""
+        polylines = [self.state.project.entities[eid] for eid in sorted(self.state.sel_entities)
+                     if isinstance(self.state.project.entities.get(eid), Polyline)]
+        if len(polylines) != 1:
+            info_box(self, "Edit Line Geometry", "Select exactly one polyline in the drawing or Properties panel.")
+            return
+        from .linework_editor_dialog import LineEditorDialog
+        LineEditorDialog(self.state, polylines[0], self).exec()
+
+    def join_selected_lines_dialog(self):
+        """Open a separate preview-first workflow for joining two or more selected polylines."""
+        polylines = [self.state.project.entities[eid] for eid in sorted(self.state.sel_entities)
+                     if isinstance(self.state.project.entities.get(eid), Polyline)]
+        if len(polylines) < 2:
+            info_box(self, "Join Lines", "Select two or more open polylines in the drawing first.")
+            return
+        from .linework_editor_dialog import JoinLinesDialog
+        JoinLinesDialog(self.state, polylines, self).exec()
 
     def cogo_dialog(self):
         TraverseDialog(self.state, self).exec()

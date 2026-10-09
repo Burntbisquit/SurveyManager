@@ -321,12 +321,80 @@ class Project:
         return {"matched": matched, "unknown": unknown}
 
     def process_linework(self, order: str = "file") -> dict:
-        """(Re)build linework from coded points.  Replaces previously generated linework."""
+        """(Re)build coded linework, respecting geometry edits accepted as manual overrides."""
+        manual_overrides = {}
+        for entity in self.entities.values():
+            if not isinstance(entity, Polyline):
+                continue
+            attrs = entity.attrs or {}
+            if not attrs.get("manual_linework_override"):
+                continue
+            raw_scopes = attrs.get("linework_override_scopes", []) or []
+            valid_scopes = False
+            if isinstance(raw_scopes, (tuple, list)):
+                for raw in raw_scopes:
+                    if not isinstance(raw, dict) or not str(raw.get("code", "")).strip():
+                        continue
+                    code = str(raw.get("code", "")).strip()
+                    string = str(raw.get("string", "") or "").strip()
+                    source_ids = set()
+                    for pid in raw.get("point_ids", []) or []:
+                        try:
+                            source_ids.add(int(pid))
+                        except (TypeError, ValueError):
+                            continue
+                    source_sequences = set()
+                    for sequence in raw.get("source_sequences", []) or []:
+                        if not isinstance(sequence, (tuple, list)) or len(sequence) < 2:
+                            continue
+                        try:
+                            source_sequences.add(tuple(int(pid) for pid in sequence))
+                        except (TypeError, ValueError):
+                            continue
+                    key = (code.casefold(), string.casefold())
+                    manual_overrides.setdefault(key, []).append((source_ids, source_sequences))
+                    valid_scopes = True
+            if not valid_scopes:
+                raw_ids = attrs.get("linework_override_point_ids", []) or []
+                source_ids = set()
+                for pid in raw_ids:
+                    try:
+                        source_ids.add(int(pid))
+                    except (TypeError, ValueError):
+                        continue
+                source_sequences = set()
+                for sequence in attrs.get("linework_override_source_sequences", []) or []:
+                    if not isinstance(sequence, (tuple, list)) or len(sequence) < 2:
+                        continue
+                    try:
+                        source_sequences.add(tuple(int(pid) for pid in sequence))
+                    except (TypeError, ValueError):
+                        continue
+                for raw in attrs.get("linework_override_keys", []) or []:
+                    if isinstance(raw, (tuple, list)) and len(raw) >= 2 and str(raw[0]).strip():
+                        key = (str(raw[0]).casefold(), str(raw[1]).casefold())
+                        manual_overrides.setdefault(key, []).append((source_ids, source_sequences))
         removed = self.remove_derived("linework")
         strings = build_linework(self.points.values(), self.codes, order,
                                  commands=self.settings.get("f2f_commands"))
         made = 0
         for ls in strings:
+            override_sets = manual_overrides.get((str(ls.code).casefold(), str(ls.string).casefold()), [])
+            line_sequence = tuple(int(pid) for pid in ls.ids)
+            line_ids = set(line_sequence)
+            suppressed = False
+            for source_ids, source_sequences in override_sets:
+                if source_sequences:
+                    if any(line_sequence == sequence or line_sequence == sequence[::-1]
+                           for sequence in source_sequences):
+                        suppressed = True
+                        break
+                elif source_ids and line_ids and line_ids.issubset(source_ids):
+                    # Compatibility for old overrides that only recorded the source point set.
+                    suppressed = True
+                    break
+            if suppressed:
+                continue
             fc = self.codes.get(ls.code)
             pts = [self.points[i] for i in ls.ids if i in self.points]
             if len(pts) < 2:
@@ -334,7 +402,8 @@ class Project:
             verts = np.array([[p.x, p.y, p.z] for p in pts])
             self.add_polyline(verts, fc.layer or "0", ls.closed, None,
                               "breakline" if fc.breakline else "line", "linework",
-                              {"code": ls.code, "string": ls.string, "points": [p.number for p in pts]})
+                              {"code": ls.code, "string": ls.string,
+                               "points": [p.number for p in pts], "point_ids": [p.id for p in pts]})
             made += 1
         self.touch()
         return {"strings": made, "replaced": removed}
