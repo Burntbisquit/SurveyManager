@@ -1771,10 +1771,11 @@ def test_fix_point_maximized_window_fills_workbench_at_multiple_sizes(win, app):
         app.processEvents()
 
 
-def test_main_window_opens_qa_workbench_as_modal_central_window(win, app):
+def test_main_window_opens_qa_workbench_as_modal_central_window(win, app, monkeypatch):
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QMainWindow
 
+    monkeypatch.setattr(win, "_ensure_fieldbook_for_processing", lambda **_kwargs: True)
     win.open_fix_point_errors()
     app.processEvents()
 

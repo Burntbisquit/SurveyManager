@@ -42,6 +42,7 @@ DEFAULTS = {
     "plugin_dirs": [],
     "point_columns": ["source_file", "source_folder"],   # extra columns in the point list
     "control_point_tolerance": 0.01,  # project-coordinate units; smaller differences count as rounding
+    "require_fieldbook_for_processing": True,  # open the Field Book tool before code/linework QA or processing
     "space_between_commands": True,
     "space_around_multicode_separator": True,
     "space_around_description_separator": True,
@@ -57,7 +58,7 @@ ALWAYS_SAVED = ("theme", "coord_order", "angle_format", "angle_dms", "angle_deci
                 "tile_cache_dir", "custom_tile_sources", "replaced_tile_sources",
                 "hidden_tile_sources", "proj_grid_url", "update_url", "secondary_readout",
                 "plugin_dirs", "crs_favorites", "point_columns", "control_point_tolerance",
-                "space_between_commands",
+                "require_fieldbook_for_processing", "space_between_commands",
                 "space_around_multicode_separator", "space_around_description_separator")
 
 

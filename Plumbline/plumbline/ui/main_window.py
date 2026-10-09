@@ -934,6 +934,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ field data / job folder
     def open_fieldwork(self):
         """Survey > Fieldwork Manager - the field-data window, pointed at this job."""
+        if not self._ensure_fieldbook_for_processing():
+            return
         from .fieldwork_window import open_fieldwork_manager
         win = open_fieldwork_manager(self)
         if win is not None:
@@ -1307,6 +1309,9 @@ class MainWindow(QMainWindow):
         self.state.log(f"Opened {path}", "ok")
         if self.state.project.crs.is_local:
             self._ensure_project_crs()
+        # The Field Book step is automatic, not another yes/no question. Closing its tool leaves
+        # the project open; processing actions will reopen it and remain blocked until loaded.
+        self._ensure_fieldbook_for_processing(notify=False)
         imported_points = self._ask_field_data_route("new" if route == "new" else "existing")
         self._complete_import_onboarding(imported_points=imported_points)
 
@@ -1316,6 +1321,7 @@ class MainWindow(QMainWindow):
         from ..sample import make_sample_project
         self.state.set_project(make_sample_project(), dirty=False)
         self.state.log("Sample project loaded - a SYNTHETIC site (not a real survey). Try Data Quality, Contours, Volumes and Imagery.", "ok")
+        self._ensure_fieldbook_for_processing(notify=False)
 
     def open_sample_real(self):
         """File > Open Sample Project > Real World - a real reduced survey, in its job folder.
@@ -1547,11 +1553,15 @@ class MainWindow(QMainWindow):
 
     def open_fix_point_errors(self):
         """Survey > Fix Point Errors: open the dedicated Fix Point Errors workbench."""
+        if not self._ensure_fieldbook_for_processing():
+            return
         from .qa_workspace import FixPointErrorsDialog
         self._show_modal_qa_workbench(FixPointErrorsDialog(self.state, self))
 
     def open_fix_linework(self):
         """Survey > Fix Linework: open the dedicated Fix Linework workbench."""
+        if not self._ensure_fieldbook_for_processing():
+            return
         from .qa_workspace import FixLineworkDialog
         self._show_modal_qa_workbench(FixLineworkDialog(self.state, self))
 
@@ -1560,6 +1570,52 @@ class MainWindow(QMainWindow):
 
     def codes_dialog(self):
         FeatureCodesDialog(self.state, self).exec()
+
+    def _has_active_fieldbook(self) -> bool:
+        """Whether this project has a readable Field Book with an active code vocabulary."""
+        from ..fieldwork.bridge import vocabulary_for
+
+        project = self.state.project
+        root = self._job_folder()
+        explicit = project.settings.get("fieldbook_file") if project.settings else None
+        if explicit:
+            path = Path(str(explicit)).expanduser()
+            if not path.is_absolute():
+                base = root or (Path(project.path).expanduser().parent if project.path else None)
+                if base is not None:
+                    path = base / path
+            explicit = path if path.is_file() else None
+
+        vocabulary = vocabulary_for(project, job_root=root, fieldbook=explicit)
+        source = str(vocabulary.get("source", ""))
+        raw_path = str(vocabulary.get("path") or "").strip()
+        if not raw_path:
+            return False
+        book_path = Path(raw_path).expanduser()
+        if not book_path.is_absolute():
+            base = root or (Path(project.path).expanduser().parent if project.path else None)
+            if base is not None:
+                book_path = base / book_path
+        return (source in {"field book", "field book + job codes"}
+                and bool(vocabulary.get("codes")) and book_path.is_file())
+
+    def _ensure_fieldbook_for_processing(self, *, notify: bool = True) -> bool:
+        """Open Field Book automatically when required; refuse processing if it stays unavailable."""
+        if not bool(settings().get("require_fieldbook_for_processing", True)):
+            return True
+        if self._has_active_fieldbook():
+            return True
+
+        self.open_fieldbook_dialog()
+        if self._has_active_fieldbook():
+            return True
+        if notify:
+            info_box(
+                self, "Field Book Required",
+                "Load a readable Field Book with feature codes before running point/code or linework "
+                "processing. The Field Book tool was opened; select or convert a book, or close the tool. "
+                "Processing stays blocked until a book is loaded. You can turn off this requirement in Settings.")
+        return False
 
     def open_fieldbook_dialog(self):
         """Survey > Field Book: open the unified Field Book manager (Convert, Select, Report)."""
@@ -1603,6 +1659,8 @@ class MainWindow(QMainWindow):
         """Survey > Field Book: delegate to Field Book manager."""
         self.open_fieldbook_dialog()
     def apply_codes(self):
+        if not self._ensure_fieldbook_for_processing():
+            return
         with self.state.edit("Apply feature codes"):
             r = self.state.project.apply_codes_to_points()
         msg = f"Feature codes applied: {r['matched']:,} point(s) matched."
@@ -1612,11 +1670,15 @@ class MainWindow(QMainWindow):
         self.state.log(msg, "ok" if not r["unknown"] else "warn")
 
     def process_linework(self):
+        if not self._ensure_fieldbook_for_processing():
+            return
         with self.state.edit("Process linework"):
             r = self.state.project.process_linework()
         self.state.log(f"Linework: {r['strings']} string(s) created" + (f", {r['replaced']} previous replaced" if r["replaced"] else "") + ".", "ok")
 
     def join_selected_points_dialog(self):
+        if not self._ensure_fieldbook_for_processing():
+            return
         pts = list(self.state.sel_points)
         if len(pts) < 2:
             info_box(self, "Join Points", "Select 2 or more points in the drawing or point list first.")
@@ -1626,6 +1688,8 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def edit_linework_coding_dialog(self):
+        if not self._ensure_fieldbook_for_processing():
+            return
         sel_ents = [self.state.project.entities[eid] for eid in self.state.sel_entities if eid in self.state.project.entities]
         poly = next((e for e in sel_ents if isinstance(e, Polyline) and
                      (e.derived.startswith("linework") or (e.attrs or {}).get("points"))), None)
@@ -1638,6 +1702,8 @@ class MainWindow(QMainWindow):
 
     def edit_selected_line_geometry(self):
         """Open the transactional vertex/curve editor for exactly one selected polyline."""
+        if not self._ensure_fieldbook_for_processing():
+            return
         polylines = [self.state.project.entities[eid] for eid in sorted(self.state.sel_entities)
                      if isinstance(self.state.project.entities.get(eid), Polyline)]
         if len(polylines) != 1:
@@ -1648,6 +1714,8 @@ class MainWindow(QMainWindow):
 
     def join_selected_lines_dialog(self):
         """Open a separate preview-first workflow for joining two or more selected polylines."""
+        if not self._ensure_fieldbook_for_processing():
+            return
         polylines = [self.state.project.entities[eid] for eid in sorted(self.state.sel_entities)
                      if isinstance(self.state.project.entities.get(eid), Polyline)]
         if len(polylines) < 2:
@@ -2003,6 +2071,8 @@ class MainWindow(QMainWindow):
         self._show(reports.polyline_report(pr, ids))
 
     def report_qa(self):
+        if not self._ensure_fieldbook_for_processing():
+            return
         pr = self.state.project
         self._show(reports.qa_report(pr, run_checks(pr)))
 

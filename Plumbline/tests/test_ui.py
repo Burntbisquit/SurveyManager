@@ -118,6 +118,8 @@ def test_opening_an_unassigned_project_asks_for_crs_before_field_data_route(win,
     Project("Unassigned").save(project_path)
     events = []
     monkeypatch.setattr(win, "_ensure_project_crs", lambda: events.append("CRS") or False)
+    monkeypatch.setattr(win, "_ensure_fieldbook_for_processing",
+                        lambda notify=True: events.append("Field Book") or False)
     monkeypatch.setattr(win, "_ask_field_data_route",
                         lambda route: events.append(("route", route)) or 0)
     monkeypatch.setattr(win, "_complete_import_onboarding",
@@ -125,7 +127,7 @@ def test_opening_an_unassigned_project_asks_for_crs_before_field_data_route(win,
 
     win._open(str(project_path))
 
-    assert events == ["CRS", ("route", "existing"), ("complete", 0)]
+    assert events == ["CRS", "Field Book", ("route", "existing"), ("complete", 0)]
 
 
 def test_imagery_import_is_blocked_if_the_project_crs_picker_is_cancelled(win, monkeypatch, tmp_path):
@@ -166,6 +168,67 @@ def test_accepting_default_imagery_adds_the_shipped_esri_tile_source(win, monkey
     assert specs[0]["kind"] == "tiles"
     assert specs[0]["name"] == "Esri World Imagery"
     assert specs[0]["source"]["name"] == "Esri World Imagery"
+
+
+def test_processing_actions_open_fieldbook_and_are_blocked_if_it_stays_unloaded(win, monkeypatch, auto):
+    from plumbline.core.settings import settings
+
+    monkeypatch.setitem(settings()._data, "require_fieldbook_for_processing", True)
+    monkeypatch.setattr(win, "_has_active_fieldbook", lambda: False)
+    opened = []
+    monkeypatch.setattr(win, "open_fieldbook_dialog", lambda: opened.append("Field Book"))
+    processed = []
+    monkeypatch.setattr(win.state.project, "apply_codes_to_points", lambda: processed.append("codes"))
+    monkeypatch.setattr(win.state.project, "process_linework", lambda: processed.append("linework"))
+
+    win.open_fix_point_errors()
+    win.open_fix_linework()
+    win.apply_codes()
+    win.process_linework()
+    win.report_qa()
+    win.open_fieldwork()
+    win.edit_selected_line_geometry()
+
+    assert len(opened) == 7
+    assert processed == []
+    assert getattr(win, "_qa_workbench_window", None) is None
+
+
+def test_disabling_the_fieldbook_requirement_allows_processing(win, monkeypatch):
+    from plumbline.core.settings import settings
+
+    monkeypatch.setitem(settings()._data, "require_fieldbook_for_processing", False)
+    monkeypatch.setattr(win, "_has_active_fieldbook", lambda: False)
+    opened = []
+    monkeypatch.setattr(win, "open_fieldbook_dialog", lambda: opened.append("Field Book"))
+    processed = []
+    monkeypatch.setattr(win.state.project, "process_linework",
+                        lambda: processed.append("linework") or {"strings": 0, "replaced": 0})
+    monkeypatch.setattr(win.state.project, "apply_codes_to_points",
+                        lambda: processed.append("codes") or {"matched": 0, "unknown": {}})
+
+    assert win._ensure_fieldbook_for_processing()
+    win.process_linework()
+    win.apply_codes()
+
+    assert opened == []
+    assert processed == ["linework", "codes"]
+
+
+def test_empty_job_fieldbook_does_not_satisfy_processing_requirement(win, tmp_path):
+    from plumbline.fieldwork.io_carlson import write_fwb_file
+
+    project = win.state.project
+    project.path = str(tmp_path / "job" / "job.plb")
+    book = tmp_path / "job" / "Field Book" / "job.fwb"
+    book.parent.mkdir(parents=True)
+    project.settings["fieldbook_file"] = str(book)
+
+    assert write_fwb_file(book, ["Code", "Description"], [])
+    assert not win._has_active_fieldbook()
+
+    assert write_fwb_file(book, ["Code", "Description"], [["EA", "Asphalt"]])
+    assert win._has_active_fieldbook()
 
 
 def test_button_highlights_use_neutral_theme_colors(win):

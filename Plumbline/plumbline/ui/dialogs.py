@@ -129,6 +129,13 @@ class SettingsDialog(FormDialog):
             "Survey-point differences at or below this amount are treated as coordinate rounding. "
             "The value is applied in each coordinate's stored units (horizontal for northing/easting, "
             "vertical for elevation).")
+        self.chk_require_fieldbook = QCheckBox(
+            "Require a Field Book before point, code, and linework processing")
+        self.chk_require_fieldbook.setChecked(bool(s.get("require_fieldbook_for_processing", True)))
+        self.chk_require_fieldbook.setToolTip(
+            "When enabled, opening a project without a usable Field Book opens the Field Book tool automatically. "
+            "Processing actions open it again if needed and stay blocked unless a Field Book is loaded. "
+            "Turn this off to allow processing without one.")
         self.ed_cache = QLineEdit(s.get("tile_cache_dir") or "")
         self.ed_cache.setPlaceholderText(str(s.tile_cache_dir))
         self.chk_space_commands = QCheckBox("Separate a feature code from its line command")
@@ -146,6 +153,7 @@ class SettingsDialog(FormDialog):
         self.form.addRow("Point symbol size (pixels):", self.sp_pt)
         self.form.addRow("Label size (pixels):", self.sp_lab)
         self.form.addRow("Control comparison tolerance:", self.sp_control_tolerance)
+        self.form.addRow("", self.chk_require_fieldbook)
         self.form.addRow("Imagery cache folder:", self.ed_cache)
         syntax_box = QGroupBox("Field Book command spacing")
         syntax_layout = QVBoxLayout(syntax_box)
@@ -213,6 +221,7 @@ class SettingsDialog(FormDialog):
         s.set("point_size_px", self.sp_pt.value(), False)
         s.set("label_px", self.sp_lab.value(), False)
         s.set("control_point_tolerance", self.sp_control_tolerance.value(), False)
+        s.set("require_fieldbook_for_processing", self.chk_require_fieldbook.isChecked(), False)
         s.set("space_between_commands", self.chk_space_commands.isChecked(), False)
         s.set("space_around_multicode_separator", self.chk_space_multicode.isChecked(), False)
         s.set("space_around_description_separator", self.chk_space_description.isChecked(), False)
