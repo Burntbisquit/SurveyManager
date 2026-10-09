@@ -289,6 +289,27 @@ def test_editor_dialog_stages_actions_and_exposes_project_actions():
         app.processEvents()
 
 
+def test_existing_point_coder_keeps_quick_actions_staged_until_apply():
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+    from plumbline.ui.linework_dialog import EditLineworkCodingDialog
+
+    app = QApplication.instance() or QApplication([])
+    project, points, line = _coded_project()
+    original = {point.id: point.desc for point in points}
+    state = _State(project)
+    dialog = EditLineworkCodingDialog(state, line)
+    try:
+        dialog._reverse()
+        assert {point.id: point.desc for point in points} == original
+        assert {draft.id: draft.desc for draft in dialog.points} != original
+        dialog.reject()
+        assert {point.id: point.desc for point in points} == original
+    finally:
+        dialog.close()
+        app.processEvents()
+
+
 def test_join_dialog_requires_an_explicit_preview_before_accept():
     pytest.importorskip("PySide6")
     from PySide6.QtWidgets import QApplication
