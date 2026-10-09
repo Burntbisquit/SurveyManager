@@ -917,33 +917,17 @@ class MainWindow(QMainWindow):
         if not dlg.exec():
             return
         name = dlg.project_name
-        if dlg.setup_job:
-            # Create the job folder first, with the cancelable progress dialog.  If the
-            # user cancels, nothing was created and nothing was opened - no half-made job.
-            from .job_setup import run_job_setup
-            creation = run_job_setup(self, dlg.setup_parent_folder, name, dlg.setup_template,
-                                     dlg.setup_weeks, dlg.crs.label, crs_record=dlg.crs.to_dict())
-            if creation is None:
-                self.state.log("Job folder setup cancelled", "warn")
-                return
-            self._open(str(creation.paths.project_file))
-            self.state.log(f"Created job folder {creation.paths.root} - {creation.summary}", "ok")
-            return
-        # Even the lightweight New Project choice gets its own package folder.  It is
-        # saved before the drawing is opened so the generic Untitled workspace can
-        # never collect unbacked edits.
-        from ..core import jobtemplate as JT
-        template = JT.MINIMAL_TEMPLATE
-        parent_folder = dlg.setup_parent_folder or str(Path.cwd())
-        try:
-            package = create_project_package(Project(name, dlg.crs), parent_folder, name,
-                                             template=template)
-        except Exception as ex:
-            error_box(self, "New Project Package", str(ex), traceback.format_exc())
+        # Every new project is a standard job package.  There is no minimal-folder branch or
+        # folder-style choice; the fixed folder list is previewed in the setup panel.
+        from .job_setup import run_job_setup
+        creation = run_job_setup(self, dlg.setup_parent_folder, name, dlg.setup_template,
+                                 dlg.setup_weeks, dlg.crs.label, crs_record=dlg.crs.to_dict())
+        if creation is None:
+            self.state.log("Job folder setup cancelled", "warn")
             return
         self._job_root_choice = None
-        self.state.set_project(package)
-        self.state.log(f"Created project package {package.path} ({dlg.crs.label})", "ok")
+        self._open(str(creation.paths.project_file), route="new")
+        self.state.log(f"Created job folder {creation.paths.root} - {creation.summary}", "ok")
 
     # ------------------------------------------------------------------ field data / job folder
     def open_fieldwork(self):
@@ -1163,6 +1147,85 @@ class MainWindow(QMainWindow):
                 return str(data)
         return str(folder) if folder else ""
 
+    def _default_field_data_folder(self) -> str:
+        """The user-level import folder, falling back to Downloads and then Home."""
+        configured = str(settings().get("field_data_import_folder", "") or "").strip()
+        if configured and Path(configured).expanduser().is_dir():
+            return str(Path(configured).expanduser())
+        downloads = Path.home() / "Downloads"
+        return str(downloads if downloads.is_dir() else Path.home())
+
+    def _existing_field_data_start(self) -> str:
+        """Start at the last field-work source folder, falling back to packaged Field Data."""
+        source = self.state.project.settings.get("field_data_source_folder")
+        if source and Path(source).expanduser().is_dir():
+            return str(Path(source).expanduser())
+        data = self.state.project.settings.get("data_folder")
+        if data and Path(data).expanduser().is_dir():
+            return str(Path(data).expanduser())
+        root = self._job_folder()
+        if root is not None and (root / "Field Data").is_dir():
+            return str(root / "Field Data")
+        return self._default_field_data_folder()
+
+    def _ask_field_data_route(self, route: str):
+        """Initial-project onboarding: offer a field-data folder scan/import."""
+        if route == "new":
+            title = "Import Field Data"
+            question = "Would you like to select and import a field-data folder now?"
+            detail = "The selected point files will be copied into this project's standard Field Data folder."
+            start = self._default_field_data_folder()
+            picker_title = "Select a Field Data Folder"
+        else:
+            title = "Check Field Data"
+            question = "Would you like to check the parent field-work folder for new survey files?"
+            detail = "Unchanged files already imported into this project will be greyed out."
+            start = self._existing_field_data_start()
+            picker_title = "Choose the Parent Field-Work Folder"
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(title)
+        box.setText(question)
+        box.setInformativeText(detail)
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        folder = QFileDialog.getExistingDirectory(self, picker_title, start)
+        if not folder:
+            return
+        settings().set("field_data_import_folder", str(Path(folder).expanduser()))
+        self._run_field_data_folder_import(Path(folder))
+
+    def _run_field_data_folder_import(self, folder: Path):
+        """Show the reusable per-file picker and import only its selected field-data files."""
+        folder = Path(folder).expanduser()
+        if not folder.is_dir():
+            error_box(self, "Import Field Data", f"{folder} is not a folder.")
+            return
+        dlg = ReferenceFolderDialog(self.state, folder, self, field_data_only=True)
+        if not dlg.exec():
+            return
+        selected = dlg.selected_files()
+        tally = self.importer.import_reference_folder(
+            folder, None, dlg.chk_sub.isChecked(), selected_files=selected)
+        if not tally.get("points"):
+            error_box(self, "Import Field Data",
+                      f"No points were imported from {folder.name}."
+                      + (f"\n\n{tally.get('failed', 0)} file(s) could not be read; the message log names them."
+                         if tally.get("failed") else ""))
+            return
+        self.state.log(
+            f"Field data import: {describe_folder_import(tally)} - copied to the project's "
+            f"Field Data folder - from {folder}", "ok")
+        if tally.get("failed"):
+            info_box(self, "Import Field Data",
+                     f"{tally['points']:,} point(s) came in from {tally['files']} file(s).\n\n"
+                     f"{tally['failed']} file(s) could not be read and were skipped; the message log "
+                     "names them and says why.")
+
     def open_project(self):
         if not self.maybe_save():
             return
@@ -1174,13 +1237,14 @@ class MainWindow(QMainWindow):
         if self.maybe_save():
             self._open(path)
 
-    def _open(self, path):
+    def _open(self, path, *, route: str = "existing"):
         try:
             self.state.open_project(path)
         except Exception as ex:
             error_box(self, "Open Project", f"Could not open {Path(path).name}:\n{ex}", traceback.format_exc())
             return
         self.state.log(f"Opened {path}", "ok")
+        self._ask_field_data_route("new" if route == "new" else "existing")
 
     def open_sample(self):
         if not self.maybe_save():

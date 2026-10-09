@@ -51,6 +51,14 @@ class ProjectPackageDialog(QDialog):
         self.lbl_preview.setWordWrap(True)
         self.lbl_preview.setStyleSheet("color: #777;")
         root.addWidget(self.lbl_preview)
+
+        folder_lines = [f"  {folder.name}/ - {folder.purpose}" for folder in JT.JOB_TEMPLATE.folders]
+        self.lbl_folders = QLabel("Standard folders created:\n" + "\n".join(folder_lines))
+        self.lbl_folders.setObjectName("standardFolderPreview")
+        self.lbl_folders.setWordWrap(True)
+        self.lbl_folders.setStyleSheet("color: #777; font-family: Consolas, monospace;")
+        root.addWidget(self.lbl_folders)
+
         self.ed_name.textChanged.connect(self._refresh_preview)
         self.ed_parent.textChanged.connect(self._refresh_preview)
 

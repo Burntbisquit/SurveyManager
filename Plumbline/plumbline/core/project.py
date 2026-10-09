@@ -555,7 +555,7 @@ class Project:
             if self.path:
                 root = Path(self.path).expanduser().resolve().parent
                 data["settings"] = copy.deepcopy(self.settings)
-                for key in ("fieldbook_file", "f2f_path", "data_folder"):
+                for key in ("fieldbook_file", "f2f_path", "data_folder", "field_data_source_folder"):
                     value = data["settings"].get(key)
                     if value:
                         data["settings"][key] = _package_relative_path(root, value)
@@ -638,7 +638,7 @@ class Project:
         p.path = str(path)
         if p._portable_paths:
             root = Path(path).expanduser().resolve().parent
-            for key in ("fieldbook_file", "f2f_path", "data_folder"):
+            for key in ("fieldbook_file", "f2f_path", "data_folder", "field_data_source_folder"):
                 value = p.settings.get(key)
                 if value:
                     p.settings[key] = _package_absolute_path(root, value)

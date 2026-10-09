@@ -323,18 +323,20 @@ def test_welcome_help_about_plugins_dialogs_open(win, app, auto):
     win.show_welcome()                                                 # exec auto-accepts, choice "none"
 
 
-def test_new_project_dialog_unassigned_texas_and_full_search(win, app, auto):
+def test_new_project_dialog_unassigned_texas_and_full_search(win, app, auto, monkeypatch):
     from plumbline.ui.new_project import NewProjectDialog
     # 1. the default: no coordinate system, units chosen, and a flag when something needs a CRS
     d = NewProjectDialog(win)
-    assert d.r_unassigned.isChecked() and not d.setup_job is None
+    assert d.r_unassigned.isChecked() and d.setup_job is True
+    assert not hasattr(d.setup, "cmb_style") and not hasattr(d.setup, "chk")
+    assert all(name in d.setup.lbl_preview.text() for name in
+               ("Field Data", "Field Book", "Control", "Drawings", "Surfaces", "Imagery", "Reports"))
     assert d.extra.isHidden() and d.lbl_heights.isHidden()
     assert d.extra.chk_ground.isHidden() and d.extra.ground_hint.isHidden()
     assert all(d.extra.ground_form.isRowVisible(w) is False
                for w in (d.extra.sp_by, d.extra.sp_bx, d.extra.sp_cf))
     d.ed_name.setText("Job 42")
     d.cmb_unit.setCurrentIndex(d.cmb_unit.findData("m"))
-    d.setup.chk.setChecked(False)                                      # do not build a job folder on disk
     d._accept()
     assert d.crs.is_unassigned and d.crs.unit == "m" and d.project_name == "Job 42"
     # ...and that an unassigned project draws fine but refuses anything geodetic, by name
@@ -356,7 +358,6 @@ def test_new_project_dialog_unassigned_texas_and_full_search(win, app, auto):
     d2.r_crs.setChecked(True)
     assert not d2.extra.isHidden() and not d2.lbl_heights.isHidden()
     assert not d2.extra.chk_ground.isHidden() and d2.extra.ground_form.isRowVisible(d2.extra.sp_cf)
-    d2.setup.chk.setChecked(False)
     d2._accept()
     assert d2.crs.authority == "EPSG:6584" and d2.crs.unit == "ftUS"
     assert d2.crs.unit_factor == pytest.approx(1200 / 3937)
@@ -365,7 +366,6 @@ def test_new_project_dialog_unassigned_texas_and_full_search(win, app, auto):
     d3 = NewProjectDialog(win)
     d3.r_other.setChecked(True)
     d3.picker.select_key("EPSG:6583")
-    d3.setup.chk.setChecked(False)
     d3._accept()
     assert d3.crs.authority == "EPSG:6583" and d3.crs.unit == "m"
 
@@ -373,7 +373,6 @@ def test_new_project_dialog_unassigned_texas_and_full_search(win, app, auto):
     #    realisations, so 2276 means 2276.  The 2011 equivalent is offered, in one click,
     #    on the coordinate-system dialog (never applied behind the user's back).
     d4 = NewProjectDialog(win)
-    d4.setup.chk.setChecked(False)
     d4.r_other.setChecked(True)
     assert not d4.extra.isHidden() and not d4.lbl_heights.isHidden()
     d4.picker.select_key("EPSG:2276")
@@ -381,8 +380,19 @@ def test_new_project_dialog_unassigned_texas_and_full_search(win, app, auto):
     assert d4.crs.authority == "EPSG:2276" and d4.crs.is_legacy_zone
     assert d4.crs.legacy_replacement() == 6584
 
-    win.new_project()                                                  # nothing chosen -> friendly error, project unchanged
+    from plumbline.ui.new_project import NewProjectDialog
+    monkeypatch.setattr(NewProjectDialog, "exec", lambda self: 0)       # cancel creation in this UI-only test
+    win.new_project()
     assert win.state.project.name.startswith("Sample")
+
+
+def test_save_as_dialog_shows_the_fixed_standard_folder_tree(win, app):
+    from plumbline.ui.project_package_dialog import ProjectPackageDialog
+
+    dlg = ProjectPackageDialog(win, name="Job 42", parent_folder="/tmp")
+    preview = dlg.lbl_folders.text()
+    for folder in ("Field Data", "Field Book", "Control", "Drawings", "Surfaces", "Imagery", "Reports"):
+        assert f"{folder}/" in preview
 
 
 def test_find_select_all_zoom_and_layer_creation(win, app, auto, monkeypatch):

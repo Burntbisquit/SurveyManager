@@ -27,6 +27,7 @@ DEFAULTS = {
     "crs_favorites": ["EPSG:2276", "EPSG:6584", "EPSG:32138", "EPSG:6583", "EPSG:4326", "EPSG:4269",
                       "EPSG:6318", "EPSG:26914", "EPSG:6343", "EPSG:32614", "EPSG:3857"],
     "recent_files": [],
+    "field_data_import_folder": "",  # last field-data folder chooser location; machine-specific
     "tile_cache_dir": "",
     "offline_imagery": False,
     "proj_network": False,

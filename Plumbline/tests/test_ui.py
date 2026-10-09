@@ -713,6 +713,7 @@ def test_save_dirty_open_roundtrip(win, app, auto, tmp_path, monkeypatch):
     st.new_project("blank", C.ProjectCRS.local("m"))
     win.open_project_path(path)
     assert len(win.state.project.points) == n
+    assert any("parent field-work folder" in text for text in auto["boxes"])
 
 
 def test_plugin_menu_runs_command_as_one_undo_step(win, app, auto):
