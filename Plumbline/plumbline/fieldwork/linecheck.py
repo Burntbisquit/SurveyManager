@@ -20,10 +20,19 @@ where a line ends.
 from __future__ import annotations
 
 from . import config as C
+from .utils_sort import natural_key
 
-#: The four ways a line can be incomplete.  The strings are what a user reads and what the
-#: Line Repair filter offers; they are also what lands in a ``.fwc`` row's IssueType.
-ISSUE_TYPES = ("Missing ST", "Missing END", "Missing PC", "Missing PT")
+
+def _sequence_sort_key(row):
+    """Sort numeric OIDs numerically and other OIDs naturally, without mixed-type failures."""
+    oid = str(row[0]).strip() if row else ""
+    if oid.isdigit():
+        return 0, int(oid)
+    return 1, natural_key(oid, letters_first=False)
+
+
+#: The line-sequence issues exposed in Line Repair and persisted to ``.fwc`` IssueType rows.
+ISSUE_TYPES = ("Missing ST", "Missing END", "Missing PC", "Missing PT", "Line Order")
 
 #: ...and the short token each one travels as, because a tool switches on a flag, not on prose.
 ISSUE_FLAGS = {
@@ -31,6 +40,7 @@ ISSUE_FLAGS = {
     "Missing END": "MissingEnd",
     "Missing PC": "MissingPC",
     "Missing PT": "MissingPT",
+    "Line Order": "LineOrderError",
 }
 
 #: The semantic command hierarchy is fixed even when an office changes its command tokens.
@@ -92,10 +102,7 @@ def detect_line_errors(working_rows, fieldbook_path=None, f2f_set=None, command_
         oid = str(working_row[0]).strip() if len(working_row) > 0 else ""
         raw = str(working_row[5]).strip() if len(working_row) > 5 else ""
         oid_list.append((oid, raw, working_row))
-    try:
-        oid_list.sort(key=lambda row: int(row[0]) if row[0].isdigit() else row[0])
-    except Exception:
-        pass
+    oid_list.sort(key=lambda row: _sequence_sort_key(row[2]))
 
     segments_by_line: dict[str, list] = {}
     raw_by_line: dict[str, str] = {}
@@ -151,6 +158,10 @@ def detect_line_errors(working_rows, fieldbook_path=None, f2f_set=None, command_
                         f"Line {code_raw} segment is missing End Line/Close before a new Start Line "
                         f"at OID {oid} ({raw}); previous segment started at OID {current_segment[0][0]}",
                         f"Add End Line to OID {current_segment[-1][0]}")
+                    add("Line Order", oid,
+                        f"Line {code_raw} starts a new segment at OID {oid} ({raw}) before the "
+                        f"previous segment from OID {current_segment[0][0]} ended.",
+                        "End or close the current segment before the next Start Line.")
                     segments.append(current_segment)
                     current_segment = []
                 in_line = True
@@ -179,14 +190,67 @@ def detect_line_errors(working_rows, fieldbook_path=None, f2f_set=None, command_
             segments.append(current_segment)
 
         for segment in segments:
+            # Validate the full semantic sequence, not only PC/PT pairing. A rank-only
+            # sort would reject valid repeated curves, so carry explicit line/curve state
+            # across points while preserving command order within each description.
+            events = [(meaning, oid, raw) for oid, line_commands, raw in segment
+                      for meaning in line_commands if meaning in RANK]
+            line_started = False
+            line_ended = False
+            curve_open = False
+            curve_open_oid = None
+            saw_event = False
+            order_error = None
+            for meaning, oid, raw in events:
+                if meaning == "start_line":
+                    if saw_event or line_started:
+                        order_error = (oid, raw, "Start Line appears after another command in this segment")
+                        break
+                    line_started = True
+                elif not line_started:
+                    label = meaning.replace("_", " ").title()
+                    order_error = (oid, raw, f"{label} appears before Start Line")
+                    break
+                elif line_ended:
+                    label = meaning.replace("_", " ").title()
+                    order_error = (oid, raw, f"{label} appears after End Line/Close")
+                    break
+                elif meaning == "start_curve":
+                    if curve_open:
+                        order_error = (oid, raw, "Start Curve appears before the preceding curve's End Curve")
+                        break
+                    curve_open = True
+                    curve_open_oid = oid
+                elif meaning == "end_curve":
+                    if not curve_open:
+                        order_error = (oid, raw, "End Curve appears before a matching Start Curve")
+                        break
+                    curve_open = False
+                    curve_open_oid = None
+                elif meaning in ("end_line", "close"):
+                    if curve_open:
+                        order_error = (oid, raw, "End Line/Close appears before the open curve's End Curve")
+                        break
+                    line_ended = True
+                saw_event = True
+            if order_error:
+                bad_oid, bad_raw, why = order_error
+                observed = " → ".join(f"{meaning.replace('_', ' ').title()} (OID {oid})"
+                                      for meaning, oid, _raw in events)
+                add("Line Order", bad_oid,
+                    f"Line {code_raw} has commands out of order across its point sequence: {why}. "
+                    f"Observed {observed}; start with Start Line, pair each Start Curve with "
+                    "its End Curve, and finish with End Line/Close.",
+                    "Review the full point sequence: Start Line → Start Curve → End Curve → End Line/Close.")
+
             curve_starts = [oid for oid, line_commands, _raw in segment
                             if "start_curve" in line_commands]
             curve_ends = [oid for oid, line_commands, _raw in segment
                           if "end_curve" in line_commands]
-            if curve_starts and not curve_ends:
-                add("Missing PT", curve_starts[0],
-                    f"Line {code_raw} has Start Curve at OID {curve_starts[0]} without a matching End Curve",
-                    f"Add End Curve to OID {curve_starts[0]} (after Start Curve, before End Line/Close)")
+            if curve_open and curve_open_oid is not None and order_error is None:
+                add("Missing PT", curve_open_oid,
+                    f"Line {code_raw} has Start Curve at OID {curve_open_oid} without a matching End Curve",
+                    f"Add End Curve to OID {curve_open_oid} (after Start Curve, before End Line/Close)")
             if curve_ends and not curve_starts:
                 add("Missing PC", curve_ends[0],
                     f"Line {code_raw} has End Curve at OID {curve_ends[0]} without a prior Start Curve",
@@ -323,11 +387,26 @@ def validate_fix(working_rows, oid, new_desc, fieldbook_path=None, f2f_set=None,
     key = lambda issue: (str(issue["issue_type"]), str(issue["oid"]),
                          str(issue.get("line_id", "")))  # noqa: E731
     seen_after = {key(issue) for issue in after}
-    cleared = [issue for issue in before if key(issue) not in seen_after and
-               str(issue["oid"]).strip() == str(oid).strip()]
-    also = [issue for issue in before if key(issue) not in seen_after and
-            str(issue["oid"]).strip() != str(oid).strip()]
-    still = [issue for issue in after if str(issue["oid"]).strip() == str(oid).strip()]
+    target_line_ids = {
+        str(issue.get("line_id", "")) for issue in before
+        if issue.get("issue_type") == "Line Order" and str(issue["oid"]).strip() == str(oid).strip()
+    }
+    if target_line_ids:
+        # A sequence-level error can move to a different point after a key-in. Validate
+        # the whole line, not only the point that originally carried the finding.
+        still = [issue for issue in after if issue.get("issue_type") == "Line Order"
+                 and str(issue.get("line_id", "")) in target_line_ids]
+        cleared = [issue for issue in before if key(issue) not in seen_after
+                   and str(issue.get("line_id", "")) in target_line_ids]
+        also = [issue for issue in before if key(issue) not in seen_after
+                and str(issue.get("line_id", "")) not in target_line_ids
+                and str(issue["oid"]).strip() != str(oid).strip()]
+    else:
+        cleared = [issue for issue in before if key(issue) not in seen_after and
+                   str(issue["oid"]).strip() == str(oid).strip()]
+        also = [issue for issue in before if key(issue) not in seen_after and
+                str(issue["oid"]).strip() != str(oid).strip()]
+        still = [issue for issue in after if str(issue["oid"]).strip() == str(oid).strip()]
     return {"ok": not still, "cleared": cleared, "also_cleared": also, "still": still,
             "note": fix_note(oid, new_desc, cleared, also, still)}
 

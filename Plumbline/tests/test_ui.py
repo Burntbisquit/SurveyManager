@@ -113,6 +113,162 @@ def test_theme_toggle_does_not_break(win, app):
     win.toggle_theme()
 
 
+def test_opening_an_unassigned_project_asks_for_crs_before_field_data_route(win, monkeypatch, tmp_path):
+    project_path = tmp_path / "Unassigned.plb"
+    Project("Unassigned").save(project_path)
+    events = []
+    monkeypatch.setattr(win, "_ensure_project_crs", lambda: events.append("CRS") or False)
+    monkeypatch.setattr(win, "_ensure_fieldbook_for_processing",
+                        lambda notify=True: events.append("Field Book") or False)
+    monkeypatch.setattr(win, "_ask_field_data_route",
+                        lambda route: events.append(("route", route)) or 0)
+    monkeypatch.setattr(win, "_complete_import_onboarding",
+                        lambda imported_points=0: events.append(("complete", imported_points)))
+
+    win._open(str(project_path))
+
+    assert events == ["CRS", "Field Book", ("route", "existing"), ("complete", 0)]
+
+
+def test_imagery_import_is_blocked_if_the_project_crs_picker_is_cancelled(win, monkeypatch, tmp_path):
+    project = Project("Unassigned imagery")
+    win.state.set_project(project, dirty=False)
+    prompts = []
+    monkeypatch.setattr(win, "crs_dialog", lambda *args, **kwargs: prompts.append("CRS"))
+
+    assert not win._ensure_project_crs()
+    assert not win.add_imagery_file(str(tmp_path / "not-a-real-image.tif"))
+    assert not win.add_kml_overlay({})
+    assert prompts == ["CRS", "CRS", "CRS"]
+    assert not project.imagery
+
+
+def test_declining_default_imagery_does_not_skip_fix_point_errors_offer(win, auto):
+    project = win.state.project
+    project.imagery.clear()
+    auto["boxes"].clear()
+
+    win._complete_import_onboarding()
+
+    texts = auto["boxes"]
+    imagery_index = next(i for i, text in enumerate(texts) if "Esri World Imagery" in text)
+    fix_index = next(i for i, text in enumerate(texts) if "review the survey points" in text)
+    assert imagery_index < fix_index
+    assert not project.imagery, "the test message-box handler declines both offers"
+
+
+def test_accepting_default_imagery_adds_the_shipped_esri_tile_source(win, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    specs = []
+    monkeypatch.setattr(win, "create_imagery_layer", specs.append)
+    monkeypatch.setattr(QMessageBox, "exec", lambda _self: QMessageBox.StandardButton.Yes)
+
+    assert win._offer_default_esri_imagery()
+    assert specs[0]["kind"] == "tiles"
+    assert specs[0]["name"] == "Esri World Imagery"
+    assert specs[0]["source"]["name"] == "Esri World Imagery"
+
+
+def test_processing_actions_open_fieldbook_and_are_blocked_if_it_stays_unloaded(win, monkeypatch, auto):
+    from plumbline.core.settings import settings
+
+    monkeypatch.setitem(settings()._data, "require_fieldbook_for_processing", True)
+    monkeypatch.setattr(win, "_has_active_fieldbook", lambda: False)
+    opened = []
+    monkeypatch.setattr(win, "open_fieldbook_dialog", lambda: opened.append("Field Book"))
+    processed = []
+    monkeypatch.setattr(win.state.project, "apply_codes_to_points", lambda: processed.append("codes"))
+    monkeypatch.setattr(win.state.project, "process_linework", lambda: processed.append("linework"))
+
+    win.open_fix_point_errors()
+    win.open_fix_linework()
+    win.apply_codes()
+    win.process_linework()
+    win.report_qa()
+    win.open_fieldwork()
+    win.edit_selected_line_geometry()
+
+    assert len(opened) == 7
+    assert processed == []
+    assert getattr(win, "_qa_workbench_window", None) is None
+
+
+def test_disabling_the_fieldbook_requirement_allows_processing(win, monkeypatch):
+    from plumbline.core.settings import settings
+
+    monkeypatch.setitem(settings()._data, "require_fieldbook_for_processing", False)
+    monkeypatch.setattr(win, "_has_active_fieldbook", lambda: False)
+    opened = []
+    monkeypatch.setattr(win, "open_fieldbook_dialog", lambda: opened.append("Field Book"))
+    processed = []
+    monkeypatch.setattr(win.state.project, "process_linework",
+                        lambda: processed.append("linework") or {"strings": 0, "replaced": 0})
+    monkeypatch.setattr(win.state.project, "apply_codes_to_points",
+                        lambda: processed.append("codes") or {"matched": 0, "unknown": {}})
+
+    assert win._ensure_fieldbook_for_processing()
+    win.process_linework()
+    win.apply_codes()
+
+    assert opened == []
+    assert processed == ["linework", "codes"]
+
+
+def test_empty_job_fieldbook_does_not_satisfy_processing_requirement(win, tmp_path):
+    from plumbline.fieldwork.io_carlson import write_fwb_file
+
+    project = win.state.project
+    project.path = str(tmp_path / "job" / "job.plb")
+    book = tmp_path / "job" / "Field Book" / "job.fwb"
+    book.parent.mkdir(parents=True)
+    project.settings["fieldbook_file"] = str(book)
+
+    assert write_fwb_file(book, ["Code", "Description"], [])
+    assert not win._has_active_fieldbook()
+
+    assert write_fwb_file(book, ["Code", "Description"], [["EA", "Asphalt"]])
+    assert win._has_active_fieldbook()
+
+
+def test_button_highlights_use_neutral_theme_colors(win):
+    from plumbline.ui import theme
+
+    for colors in theme.THEMES.values():
+        css = theme.stylesheet(colors)
+        assert (f"QPushButton:default, QPushButton[accent=\"true\"] {{ background: {colors['button']}; "
+                f"border-color: {colors['border']}; color: {colors['text']}; font-weight: 600;") in css
+        assert (f"QToolButton:checked {{ background: {colors['alt']}; "
+                f"border-color: {colors['border']}; }}") in css
+
+
+def test_escape_returns_to_pan_from_toolbar_and_panel_focus(win, app):
+    win.set_tool("polyline")
+    draw_button = win.tb_draw_tools.widgetForAction(win.tool_acts["polyline"])
+    assert draw_button is not None
+    draw_button.setFocus()
+    pump(app)
+    assert QApplication.focusWidget() == draw_button
+    QTest.keyClick(draw_button, Qt.Key_Escape)
+    pump(app)
+    assert win.canvas.tool.name == "pan"
+    assert win.tool_acts["pan"].isChecked()
+    assert win.canvas.cursor().shape() == Qt.OpenHandCursor
+
+    # Dock/panel focus follows the same global Escape shortcut.
+    win.set_tool("select")
+    win.d_pts.show()
+    win.d_pts.raise_()
+    win.points.view.setFocus()
+    pump(app)
+    assert QApplication.focusWidget() == win.points.view
+    QTest.keyClick(win.points.view, Qt.Key_Escape)
+    pump(app)
+    assert win.canvas.tool.name == "pan"
+    assert win.canvas.hasFocus()
+    assert win.canvas.cursor().shape() == Qt.OpenHandCursor
+
+
 # ------------------------------------------------------------------ tools with real mouse events
 def test_draw_polyline_with_clicks_and_undo_redo(win, app):
     pr = win.state.project
@@ -554,7 +710,7 @@ def test_imagery_tiles_render_offline_and_the_panel_has_no_check_controls(win, a
     img = win.canvas.render_image(700)
     assert img.width() == 700
 
-    for gone in ("btn_start", "btn_stop", "btn_report", "btn_csv", "btn_nudge", "btn_del",
+    for gone in ("btn_start", "btn_stop", "btn_report", "btn_csv", "btn_del",
                  "table", "stats", "cmb_which", "ed_filter", "sp_tol", "sp_mpp", "lbl_tol",
                  "_point_ids", "refresh_checks", "refresh_stats", "_apply_nudge", "_export_csv",
                  "start_requested", "stop_requested", "report_requested"):
@@ -562,6 +718,7 @@ def test_imagery_tiles_render_offline_and_the_panel_has_no_check_controls(win, a
     assert [b.text() for b in (win.imagery.btn_add, win.imagery.btn_rm, win.imagery.btn_meta,
                                win.imagery.btn_ge_out, win.imagery.btn_ge_in)] == \
         ["Add...", "Remove", "Look up imagery source at the view centre", "Export KMZ...", "Import pins..."]
+    assert win.imagery.btn_nudge_points.text() == "Nudge by points..."
     assert not pr.checks, "nothing in the interface writes a check record any more"
 
     # the nudge is a display offset; the survey itself never moves
@@ -584,6 +741,39 @@ def test_imagery_tiles_render_offline_and_the_panel_has_no_check_controls(win, a
         pump(app, 2, 40)
     assert _Tiles.hits == hits
     assert len(win.canvas.imagery._pix) > 0
+
+
+def test_imagery_nudge_collects_point_pairs_and_changes_only_the_display_offset(win, app, auto):
+    from plumbline.core.model import ImageryLayer
+
+    pr = win.state.project
+    layer_id = pr.new_id()
+    layer = ImageryLayer(layer_id, "Nudge test", "file", {"path": ""}, nudge=(10.0, -3.0))
+    pr.imagery[layer_id] = layer
+    win.imagery.refresh()
+    win.imagery.lst.setCurrentRow(0)
+    win.d_img.show()
+    point = next(iter(pr.points.values()))
+    original_xy = (point.x, point.y)
+
+    win.imagery.btn_nudge_points.click()
+    tool = win._imagery_nudge_tool
+    assert tool is not None and win.canvas.tool is tool
+    assert win.imagery.btn_nudge_points.text() == "Cancel point nudge"
+
+    # The image feature is 8 units west and 4 north of the target survey point. Click it first,
+    # then click the survey point; aligning the image should add (+8, -4) to its current nudge.
+    click_world(win, point.x - 8.0, point.y + 4.0)
+    click_world(win, point.x, point.y)
+    assert len(tool.pairs) == 1
+    QTest.keyClick(win.canvas, Qt.Key_Return)
+
+    assert layer.nudge == pytest.approx((18.0, -7.0), abs=0.5)
+    assert (point.x, point.y) == original_xy
+    assert win.canvas.tool.name == "pan"
+    assert win._imagery_nudge_tool is None
+    assert win.imagery.btn_nudge_points.text() == "Nudge by points..."
+    assert win.state.undo_stack[-1][0] == "Nudge imagery by 1 point pair(s)"
 
 
 def test_google_earth_pins_come_in_as_reference_points(win, app, auto, tmp_path, monkeypatch):
@@ -641,6 +831,7 @@ def test_save_dirty_open_roundtrip(win, app, auto, tmp_path, monkeypatch):
     st.new_project("blank", C.ProjectCRS.local("m"))
     win.open_project_path(path)
     assert len(win.state.project.points) == n
+    assert any("parent field-work folder" in text for text in auto["boxes"])
 
 
 def test_plugin_menu_runs_command_as_one_undo_step(win, app, auto):

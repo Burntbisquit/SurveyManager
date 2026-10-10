@@ -27,6 +27,7 @@ DEFAULTS = {
     "crs_favorites": ["EPSG:2276", "EPSG:6584", "EPSG:32138", "EPSG:6583", "EPSG:4326", "EPSG:4269",
                       "EPSG:6318", "EPSG:26914", "EPSG:6343", "EPSG:32614", "EPSG:3857"],
     "recent_files": [],
+    "field_data_import_folder": "",  # last field-data folder chooser location; machine-specific
     "tile_cache_dir": "",
     "offline_imagery": False,
     "proj_network": False,
@@ -40,6 +41,8 @@ DEFAULTS = {
     "external_prompt_done": [],       # one-time download offers already made and answered
     "plugin_dirs": [],
     "point_columns": ["source_file", "source_folder"],   # extra columns in the point list
+    "control_point_tolerance": 0.01,  # project-coordinate units; smaller differences count as rounding
+    "require_fieldbook_for_processing": True,  # open the Field Book tool before code/linework QA or processing
     "space_between_commands": True,
     "space_around_multicode_separator": True,
     "space_around_description_separator": True,
@@ -54,7 +57,8 @@ DEFAULTS = {
 ALWAYS_SAVED = ("theme", "coord_order", "angle_format", "angle_dms", "angle_decimals",
                 "tile_cache_dir", "custom_tile_sources", "replaced_tile_sources",
                 "hidden_tile_sources", "proj_grid_url", "update_url", "secondary_readout",
-                "plugin_dirs", "crs_favorites", "point_columns", "space_between_commands",
+                "plugin_dirs", "crs_favorites", "point_columns", "control_point_tolerance",
+                "require_fieldbook_for_processing", "space_between_commands",
                 "space_around_multicode_separator", "space_around_description_separator")
 
 

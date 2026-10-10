@@ -173,7 +173,7 @@ Easting; 'Convert a Height' removed." / "1.000136506 must not be typable as 1.00
   decimals** - `1.000136506` round-trips exactly, in the CRS dialog, in the import panel and in the
   field window.
 * "Convert a Height" is gone from the CRS dialog; the NGVD29 note now points at the tool that does
-  the job properly (**Coordinates > Reproject**), and a geoid note says what a missing model means.
+  the job properly (**Survey > Project Coordinate System > Reproject**), and a geoid note says what a missing model means.
 * SAF is ground/grid (`ground = base + (grid - base) * saf`), which is the TXDOT convention the
   user's numbers came from.
 * Pinned by `test_item_10_*` and `test_item_11_*`.
@@ -735,7 +735,7 @@ know where on the earth the job is — imagery, KML, GIS, reprojection, grid con
 so, by name:
 
 > Grid convergence needs a coordinate system — this project's CRS is UNASSIGNED.
-> Select CRS first (Coordinates > Project Coordinate System…).
+> Select CRS first (Survey > Project Coordinate System…).
 
 ## What deliberately did not merge
 

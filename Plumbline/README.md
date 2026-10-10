@@ -40,6 +40,15 @@ python -m plumbline doctor                                # checks every library
 python -m plumbline                                       # opens the welcome window
 ```
 
+**To run the tests**, install the development extra in that environment and run pytest headlessly (the suite includes Qt UI tests):
+
+```bash
+python -m pip install -e ".[dev]"
+QT_QPA_PLATFORM=offscreen python -m pytest -q
+```
+
+GitHub Actions runs the suite on both supported Python versions, 3.13 and 3.14.
+
 * **Python 3.13 or newer, 64-bit** (`requires-python` is `>=3.13`). **Python 3.14 is the version this release is built and tested against**, and the one `install_windows.bat` picks when it is available; the full test suite passes on 3.14 (on Linux). It also passes unchanged on **3.13** (verified on Linux), so 3.13 is supported too - you just get an advisory note from `doctor`. Anything newer than 3.14 is untested: PySide6 may not have a build for it yet. On Windows every library has a ready-made 64-bit wheel for 3.14 (checked with pip's resolver); everything installs from wheels (PySide6, pyproj, shapely, pyogrio, ezdxf, rasterio ...).
 * `rasterio` is optional (GeoTIFF orthophotos); without it PNG/JPG + world file images still work.
 * Linux needs the usual Qt system libraries (`libxkbcommon0`, `libegl1`, `libxcb-*` ...) - if Qt complains on start, install them.
@@ -194,7 +203,7 @@ holding data comes out byte-identical - so it doubles as a regression check betw
 
 ## Coordinate systems
 
-The coordinate-system manager (**Coordinates > Project Coordinate System**) is the part of a CAD tool that bites, so it is explicit:
+The coordinate-system manager (**Survey > Project Coordinate System**) is the part of a CAD tool that bites, so it is explicit:
 
 ![CRS manager](docs/img/crs_manager.png)
 
@@ -249,7 +258,9 @@ image* or *Custom tile URL*.
 
 **Comparing imagery with your points is a measurement, not a report.** Pan the imagery under the drawing and measure with
 **Draw > Distance / Bearing** (two clicks: distance and bearing) or with the *Measure* tool on any pair. *Nudge east / north* shifts the
-**displayed** imagery to sit where you want it - the survey is never altered, and the nudge is saved with the layer.
+**displayed** imagery to sit where you want it - the survey is never altered, and the nudge is saved with the layer. For point-based alignment,
+select a visible layer and use *Nudge by points...*: click an image feature, then where it should land (the target follows the current snap setting).
+Repeat for extra pairs and press Enter or right-click to apply their average shift.
 
 **Google Earth round trip**: *Export KMZ* (datum handling shown and remembered) -> open in Google Earth -> drop a pin on the same feature for each
 point, named with the point number -> save the pins as KML/KMZ -> *Import pins*. The pins come in as **reference points** on the `OTHER` layer

@@ -362,13 +362,40 @@ def run_checks(rows, ne_tol: float | None = None, elev_tol: float | None = None)
             "report_rows": IC.build_check_report_rows(rows, exact, similar, close)}
 
 
+def _row_is_removed(row) -> bool:
+    """A removed row stays in a working/report file for audit, but is not an active code check."""
+    if not row:
+        return False
+    # Consolidated .fwk metadata: Corr_Status is column 10 (0-based).
+    if len(row) > 10 and str(row[10]).strip().casefold() in {"removed", "deleted"}:
+        return True
+    # Unified .fwc Description rows: DisplayTab, ... , Status, Comments.
+    return (len(row) == 9 and str(row[1]).strip().casefold() == "description"
+            and str(row[7]).strip().casefold() in {"removed", "deleted"})
+
+
+def _point_is_deleted(point) -> bool:
+    attrs = getattr(point, "attrs", None) or {}
+    if not isinstance(attrs, dict):
+        return False
+    if any(attrs.get(key) is True for key in ("deleted", "is_deleted", "qa_deleted")):
+        return True
+    return any(str(attrs.get(key, "")).strip().casefold() in {"deleted", "removed"}
+               for key in ("status", "fieldwork_status", "qa_status"))
+
+
 def describe_flags(rows, f2f=None, fieldbook_path=None) -> dict[int, dict]:
-    """Parse every description and report the ones with flags, keyed by row OID."""
+    """Parse active descriptions and report the ones with flags, keyed by row OID."""
     out = {}
     for r in rows:
-        if not row_is_usable(r):
+        if not row_is_usable(r) or _row_is_removed(r):
             continue
-        parsed = P.parse_desc_field(r[DESC], f2f or set(), fieldbook_path=fieldbook_path)
+        raw_description = str(r[DESC] or "")
+        # Empty descriptions need no vocabulary. Without an active code table, do not
+        # classify non-empty text as UnknownCode, but still surface genuinely blank rows.
+        if not f2f and raw_description.strip():
+            continue
+        parsed = P.parse_desc_field(raw_description, f2f or set(), fieldbook_path=fieldbook_path)
         if parsed.get("flags"):
             out[int(r[OID]) if str(r[OID]).strip().isdigit() else r[OID]] = parsed
     return out
@@ -537,12 +564,14 @@ def apply_rows_to_project(project, rows, crs=None, code_table=None,
 #: The description parser's flag names, said the way somebody would say them out loud.  The raw
 #: name travels beside it (``flag``), because that is what a fix tool will switch on.
 FLAG_TITLES = {
+    "CommonConversionError": "Common error",
     "UnknownCode": "Unknown code",
     "EmptyDescription": "No description",
     "OrphanCommand": "Orphan command",
     "MisplacedAfterSeparator": "Potential code in descriptor",
     "SeparatorSpacingError": "Spacing at the separator",
     "LineOrderError": "Line command out of order",
+    "ControlMismatch": "Control point mismatch",
 }
 
 
@@ -574,6 +603,141 @@ def working_rows_from_project(project) -> tuple[list[list[str]], list[int]]:
                                 desc, rec["folder"], rec["file"]))
         ids.append(pid)
     return rows, ids
+
+
+def _control_file_path(project, explicit=None) -> Path | None:
+    """Find the job's standard control list, honoring an explicit project setting first."""
+    settings = getattr(project, "settings", {}) or {}
+    candidates = []
+    for value in (explicit, settings.get("control_file"), settings.get("control_points_file")):
+        if value:
+            path = Path(str(value)).expanduser()
+            if not path.is_absolute() and getattr(project, "path", None):
+                path = Path(project.path).expanduser().parent / path
+            candidates.append(path)
+
+    roots = []
+    if getattr(project, "path", None):
+        roots.append(Path(project.path).expanduser().parent)
+    data_folder = settings.get("data_folder")
+    if data_folder:
+        data_path = Path(str(data_folder)).expanduser()
+        roots.append(data_path.parent if data_path.name.casefold() == "field data" else data_path)
+    candidates.extend(root / "Control" / "Control Points.csv" for root in roots)
+    candidates.extend(root / "Control Points.csv" for root in roots)
+    for path in candidates:
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def _read_control_file(path: Path) -> list[dict]:
+    """Read the standard Point/Northing/Easting/Elevation CSV without guessing its coordinates."""
+    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            with open(path, "r", encoding=encoding, errors="strict", newline="") as fh:
+                reader = csv.DictReader(fh)
+                headers = {re.sub(r"[^a-z0-9]+", "", str(name or "").casefold()): name
+                           for name in (reader.fieldnames or [])}
+                def column(*aliases):
+                    return next((headers[key] for key in aliases if key in headers), None)
+
+                number_col = column("point", "pointnumber", "pt", "ptno", "pointno", "number", "name")
+                north_col = column("northing", "north", "n", "y")
+                east_col = column("easting", "east", "e", "x")
+                elev_col = column("elevation", "elev", "height", "z")
+                if not number_col or not (north_col or east_col):
+                    return []
+                records = []
+                for row in reader:
+                    number = str(row.get(number_col) or "").strip()
+                    if not number:
+                        continue
+                    north = to_float(row.get(north_col)) if north_col else None
+                    east = to_float(row.get(east_col)) if east_col else None
+                    elev = to_float(row.get(elev_col)) if elev_col else None
+                    if north is None and east is None:
+                        continue
+                    records.append({"number": number, "northing": north, "easting": east,
+                                    "elevation": elev})
+                return records
+        except UnicodeDecodeError:
+            continue
+        except (OSError, csv.Error):
+            return []
+    return []
+
+
+def _control_records(project, control_file=None) -> tuple[list[dict], str]:
+    """Prefer the job's control CSV; use explicitly imported CONTROL reference points as fallback."""
+    path = _control_file_path(project, control_file)
+    if path is not None:
+        records = _read_control_file(path)
+        if records:
+            return records, str(path)
+
+    records = []
+    for point in REF.reference_points(project, "control"):
+        records.append({"number": str(point.number).strip(), "northing": to_float(point.y),
+                        "easting": to_float(point.x), "elevation": to_float(point.z)})
+    return records, "CONTROL reference points" if records else ""
+
+
+def _control_tolerance() -> float:
+    """User-configured tolerance, applied in the stored units of each compared coordinate."""
+    try:
+        from ..core.settings import settings
+        value = float(settings().get("control_point_tolerance", 0.01))
+        return value if math.isfinite(value) and value >= 0 else 0.01
+    except (TypeError, ValueError, OverflowError):
+        return 0.01
+
+
+def _compare_control_points(project, ids: list[int], tolerance: float, control_file=None) -> dict:
+    """Compare survey points with matching control numbers; differences within tolerance are rounding."""
+    controls, source = _control_records(project, control_file)
+    control_by_number = {}
+    for control in controls:
+        key = str(control.get("number") or "").strip().casefold()
+        if key:
+            control_by_number.setdefault(key, control)
+
+    comparisons = []
+    mismatches = []
+    epsilon = max(1e-12, abs(tolerance) * 1e-12)
+    for row_index, point_id in enumerate(ids):
+        point = project.points.get(point_id)
+        if point is None:
+            continue
+        control = control_by_number.get(str(point.number).strip().casefold())
+        if control is None:
+            continue
+        field = {"northing": to_float(point.y), "easting": to_float(point.x),
+                 "elevation": to_float(point.z)}
+        delta = {}
+        for key in ("northing", "easting", "elevation"):
+            expected = to_float(control.get(key))
+            observed = field[key]
+            if expected is None or observed is None:
+                continue
+            delta[key] = observed - expected
+        if not delta:
+            continue
+        detail = {"point_id": point_id, "number": str(point.number),
+                  "field": field, "control": {key: to_float(control.get(key))
+                                               for key in ("northing", "easting", "elevation")},
+                  "delta": delta}
+        comparisons.append(detail)
+        if any(abs(value) > tolerance + epsilon for value in delta.values()):
+            mismatches.append({"row": row_index, **detail})
+
+    units = "project coordinate units"
+    return {"checked": bool(comparisons), "available": bool(control_by_number), "source": source,
+            "tolerance": tolerance, "units": units,
+            "compared": len(comparisons), "mismatches": mismatches}
 
 
 def line_issues(project, f2f=None, fieldbook_path=None) -> list[dict]:
@@ -632,20 +796,32 @@ def vocabulary_for(project, job_root=None, fieldbook=None) -> dict:
     * ``field book + job codes`` - a book with no code table in it (a fresh job's template book is
       exactly that) merged with the job's own feature codes;
     * ``job codes`` - the codes converted from the office's Carlson table, or the built-in set;
-    * ``none`` - no vocabulary: the three number checks run, the description check does not, and
-      the caller says so.  An empty vocabulary is never run as if it were a vocabulary, because
-      every code would come back unknown and a hundred false alarms is how a check gets switched
-      off and stays off.
+    * ``none`` - no code vocabulary: the number and blank-description checks still run, while
+      non-empty code validation is paused and the caller says so. An empty vocabulary is never run
+      as if it were a vocabulary, because every code would come back unknown and a hundred false
+      alarms is how a check gets switched off and stays off.
     """
     from . import parse as P
 
-    p = Path(str(fieldbook)) if fieldbook else None
-    if p is None:
-        chosen = (project.settings or {}).get("fieldbook_file")
-        if chosen and Path(str(chosen)).exists():
-            p = Path(str(chosen))
+    root = Path(job_root).expanduser() if job_root else None
+    if root is None and getattr(project, "path", None):
+        root = Path(project.path).expanduser().parent
+
+    def resolve_book_path(value):
+        if not value:
+            return None
+        candidate = Path(str(value)).expanduser()
+        if not candidate.is_absolute() and root is not None:
+            candidate = root / candidate
+        return candidate
+
+    p = resolve_book_path(fieldbook)
+    if p is None or not p.is_file():
+        chosen = resolve_book_path((project.settings or {}).get("fieldbook_file"))
+        if chosen is not None and chosen.is_file():
+            p = chosen
         else:
-            books = fieldbooks_in(job_root)
+            books = fieldbooks_in(root)
             p = books[0] if books else None
     # The job's own codes count as a vocabulary only when they came from the office's table (a
     # Carlson Field-to-Finish export, converted through Survey > Convert Field to Finish).  The
@@ -772,19 +948,27 @@ def write_report(path, rows) -> bool:
     return ICO.write_unified_report(Path(path), rows)
 
 
-def check_project(project, f2f=None, fieldbook_path=None, ne_tol: float | None = None, elev_tol: float | None = None) -> dict:
+def check_project(project, f2f=None, fieldbook_path=None, ne_tol: float | None = None,
+                  elev_tol: float | None = None, control_file=None) -> dict:
     """Run the field-data checks over a project's own points, as findings a dock can show.
 
     *f2f* is the field book's code set and *fieldbook_path* the file it came from (the parser
-    also reads that job's command set and correction rules out of it).  Without a code set the
-    description parsing is skipped rather
-    than run against an empty vocabulary - every code would come back "UnknownCode", which is a
-    hundred false alarms and not a check (the dock says which of the two it did).
+    also reads that job's command set and correction rules out of it). Without a code vocabulary,
+    non-empty code descriptions are not classified as unknown; genuinely blank descriptions still
+    surface, and an available Field Book command set can still validate line-command order.
 
     Returns {"rows", "ids", "findings", "stats", "flags", "code_checks"}.  Row indices in a
     finding index into "rows"; ``ids[i]`` is the project point the i-th row came from.
     """
     rows, ids = working_rows_from_project(project)
+    # A caller may know the Field Book path but omit its decoded code set. Load the
+    # vocabulary here so common-conversion rules and unknown codes still get checked.
+    if not f2f and fieldbook_path:
+        try:
+            f2f = P.build_f2f_set_from_fieldbook(fieldbook_path)
+        except Exception:
+            f2f = set()
+    f2f = set(f2f or ())
     out = {"rows": rows, "ids": ids, "findings": [], "stats": summarise(rows) if rows else {},
            "flags": {}, "code_checks": bool(f2f)}
     if not rows:
@@ -792,7 +976,41 @@ def check_project(project, f2f=None, fieldbook_path=None, ne_tol: float | None =
                                 "message": "The project has no field points to check."})
         return out
     found = run_checks(rows, ne_tol=ne_tol, elev_tol=elev_tol)
-    flags = describe_flags(rows, f2f, fieldbook_path=fieldbook_path) if f2f else {}
+    # Blank descriptions are checked even without a code table; describe_flags deliberately
+    # leaves non-empty text alone when no vocabulary is available.
+    flags = describe_flags(rows, f2f, fieldbook_path=fieldbook_path)
+    # Keep the single-point command-order check in the project-side report as well as the
+    # Fieldwork Manager. The sequence detector below cannot attach PC/ST to a code the active
+    # Field Book does not recognize, but the semantic command tokens still make EG PC ST an error.
+    if f2f or fieldbook_path:
+        try:
+            order_flags = P._validate_line_command_order(rows, f2f, fieldbook_path=fieldbook_path)
+            order_details = getattr(P._validate_line_command_order, "details", {})
+        except Exception:
+            order_flags, order_details = {}, {}
+        raw_by_oid = {str(row[OID]): str(row[DESC] or "") for row in rows}
+        for oid, row_flags in order_flags.items():
+            key = int(oid) if str(oid).strip().isdigit() else oid
+            parsed = flags.get(key)
+            if parsed is None:
+                parsed = {"raw": raw_by_oid.get(str(oid), ""), "flags": [], "flag_detail": ""}
+                flags[key] = parsed
+            parsed_flags = parsed.setdefault("flags", [])
+            for flag in row_flags:
+                if flag not in parsed_flags:
+                    parsed_flags.append(flag)
+            details = order_details.get(oid, [])
+            if details:
+                existing_detail = str(parsed.get("flag_detail") or "")
+                parsed["flag_detail"] = "; ".join([existing_detail, *details]).strip("; ")
+    deleted_oids = set()
+    for pid, point in project.points.items():
+        if _point_is_deleted(point):
+            attrs = point.attrs or {}
+            deleted_oids.add(str(attrs.get("fieldwork_oid") or pid))
+    for oid in list(flags):
+        if str(oid) in deleted_oids:
+            flags.pop(oid, None)
     oid_to_row = {str(r[OID]): i for i, r in enumerate(rows)}
 
     def rows_of(groups):
@@ -825,14 +1043,44 @@ def check_project(project, f2f=None, fieldbook_path=None, ne_tol: float | None =
                     rec["rows"].add(i)
                 if not rec["sample"]:
                     rec["sample"] = str(parsed.get("raw", "") or "")
-        for name, rec in sorted(by_flag.items(), key=lambda kv: (-len(kv[1]["rows"]), kv[0])):
+        flag_rows = sorted(by_flag.items(), key=lambda kv: (-len(kv[1]["rows"]), kv[0]))
+        common_errors = [item for item in flag_rows if item[0] == "CommonConversionError"]
+        if common_errors:
+            other_flags = [item for item in flag_rows if item[0] != "CommonConversionError"]
+            unknown_at = next((index for index, (name, _rec) in enumerate(other_flags)
+                               if name == "UnknownCode"), len(other_flags))
+            flag_rows = other_flags[:unknown_at] + common_errors + other_flags[unknown_at:]
+        for name, rec in flag_rows:
             title = FLAG_TITLES.get(name, name)
-            lvl = "error" if name in {"UnknownCode", "SeparatorSpacingError"} else "warn"
+            lvl = "error" if name in {
+                "UnknownCode", "SeparatorSpacingError", "LineOrderError"
+            } else "warn"
             out["findings"].append({
                 "level": lvl, "check": title, "flag": name, "rows": sorted(rec["rows"]),
                 "message": f"{len(rec['rows'])} description(s) flagged {title.lower()}"
                            + (f" (e.g. {rec['sample']!r})" if rec["sample"] else "") + "."})
     out["flags"] = flags
+
+    # Control comparisons use the project's standard Control/Control Points.csv (or imported
+    # CONTROL reference points). Differences at or below the configured tolerance are treated as
+    # survey rounding; only larger offsets are surfaced as a warning.
+    tolerance = _control_tolerance()
+    control_comparison = _compare_control_points(project, ids, tolerance, control_file)
+    out["control_comparison"] = control_comparison
+    control_mismatches = control_comparison["mismatches"]
+    if control_mismatches:
+        examples = ", ".join(str(item["number"]) for item in control_mismatches[:5])
+        out["findings"].append({
+            "level": "warn", "check": "Control point mismatch", "flag": "ControlMismatch",
+            "rows": sorted({item["row"] for item in control_mismatches}),
+            "control_comparisons": control_mismatches,
+            "tolerance": tolerance, "units": control_comparison["units"],
+            "message": (f"{len(control_mismatches)} survey point(s) differ from matching control "
+                        f"coordinates by more than {tolerance:g} {control_comparison['units']}; "
+                        "differences at or below the tolerance are treated as rounding"
+                        + (f" (for example, point(s) {examples})" if examples else "") + "."),
+        })
+
     # The linework half: issues that belong to a whole line, not to one point.  Same rule as the
     # description check - it runs when there is a vocabulary, and the dock says which of the two it did.
     out["line_issues"] = []
@@ -856,7 +1104,8 @@ def check_project(project, f2f=None, fieldbook_path=None, ne_tol: float | None =
             rec = by_line[name]
             code = LC.ISSUE_FLAGS.get(name, name)
             out["findings"].append({
-                "level": "warn", "check": f"line: {name.lower()}", "flag": code,
+                "level": "error" if name == "Line Order" else "warn",
+                "check": f"line: {name.lower()}", "flag": code,
                 "rows": sorted(rec["rows"]),
                 "message": f"{len(rec['rows'])} field point(s) in line(s) with {name.lower()} - "
                            + " ".join(rec["samples"][:1]) + ".",
