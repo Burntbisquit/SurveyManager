@@ -577,8 +577,16 @@ class CheckFieldworkDock(QWidget):
         ``Source/`` or beside the download in ``Field Data/`` counts.
         """
         chosen = (self.state.project.settings or {}).get("fieldbook_file")
-        if chosen and Path(chosen).exists():
-            return Path(chosen)
+        if chosen:
+            path = Path(chosen).expanduser()
+            if not path.is_absolute():
+                root = self.job_root()
+                if root is None and getattr(self.state.project, "path", None):
+                    root = Path(self.state.project.path).expanduser().parent
+                if root is not None:
+                    path = Path(root) / path
+            if path.is_file():
+                return path
         from ..fieldwork import bridge as FB
         books = FB.fieldbooks_in(self.job_root())
         return books[0] if books else fieldbook_in(self.job_root())

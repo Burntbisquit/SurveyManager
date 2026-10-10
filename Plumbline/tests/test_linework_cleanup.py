@@ -269,14 +269,19 @@ def test_project_fieldwork_code_flags_ignore_deleted_points():
     assert all(str(oid) != str(deleted.id) for oid in report["flags"])
 
 
-def test_empty_description_is_not_reported_as_a_fix_points_warning():
+def test_empty_description_is_reported_even_without_a_vocabulary():
     from plumbline.core.project import Project
     from plumbline.fieldwork.bridge import check_project
 
     project = Project("Blank description")
-    project.add_point(0, 0, 0, number="1", desc="")
-    report = check_project(project, f2f={"toc"})
-    assert all(finding.get("flag") != "EmptyDescription" for finding in report["findings"])
+    point = project.add_point(0, 0, 0, number="1", desc="")
+    report = check_project(project)
+
+    finding = next(finding for finding in report["findings"]
+                   if finding.get("flag") == "EmptyDescription")
+    assert finding["rows"] == [0]
+    assert report["ids"][finding["rows"][0]] == point.id
+    assert not report["code_checks"]  # blankness does not require a Field Book
 
 
 def test_line_order_findings_are_errors_not_warnings():
@@ -300,6 +305,61 @@ def test_line_order_findings_are_errors_not_warnings():
     repeated_order = [finding for finding in repeated_report["findings"]
                       if finding.get("check") == "line: line order"]
     assert repeated_order and all(finding["level"] == "error" for finding in repeated_order)
+
+
+def test_real_world_sample_pc_before_st_reaches_the_project_report():
+    from pathlib import Path
+
+    from plumbline.core.project import Project
+    from plumbline.fieldwork import bridge as FB
+    from plumbline.fieldwork.parse import build_f2f_set_from_fieldbook
+
+    sample_root = Path(__file__).resolve().parents[1] / "samples" / "Real World"
+    working_file = sample_root / "Source" / "Edit points.fwk"
+    book = sample_root / "Field Book" / "Real World.fwb"
+    rows = FB.read_working_file(working_file)
+    row = next(row for row in rows if str(row[FB.OID]).strip() == "33")
+    northing, easting, elevation = FB.row_xyz(row)
+    project = Project("Real World sample line order")
+    point = project.add_point(easting, northing, elevation, number=row[FB.PTNUM], desc=row[FB.DESC],
+                              attrs={"fieldwork_oid": row[FB.OID]})
+
+    report = FB.check_project(project, f2f=build_f2f_set_from_fieldbook(book),
+                              fieldbook_path=str(book))
+    order_findings = [finding for finding in report["findings"]
+                      if finding.get("flag") == "LineOrderError"]
+
+    assert any(finding.get("check") == "line: line order"
+               and finding["level"] == "error" for finding in order_findings)
+    assert any(finding.get("check") == "Line command out of order"
+               and finding["level"] == "error" for finding in order_findings)
+    assert all(report["ids"][i] == point.id for finding in order_findings
+               for i in finding.get("rows", []))
+
+
+def test_project_check_keeps_line_order_visible_for_a_code_unknown_to_the_active_book(tmp_path):
+    from plumbline.core.project import Project
+    from plumbline.fieldwork.bridge import check_project
+
+    book = tmp_path / "active.fwb"
+    book.write_text(
+        "Code,Description,Symbol,Layer,Entity Type,Category\n"
+        "TOC,Top of curb,,ROAD,Line,Road\n",
+        encoding="utf-8",
+    )
+    project = Project("Unknown line code")
+    point = project.add_point(0, 0, 0, number="17", desc="EG PC ST")
+
+    report = check_project(project, f2f={"toc"}, fieldbook_path=str(book))
+    finding = next(finding for finding in report["findings"]
+                   if finding.get("check") == "Line command out of order")
+
+    assert finding["flag"] == "LineOrderError"
+    assert finding["level"] == "error"
+    assert [report["ids"][i] for i in finding["rows"]] == [point.id]
+    # The whole-line detector has no recognized EG string to group, so the row-level
+    # semantic order check is what carries this issue into the project review.
+    assert report["line_issues"] == []
 
 
 def test_curve_start_before_line_start_is_flagged_when_feature_code_is_unknown():
@@ -345,6 +405,75 @@ def test_the_dock_reports_the_line_issues_and_they_select_the_points(win, app):
     assert picked <= set(ids) and picked, "a finding names the points it is about"
     assert any(f["check"] == "line: missing end" for f in line_findings)
     assert any("never closed" in f["message"] for f in line_findings)
+
+
+def test_fix_points_workbench_surfaces_blank_descriptions_with_job_book(win, app, tmp_path):
+    from plumbline.fieldwork.io_carlson import write_fwb_file
+    from plumbline.ui.qa_workspace import FixPointErrorsDialog
+
+    project = win.state.project
+    for point in list(project.points.values()):
+        del project.points[point.id]
+    project.settings.pop("fieldbook_file", None)
+    project.settings.pop("f2f_path", None)
+    job_root = tmp_path / "blank-job"
+    book = job_root / "Field Book" / "Blank Job.fwb"
+    book.parent.mkdir(parents=True)
+    assert write_fwb_file(
+        book,
+        ["Code", "Description", "Symbol", "Layer", "Entity Type", "Category"],
+        [["TOC", "Top of curb", "", "ROAD", "Line", "Road"]],
+    )
+    win._job_root_choice = job_root
+    point = project.add_point(100, 200, 5, number="9001", desc="")
+
+    dialog = FixPointErrorsDialog(win.state, win)
+    try:
+        assert dialog.code_set == {"toc"}
+        finding = next(item for item in dialog.active_findings
+                       if item.get("flag") == "EmptyDescription")
+        assert finding["pids"] == [point.id]
+        assert dialog._filter_finding(finding)
+        check = next(row for row in dialog._report_check_rows()
+                     if row["check_key"] == "EmptyDescription")
+        assert check["status"] == "FINDINGS"
+    finally:
+        dialog.close()
+
+
+def test_fix_linework_discovers_job_book_and_shows_unknown_code_order(win, app, tmp_path):
+    from plumbline.fieldwork.io_carlson import write_fwb_file
+    from plumbline.ui.qa_workspace import FixLineworkDialog
+
+    project = win.state.project
+    for point in list(project.points.values()):
+        del project.points[point.id]
+    project.settings.pop("fieldbook_file", None)
+    project.settings.pop("f2f_path", None)
+    job_root = tmp_path / "order-job"
+    book = job_root / "Field Book" / "Order Job.fwb"
+    book.parent.mkdir(parents=True)
+    assert write_fwb_file(
+        book,
+        ["Code", "Description", "Symbol", "Layer", "Entity Type", "Category"],
+        [["TOC", "Top of curb", "", "ROAD", "Line", "Road"]],
+    )
+    win._job_root_choice = job_root
+    point = project.add_point(100, 200, 5, number="9002", desc="EG PC ST")
+
+    dialog = FixLineworkDialog(win.state, win)
+    try:
+        assert dialog.code_set == {"toc"}
+        assert dialog.fieldbook_path == str(book)
+        finding = next(item for item in dialog.active_findings
+                       if item.get("check") == "Line command out of order")
+        assert finding["level"] == "error"
+        assert finding["pids"] == [point.id]
+        check = next(row for row in dialog._report_check_rows()
+                     if row["check_key"] == "Line Order")
+        assert check["status"] == "FINDINGS"
+    finally:
+        dialog.close()
 
 
 def test_a_job_with_no_vocabulary_is_told_the_line_check_cannot_run_and_is_not_faked(win, app):

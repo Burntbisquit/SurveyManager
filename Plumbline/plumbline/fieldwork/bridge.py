@@ -390,7 +390,12 @@ def describe_flags(rows, f2f=None, fieldbook_path=None) -> dict[int, dict]:
     for r in rows:
         if not row_is_usable(r) or _row_is_removed(r):
             continue
-        parsed = P.parse_desc_field(r[DESC], f2f or set(), fieldbook_path=fieldbook_path)
+        raw_description = str(r[DESC] or "")
+        # Empty descriptions need no vocabulary. Without an active code table, do not
+        # classify non-empty text as UnknownCode, but still surface genuinely blank rows.
+        if not f2f and raw_description.strip():
+            continue
+        parsed = P.parse_desc_field(raw_description, f2f or set(), fieldbook_path=fieldbook_path)
         if parsed.get("flags"):
             out[int(r[OID]) if str(r[OID]).strip().isdigit() else r[OID]] = parsed
     return out
@@ -791,20 +796,32 @@ def vocabulary_for(project, job_root=None, fieldbook=None) -> dict:
     * ``field book + job codes`` - a book with no code table in it (a fresh job's template book is
       exactly that) merged with the job's own feature codes;
     * ``job codes`` - the codes converted from the office's Carlson table, or the built-in set;
-    * ``none`` - no vocabulary: the three number checks run, the description check does not, and
-      the caller says so.  An empty vocabulary is never run as if it were a vocabulary, because
-      every code would come back unknown and a hundred false alarms is how a check gets switched
-      off and stays off.
+    * ``none`` - no code vocabulary: the number and blank-description checks still run, while
+      non-empty code validation is paused and the caller says so. An empty vocabulary is never run
+      as if it were a vocabulary, because every code would come back unknown and a hundred false
+      alarms is how a check gets switched off and stays off.
     """
     from . import parse as P
 
-    p = Path(str(fieldbook)) if fieldbook else None
-    if p is None:
-        chosen = (project.settings or {}).get("fieldbook_file")
-        if chosen and Path(str(chosen)).exists():
-            p = Path(str(chosen))
+    root = Path(job_root).expanduser() if job_root else None
+    if root is None and getattr(project, "path", None):
+        root = Path(project.path).expanduser().parent
+
+    def resolve_book_path(value):
+        if not value:
+            return None
+        candidate = Path(str(value)).expanduser()
+        if not candidate.is_absolute() and root is not None:
+            candidate = root / candidate
+        return candidate
+
+    p = resolve_book_path(fieldbook)
+    if p is None or not p.is_file():
+        chosen = resolve_book_path((project.settings or {}).get("fieldbook_file"))
+        if chosen is not None and chosen.is_file():
+            p = chosen
         else:
-            books = fieldbooks_in(job_root)
+            books = fieldbooks_in(root)
             p = books[0] if books else None
     # The job's own codes count as a vocabulary only when they came from the office's table (a
     # Carlson Field-to-Finish export, converted through Survey > Convert Field to Finish).  The
@@ -936,10 +953,9 @@ def check_project(project, f2f=None, fieldbook_path=None, ne_tol: float | None =
     """Run the field-data checks over a project's own points, as findings a dock can show.
 
     *f2f* is the field book's code set and *fieldbook_path* the file it came from (the parser
-    also reads that job's command set and correction rules out of it).  Without a code set the
-    description parsing is skipped rather
-    than run against an empty vocabulary - every code would come back "UnknownCode", which is a
-    hundred false alarms and not a check (the dock says which of the two it did).
+    also reads that job's command set and correction rules out of it). Without a code vocabulary,
+    non-empty code descriptions are not classified as unknown; genuinely blank descriptions still
+    surface, and an available Field Book command set can still validate line-command order.
 
     Returns {"rows", "ids", "findings", "stats", "flags", "code_checks"}.  Row indices in a
     finding index into "rows"; ``ids[i]`` is the project point the i-th row came from.
@@ -960,7 +976,33 @@ def check_project(project, f2f=None, fieldbook_path=None, ne_tol: float | None =
                                 "message": "The project has no field points to check."})
         return out
     found = run_checks(rows, ne_tol=ne_tol, elev_tol=elev_tol)
-    flags = describe_flags(rows, f2f, fieldbook_path=fieldbook_path) if f2f else {}
+    # Blank descriptions are checked even without a code table; describe_flags deliberately
+    # leaves non-empty text alone when no vocabulary is available.
+    flags = describe_flags(rows, f2f, fieldbook_path=fieldbook_path)
+    # Keep the single-point command-order check in the project-side report as well as the
+    # Fieldwork Manager. The sequence detector below cannot attach PC/ST to a code the active
+    # Field Book does not recognize, but the semantic command tokens still make EG PC ST an error.
+    if f2f or fieldbook_path:
+        try:
+            order_flags = P._validate_line_command_order(rows, f2f, fieldbook_path=fieldbook_path)
+            order_details = getattr(P._validate_line_command_order, "details", {})
+        except Exception:
+            order_flags, order_details = {}, {}
+        raw_by_oid = {str(row[OID]): str(row[DESC] or "") for row in rows}
+        for oid, row_flags in order_flags.items():
+            key = int(oid) if str(oid).strip().isdigit() else oid
+            parsed = flags.get(key)
+            if parsed is None:
+                parsed = {"raw": raw_by_oid.get(str(oid), ""), "flags": [], "flag_detail": ""}
+                flags[key] = parsed
+            parsed_flags = parsed.setdefault("flags", [])
+            for flag in row_flags:
+                if flag not in parsed_flags:
+                    parsed_flags.append(flag)
+            details = order_details.get(oid, [])
+            if details:
+                existing_detail = str(parsed.get("flag_detail") or "")
+                parsed["flag_detail"] = "; ".join([existing_detail, *details]).strip("; ")
     deleted_oids = set()
     for pid, point in project.points.items():
         if _point_is_deleted(point):
@@ -996,10 +1038,6 @@ def check_project(project, f2f=None, fieldbook_path=None, ne_tol: float | None =
             i = oid_to_row.get(str(oid))
             for flag in parsed.get("flags") or ["Description"]:
                 name = str(flag).split(":")[0]
-                # Empty descriptions are intentionally not a QA warning in Fix Points;
-                # Fieldwork Manager still retains EmptyDescription for its cleaning workflow.
-                if name == "EmptyDescription":
-                    continue
                 rec = by_flag.setdefault(name, {"rows": set(), "sample": ""})
                 if i is not None:
                     rec["rows"].add(i)

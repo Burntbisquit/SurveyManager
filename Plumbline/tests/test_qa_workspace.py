@@ -1465,7 +1465,7 @@ def test_qa_workbench_uses_selected_vocabulary_and_fieldbook_path(win, monkeypat
     pr = win.state.project
     pr.add_point(80.0, 90.0, 10.0, number="88001", desc="OFFICE_CODE")
     selected_path = "/standards/selected-job.fwb"
-    monkeypatch.setattr(FB, "vocabulary_for", lambda _project: {
+    monkeypatch.setattr(FB, "vocabulary_for", lambda _project, **_kwargs: {
         "source": "none", "label": "", "codes": set(), "path": selected_path,
         "why": "selected file has no valid code vocabulary",
     })

@@ -1260,10 +1260,37 @@ class BaseQAWorkbenchWindow(QMainWindow):
         self._on_stack_clicked()
 
     # ------------------------------------------------------------------ Check & State Management
+    def _job_root(self):
+        """Use the same selected/project folder as the main window for Field Book discovery."""
+        from pathlib import Path
+
+        parent = self.parentWidget()
+        while parent is not None:
+            resolver = getattr(parent, "_job_folder", None)
+            if callable(resolver):
+                try:
+                    root = resolver()
+                    if root:
+                        return root
+                except Exception:
+                    pass
+            parent = parent.parentWidget()
+
+        root = getattr(self.state, "job_folder", None)
+        if root:
+            return root
+        project_path = getattr(self.state.project, "path", None)
+        if project_path:
+            try:
+                return Path(project_path).expanduser().parent
+            except (TypeError, OSError):
+                pass
+        return None
+
     def _refresh_vocabulary(self):
         pr = self.state.project
         from ..fieldwork import bridge as FB
-        v = FB.vocabulary_for(pr)
+        v = FB.vocabulary_for(pr, job_root=self._job_root())
         self.code_set = {str(code).casefold() for code in v.get("codes", [])}
         self.fieldbook_path = str(v.get("path") or "")
 
@@ -2861,10 +2888,6 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
     def _filter_finding(self, finding: dict) -> bool:
         chk = finding.get("check", "").lower()
         flag = str(finding.get("flag", ""))
-        # Blank descriptions are not an actionable Fix Points warning. Fieldwork Manager
-        # retains its separate EmptyDescription clean-up workflow.
-        if flag == "EmptyDescription" or "no description" in chk:
-            return False
         # Filter out line issues (they belong in Fix Linework)
         if "line:" in chk or flag.startswith("Missing") or any(w in chk for w in ("line", "curve", "string", "closed")):
             return False
@@ -2977,7 +3000,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
             commands = (pr.settings or {}).get("f2f_commands")
             try:
                 from ..fieldwork.bridge import vocabulary_for
-                voc = vocabulary_for(pr, getattr(self.state, "job_folder", None))
+                voc = vocabulary_for(pr, job_root=self._job_root())
                 if voc.get("codes"):
                     f2f_set.update(voc.get("codes"))
                 fb_path = voc.get("path")
@@ -3429,7 +3452,7 @@ class FixPointErrorsDialog(BaseQAWorkbenchWindow):
         fb_path = None
         try:
             from ..fieldwork.bridge import vocabulary_for
-            voc = vocabulary_for(pr, getattr(self.state, "job_folder", None))
+            voc = vocabulary_for(pr, job_root=self._job_root())
             fb_path = voc.get("path")
         except Exception:
             pass
